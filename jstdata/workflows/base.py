@@ -145,13 +145,18 @@ def hydrate_labels(
     client: JSTDataClient,
     session: Session,
     labels: dict[str, str],
+    *,
+    cache=None,
 ) -> None:
-    """Fill missing UI labels for session resource IDs (in-place)."""
-    missing = [rid for rid in session.resource_ids() if rid not in labels]
-    if not missing:
-        return
-    for resource in client.get_resources(missing):
-        labels[resource.id] = resource.label or resource.id
+    """Fill UI labels for session resource IDs (in-place).
+
+    Uses the persistent resource label cache: if any staged id is missing or
+    older than 12 hours, the whole workspace is refreshed via ``/resource``.
+    """
+    from ..resource_cache import default_resource_cache
+
+    store = cache if cache is not None else default_resource_cache()
+    store.hydrate_session(client, session, labels)
 
 
 def label_for(labels: dict[str, str], resource_id: str) -> str:
