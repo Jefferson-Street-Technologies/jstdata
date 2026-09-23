@@ -96,8 +96,10 @@ class InvestigationHost(App):
         Binding("s", "session", "Session"),
         Binding("f", "find", "Find"),
         Binding("e", "export", "Export"),
-        Binding("n", "next_action", "Next"),
-        Binding("p", "prev_action", "Prev"),
+        Binding("n", "next_action", "Next action"),
+        Binding("p", "prev_action", "Prev action"),
+        Binding("N", "next_workspace", "Next workspace", key_display="N"),
+        Binding("P", "prev_workspace", "Prev workspace", key_display="P"),
     ]
 
     def __init__(
@@ -115,6 +117,7 @@ class InvestigationHost(App):
         self.session = Session()
         self.labels: dict[str, str] = {}
         self._order: list[int] = []
+        self._ws_order: list[int] = []
         self._inv_mtime: float | None = None
         self._active_mtime: float | None = None
         self._own_active_mtime: float | None = None
@@ -188,6 +191,7 @@ class InvestigationHost(App):
             _ = self.investigation.get_action(self.active.action)
             self._apply_workspace(ws)
             self._order = self.investigation.bfs_order()
+            self._ws_order = self.investigation.workspace_order()
             self._invalid = False
             self._snapshot_mtimes()
             if force_screen or not isinstance(self.screen, Screen):
@@ -207,6 +211,7 @@ class InvestigationHost(App):
         self._invalid = True
         self.investigation = None
         self._order = []
+        self._ws_order = []
         while len(self.screen_stack) > 1:
             self.pop_screen()
         err = InvalidStateScreen(message)
@@ -245,10 +250,16 @@ class InvestigationHost(App):
                 body = (body + "\n\n" if body else "") + f"Workspace: {ws.description}"
             kwargs.setdefault("body", body)
             label = ws.label or f"workspace {ws.id}"
+            ws_pos = (
+                f"{self._ws_order.index(ws.id) + 1}/{len(self._ws_order)}"
+                if ws.id in self._ws_order
+                else str(ws.id)
+            )
             kwargs.setdefault(
                 "meta",
                 f"action {action.id}/{self._order[-1] if self._order else 0}  ·  "
-                f"{label}  ·  n/p navigate  ·  ? help  ·  q quit",
+                f"{label} ({ws_pos})  ·  n/p actions  ·  N/P workspaces  ·  "
+                f"? help  ·  q quit",
             )
 
         return spec.create_screen(self.client, self.session, **kwargs)
@@ -353,12 +364,18 @@ class InvestigationHost(App):
     # --- navigation --------------------------------------------------------
 
     def action_next_action(self) -> None:
-        self._navigate(+1)
+        self._navigate_action(+1)
 
     def action_prev_action(self) -> None:
-        self._navigate(-1)
+        self._navigate_action(-1)
 
-    def _navigate(self, delta: int) -> None:
+    def action_next_workspace(self) -> None:
+        self._navigate_workspace(+1)
+
+    def action_prev_workspace(self) -> None:
+        self._navigate_workspace(-1)
+
+    def _navigate_action(self, delta: int) -> None:
         if self._invalid or not self.active or not self._order:
             self.notify("No actions to navigate", severity="warning")
             return
@@ -382,6 +399,36 @@ class InvestigationHost(App):
         self._write_active(ctx)
         self._show_current_action(reset=True)
 
+    def _navigate_workspace(self, delta: int) -> None:
+        if self._invalid or not self.active or not self._ws_order:
+            self.notify("No workspaces to navigate", severity="warning")
+            return
+        # Flush staged resources before leaving the current workspace.
+        self._persist_workspace_if_dirty()
+        try:
+            idx = self._ws_order.index(self.active.workspace)
+        except ValueError:
+            idx = 0
+        new_idx = idx + delta
+        if new_idx < 0:
+            self.notify("First workspace", severity="warning")
+            return
+        if new_idx >= len(self._ws_order):
+            self.notify("Last workspace", severity="warning")
+            return
+        new_ws = self._ws_order[new_idx]
+        ctx = ActiveContext(
+            investigation=self.active.investigation,
+            workspace=new_ws,
+            action=self.active.action,
+        )
+        self._write_active(ctx)
+        assert self.investigation is not None
+        self._apply_workspace(self.investigation.get_workspace(new_ws))
+        self._show_current_action(reset=True)
+        label = self.investigation.workspaces[new_ws].label or f"workspace {new_ws}"
+        self.notify(f"Workspace {label}", timeout=2)
+
     # --- shared chrome (mirrors WorkflowHost) ------------------------------
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
@@ -391,6 +438,8 @@ class InvestigationHost(App):
             "export",
             "next_action",
             "prev_action",
+            "next_workspace",
+            "prev_workspace",
             "show_help",
         }:
             if isinstance(self.focused, Input):

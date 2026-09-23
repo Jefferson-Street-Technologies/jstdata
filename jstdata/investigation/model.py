@@ -265,6 +265,10 @@ class Investigation:
             queue.extend(c.id for c in self.children(current))
         return order
 
+    def workspace_order(self) -> list[int]:
+        """Workspace ids in ascending numeric order."""
+        return sorted(self.workspaces)
+
     def next_action_id(self) -> int:
         if not self.actions:
             return ROOT_ACTION_ID

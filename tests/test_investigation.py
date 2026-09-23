@@ -71,6 +71,13 @@ def test_bfs_order_and_cascade_delete():
         inv.remove_action_cascade(ROOT_ACTION_ID)
 
 
+def test_workspace_order():
+    inv = Investigation.new("multi-ws")
+    inv.workspaces[2] = Workspace(id=2, label="B")
+    inv.workspaces[1] = Workspace(id=1, label="A")
+    assert inv.workspace_order() == [0, 1, 2]
+
+
 def test_workspace_session_projection():
     ws = Workspace(
         id=0,

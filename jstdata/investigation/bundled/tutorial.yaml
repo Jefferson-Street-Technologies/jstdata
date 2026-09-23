@@ -13,6 +13,7 @@ actions:
   description: >-
     Jefferson Street is an IDE for financial research in the terminal.
     You and an agent share an investigation — a tree of analytical actions
-    over staged workspaces. Use n/p to move through actions. Edit this YAML
-    (or ~/.jstdata/.active.yaml) and the TUI will pick up the change.
+    over staged workspaces. Use n/p to move through actions, N/P through
+    workspaces. Edit this YAML (or ~/.jstdata/.active.yaml) and the TUI
+    will pick up the change.
   args: {}

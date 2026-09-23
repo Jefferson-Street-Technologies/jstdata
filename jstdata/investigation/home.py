@@ -108,6 +108,7 @@ HOME = register(
         arguments=(),
         bindings=(
             StepBinding("n / p", "navigate", "Next / previous action in BFS order"),
+            StepBinding("N / P", "workspace", "Next / previous workspace"),
         ),
         example="jst investigation load tutorial",
     )
