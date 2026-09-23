@@ -28,6 +28,8 @@ def test_agent_guide_cli():
     assert "## Data model" in out
     assert "## Resolution" in out
     assert "## Common recipes" in out
+    assert "Rank GDP among EU countries" in out
+    assert "session has entities" in out or "--session-entities=false" in out
     assert "## Composition and workflows" in out
     assert "## Sessions" in out
     assert "### Session JSON fields" in out

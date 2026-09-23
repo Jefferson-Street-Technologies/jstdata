@@ -175,6 +175,46 @@ def test_resolve_discover_mode():
 
     defaulted = resolve_pipeline(["discover"])
     assert defaulted[0].kwargs["mode"] == "union"
+    assert defaulted[0].kwargs.get("session_metrics") is True
 
     with pytest.raises(PipelineError, match="Choices"):
-        resolve_pipeline(["discover", "--mode", "xor"])
+        resolve_pipeline(["discover", "--mode", "nope"])
+
+
+def test_resolve_discover_session_metrics():
+    import jstdata.workflows  # noqa: F401
+
+    off = resolve_pipeline(["discover", "--session-metrics", "false"])
+    assert off[0].kwargs["session_metrics"] is False
+
+    spec = get_step("discover")
+    arg = next(a for a in spec.to_dict()["arguments"] if a["name"] == "session_metrics")
+    assert arg["default"] is True
+
+
+def test_discover_session_metrics_scope():
+    from unittest.mock import MagicMock
+
+    from jstdata.session import Session
+    from jstdata.workflows.discover import DiscoverScreen
+
+    with_metrics = DiscoverScreen(
+        MagicMock(),
+        Session(entity=["france"], metric=["gdp", "cpi"]),
+        session_metrics=True,
+    )
+    assert with_metrics._using_session_metrics()
+
+    no_metrics = DiscoverScreen(
+        MagicMock(),
+        Session(entity=["france"]),
+        session_metrics=True,
+    )
+    assert not no_metrics._using_session_metrics()
+
+    opted_out = DiscoverScreen(
+        MagicMock(),
+        Session(entity=["france"], metric=["gdp"]),
+        session_metrics=False,
+    )
+    assert not opted_out._using_session_metrics()

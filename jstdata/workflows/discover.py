@@ -148,17 +148,25 @@ class DiscoverScreen(Screen):
     #help-hint { color: #888; }
     """
 
-    def __init__(self, client: JSTDataClient, session: Session, mode: str = "union"):
+    def __init__(
+        self,
+        client: JSTDataClient,
+        session: Session,
+        mode: str = "union",
+        session_metrics: bool = True,
+    ):
         super().__init__()
         self.client = client
         self.session = session
         self.mode = mode if mode in MODES else "union"
+        self.session_metrics = bool(session_metrics)
         self.filter_query = ""
         self.page_offset = 0
         self.has_more = False
         self.loading_more = False
         self.search_task: asyncio.Task[None] | None = None
         self._entity_snapshot: tuple[str, ...] = ()
+        self._metric_snapshot: tuple[str, ...] = ()
         self._metrics: list[Metric] = []
 
     def compose(self) -> ComposeResult:
@@ -215,9 +223,10 @@ class DiscoverScreen(Screen):
     def _refresh_help_hint(self) -> None:
         n = getattr(self.app, "step_count", 1)
         i = getattr(self.app, "step_index", 0) + 1
+        scope = "session metrics" if self._using_session_metrics() else f"mode {self.mode}"
         parts = [
             f"discover {i}/{n}",
-            f"mode {self.mode}",
+            scope,
             "[bold]/[/bold] filter",
             "[bold]enter[/bold] preview",
             "[bold]space[/bold] add",
@@ -232,15 +241,25 @@ class DiscoverScreen(Screen):
         ]
         self.query_one("#help-hint").update(" // ".join(parts))
 
+    def _using_session_metrics(self) -> bool:
+        """True when the metrics pane is limited to non-empty session.metric."""
+        return bool(self.session_metrics and self.session.metric)
+
     def _sync_entities(self, force: bool = False) -> None:
-        snapshot = tuple(self.session.entity)
-        if not force and snapshot == self._entity_snapshot:
+        entity_snap = tuple(self.session.entity)
+        metric_snap = tuple(self.session.metric)
+        if (
+            not force
+            and entity_snap == self._entity_snapshot
+            and metric_snap == self._metric_snapshot
+        ):
             return
-        self._entity_snapshot = snapshot
+        self._entity_snapshot = entity_snap
+        self._metric_snapshot = metric_snap
         empty = self.query_one("#empty-prompt")
         roster = self.query_one("#entities-list", ListView)
         roster.clear()
-        if not snapshot:
+        if not entity_snap:
             empty.display = True
             roster.display = False
             self.query_one("#metrics-list", ListView).clear()
@@ -248,16 +267,43 @@ class DiscoverScreen(Screen):
             self.query_one("#metrics-status").update(
                 "Add entities to generate metrics."
             )
+            self._refresh_help_hint()
             return
         empty.display = False
         roster.display = True
         labels = self._labels()
-        for eid in snapshot:
+        for eid in entity_snap:
             roster.append(EntityRow(eid, label_for(labels, eid)))
         self.page_offset = 0
         self._metrics = []
         self.query_one("#metrics-list", ListView).clear()
+        self._refresh_help_hint()
         self.load_metrics(reset=True)
+
+    async def _fetch_session_metrics(self) -> list[Metric]:
+        """Resolve session metric ids to Metric rows, optionally name-filtered."""
+        ids = list(self.session.metric)
+        labels = self._labels()
+        missing = [mid for mid in ids if mid not in labels]
+        if missing:
+            try:
+                resources = await asyncio.to_thread(self.client.get_resources, missing)
+            except Exception:
+                resources = []
+            remember = getattr(self.app, "remember_label", None)
+            for resource in resources:
+                name = resource.label or resource.id
+                labels[resource.id] = name
+                if callable(remember):
+                    remember(resource.id, name)
+        q = self.filter_query.strip().lower()
+        metrics: list[Metric] = []
+        for mid in ids:
+            name = label_for(labels, mid)
+            if q and q not in mid.lower() and q not in name.lower():
+                continue
+            metrics.append(Metric(id=mid, name=name))
+        return metrics
 
     @work(exclusive=True, group="metrics")
     async def load_metrics(self, reset: bool = False) -> None:
@@ -270,15 +316,19 @@ class DiscoverScreen(Screen):
         status = self.query_one("#metrics-status")
         status.update("Loading metrics…")
         query = self.filter_query.strip() or None
+        using_session = self._using_session_metrics()
         try:
-            metrics = await asyncio.to_thread(
-                self.client.search_metrics,
-                query,
-                entity=list(self.session.entity),
-                mode=self.mode,
-                limit=PAGE_SIZE,
-                offset=self.page_offset,
-            )
+            if using_session:
+                metrics = await self._fetch_session_metrics()
+            else:
+                metrics = await asyncio.to_thread(
+                    self.client.search_metrics,
+                    query,
+                    entity=list(self.session.entity),
+                    mode=self.mode,
+                    limit=PAGE_SIZE,
+                    offset=self.page_offset,
+                )
         except Exception as e:
             status.update(f"Error: {e}")
             self.loading_more = False
@@ -287,16 +337,21 @@ class DiscoverScreen(Screen):
             self._metrics = []
             self.query_one("#metrics-list", ListView).clear()
         self._metrics.extend(metrics)
-        self.has_more = len(metrics) == PAGE_SIZE
+        self.has_more = (not using_session) and len(metrics) == PAGE_SIZE
         list_view = self.query_one("#metrics-list", ListView)
         staged = set(self.session.metric)
         for metric in metrics:
             list_view.append(MetricRow(metric, staged=metric.id in staged))
         shown = len(self._metrics)
         extra = "+" if self.has_more else ""
-        qlabel = f"“{query}”" if query else "all"
-        status.update(f"{shown}{extra} · {qlabel} · {self.mode}")
-        self.query_one("#metrics-header").update(f"METRICS // {self.mode.upper()}")
+        if using_session:
+            qlabel = f"“{query}”" if query else "session"
+            status.update(f"{shown} · {qlabel}")
+            self.query_one("#metrics-header").update("METRICS // SESSION")
+        else:
+            qlabel = f"“{query}”" if query else "all"
+            status.update(f"{shown}{extra} · {qlabel} · {self.mode}")
+            self.query_one("#metrics-header").update(f"METRICS // {self.mode.upper()}")
         self.loading_more = False
 
     def action_focus_filter(self) -> None:
@@ -459,8 +514,12 @@ class DiscoverScreen(Screen):
         chart.update(text)
 
 
-def create_discover_screen(client, session, mode="union", **kwargs):
-    return DiscoverScreen(client, session, mode=mode)
+def create_discover_screen(
+    client, session, mode="union", session_metrics=True, **kwargs
+):
+    return DiscoverScreen(
+        client, session, mode=mode, session_metrics=session_metrics
+    )
 
 
 DISCOVER = register(
@@ -479,6 +538,17 @@ DISCOVER = register(
                 description="union (any entity) or intersect (every entity)",
                 default="union",
                 choices=MODES,
+            ),
+            StepArgument(
+                name="session_metrics",
+                type="boolean",
+                description=(
+                    "When true (default), show only session metrics if any "
+                    "are present; with an empty metric list, searches all "
+                    "metrics for the session entities. Set false to always "
+                    "search the full candidate set."
+                ),
+                default=True,
             ),
         ),
         bindings=(

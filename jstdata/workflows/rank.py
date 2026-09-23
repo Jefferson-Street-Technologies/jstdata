@@ -181,11 +181,13 @@ class RankScreen(Screen):
         client: JSTDataClient,
         session: Session,
         taxonomy: Optional[str] = None,
+        session_entities: bool = True,
     ):
         super().__init__()
         self.client = client
         self.session = session
         self.taxonomy = (taxonomy or "").strip() or None
+        self.session_entities = bool(session_entities)
         self.filter_query = ""
         self.page_offset = 0
         self.has_more = False
@@ -195,6 +197,7 @@ class RankScreen(Screen):
         self._active_metric_id: Optional[str] = None
         self._board: list[RankEntry] = []
         self._taxonomy_ids: set[str] | None = None
+        self._prefer_entity_ids: set[str] | None = None
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="rank-body"):
@@ -225,6 +228,8 @@ class RankScreen(Screen):
         self._refresh_help_hint()
         if self.taxonomy:
             self.load_taxonomy_ids()
+        else:
+            self._prefer_entity_ids = self._entity_preference_ids()
         self._sync_metrics(force=True)
         self.query_one("#metrics-list", ListView).focus()
 
@@ -238,9 +243,14 @@ class RankScreen(Screen):
         n = getattr(self.app, "step_count", 1)
         i = getattr(self.app, "step_index", 0) + 1
         tax = self.taxonomy or "all"
+        scope = (
+            "session entities"
+            if self._using_session_entities()
+            else f"taxonomy {tax}"
+        )
         parts = [
             f"rank {i}/{n}",
-            f"taxonomy {tax}",
+            scope,
             "[bold]/[/bold] filter",
             "[bold]enter[/bold] open rank / add",
             "[bold]tab[/bold] panes",
@@ -253,6 +263,26 @@ class RankScreen(Screen):
             "[bold]?[/bold]",
         ]
         self.query_one("#help-hint").update(" // ".join(parts))
+
+    def _using_session_entities(self) -> bool:
+        """True when ranking is scoped to non-empty session.entity."""
+        return bool(self.session_entities and self.session.entity)
+
+    def _scoped_entity_ids(self) -> list[str] | None:
+        """Entity ids for /query, or None to use taxonomy/all population."""
+        if not self._using_session_entities():
+            return None
+        return list(self.session.entity)
+
+    def _entity_preference_ids(self) -> set[str] | None:
+        """Ids to prefer when labeling multi-entity series."""
+        prefer = self._taxonomy_ids
+        if self._using_session_entities():
+            session_ids = set(self.session.entity)
+            if prefer is not None:
+                return prefer & session_ids or session_ids
+            return session_ids
+        return prefer
 
     def _sync_metrics(self, force: bool = False) -> None:
         snapshot = tuple(self.session.metric)
@@ -339,7 +369,7 @@ class RankScreen(Screen):
             value = last_observation_value(ts)
             if value is None:
                 continue
-            entity = pick_entity(ts.series.entities, self._taxonomy_ids)
+            entity = pick_entity(ts.series.entities, self._prefer_entity_ids)
             if entity is None:
                 continue
             entries.append(
@@ -355,10 +385,16 @@ class RankScreen(Screen):
             )
         return entries
 
+    def _scope_label(self) -> str:
+        if self._using_session_entities():
+            return f"session ({len(self.session.entity)})"
+        return self.taxonomy or "all"
+
     @work(exclusive=True, group="taxonomy")
     async def load_taxonomy_ids(self) -> None:
         if not self.taxonomy:
             self._taxonomy_ids = None
+            self._prefer_entity_ids = self._entity_preference_ids()
             return
         ids: set[str] = set()
         offset = 0
@@ -380,8 +416,10 @@ class RankScreen(Screen):
                     break
         except Exception:
             self._taxonomy_ids = None
+            self._prefer_entity_ids = self._entity_preference_ids()
             return
         self._taxonomy_ids = ids
+        self._prefer_entity_ids = self._entity_preference_ids()
 
     @work(exclusive=True, group="rank")
     async def load_rank(self, reset: bool = False) -> None:
@@ -394,14 +432,18 @@ class RankScreen(Screen):
             self.has_more = False
             self._board = []
         status = self.query_one("#board-status")
-        status.update("Loading ranking…")
         labels = self._labels()
         name = label_for(labels, metric_id)
         self.query_one("#board-header").update(f"RANK // {name}")
+        scope = self._scope_label()
+        entity_ids = self._scoped_entity_ids()
+
+        status.update("Loading ranking…")
         try:
             series_list: list[TimeSeries] = await asyncio.to_thread(
                 self.client.query,
                 metric=metric_id,
+                entity=entity_ids,
                 taxonomy=self.taxonomy,
                 tail=1,
                 sort_by="value",
@@ -444,21 +486,25 @@ class RankScreen(Screen):
         shown = len(self._filtered_board())
         total = len(self._board)
         extra = "+" if self.has_more else ""
-        tax = self.taxonomy or "all"
         q = self.filter_query.strip()
         qbit = f" · filter “{q}”" if q else ""
         if reset and not series_list:
-            tax_bit = f" in taxonomy “{tax}”" if self.taxonomy else ""
+            if entity_ids is not None:
+                scope_bit = " among session entities"
+            elif self.taxonomy:
+                scope_bit = f" in taxonomy “{self.taxonomy}”"
+            else:
+                scope_bit = ""
             status.update(
-                f"No series for “{metric_id}”{tax_bit}. "
+                f"No series for “{metric_id}”{scope_bit}. "
                 "Try another metric, or check the metric id."
             )
         elif reset and series_list and not page:
             status.update(
-                f"Got {len(series_list)} series but no entities to show · {tax}"
+                f"Got {len(series_list)} series but no entities to show · {scope}"
             )
         else:
-            status.update(f"{shown}/{total}{extra} · desc · {tax}{qbit}")
+            status.update(f"{shown}/{total}{extra} · desc · {scope}{qbit}")
         self.loading_more = False
 
     def action_focus_filter(self) -> None:
@@ -568,11 +614,11 @@ class RankScreen(Screen):
         shown = len(self._filtered_board())
         total = len(self._board)
         extra = "+" if self.has_more else ""
-        tax = self.taxonomy or "all"
+        scope = self._scope_label()
         q = self.filter_query.strip()
         qbit = f" · filter “{q}”" if q else ""
         self.query_one("#board-status").update(
-            f"{shown}/{total}{extra} · desc · {tax}{qbit}"
+            f"{shown}/{total}{extra} · desc · {scope}{qbit}"
         )
 
     @on(Input.Submitted, "#rank-filter")
@@ -613,8 +659,15 @@ class RankScreen(Screen):
         self.load_rank(reset=False)
 
 
-def create_rank_screen(client, session, taxonomy=None, **kwargs):
-    return RankScreen(client, session, taxonomy=taxonomy)
+def create_rank_screen(
+    client, session, taxonomy=None, session_entities=True, **kwargs
+):
+    return RankScreen(
+        client,
+        session,
+        taxonomy=taxonomy,
+        session_entities=session_entities,
+    )
 
 
 RANK = register(
@@ -633,6 +686,17 @@ RANK = register(
                 description=(
                     "Restrict ranking to entities in this taxonomy"
                 ),
+            ),
+            StepArgument(
+                name="session_entities",
+                type="boolean",
+                description=(
+                    "When true (default), rank only session entities if any "
+                    "are present; with an empty entity list, ranks the full "
+                    "taxonomy/all population. Set false to always ignore "
+                    "session entities."
+                ),
+                default=True,
             ),
         ),
         bindings=(
@@ -653,6 +717,8 @@ RANK = register(
             StepBinding("j / k", "cursor", "Move highlight in the focused list"),
             StepBinding("escape", "leave_filter", "Leave the ranking filter"),
         ),
-        example="jst run console --taxonomy country : discover : rank --taxonomy country",
+        example=(
+            "jst run --session eu.json rank --taxonomy country"
+        ),
     )
 )

@@ -124,6 +124,8 @@ as repeated `--flag` values.
 | Run alone | `jst run console` / `jst run discover --mode union` / `jst run rank --taxonomy country` |
 | Scope console | `jst run console --taxonomy country --resource-type entity` |
 | Relation-scoped console | `jst run console --relation classified_as:sic:3674 --resource-type entity` |
+| Rank session entities | `jst run --session eu.json rank` (auto when session has entities) |
+| Discover session metrics | `jst run --session eu.json discover` (auto when session has metrics; `--session-metrics=false` for full candidates) |
 | Preload session JSON | `jst run --session path.json console` |
 | Set default export path | `jst run --output out.json console` |
 | Chain steps | `jst run console --taxonomy country : discover : rank --taxonomy country` |
@@ -149,4 +151,6 @@ default filename unless `--output` is set.
   ids like `sic:3674` stay intact. Types: `equivalent_to`, `classified_as`,
   `part_of`, `has_security` (not `identity` — use taxonomy for membership).
 - Taxonomy membership for query/rank is the population bound (`--taxonomy`), not
-  a generic graph filter.
+  a generic graph filter. Rank scopes to session entity ids on `/query` by
+  default when the session has entities; use `--session-entities=false` to rank
+  the full taxonomy/all population instead.

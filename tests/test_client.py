@@ -319,3 +319,23 @@ def test_search_entities_multiple_metrics(client, mock_url):
         assert qs["query"] == ["paris"]
         assert qs["metric"] == ["cpi", "gdp"] or qs["metric"] == ["gdp", "cpi"]
         assert qs["mode"] == ["union"]
+
+
+def test_get_resources_batches_over_api_limit(client, mock_url):
+    """``GET /resource`` caps at 30 ids; client must chunk larger sessions."""
+    from jstdata.client import MAX_RESOURCE_IDS
+
+    ids = [f"id-{i}" for i in range(MAX_RESOURCE_IDS + 5)]
+    with requests_mock.Mocker() as m:
+        def _responder(request, context):
+            requested = request.qs.get("resource", [])
+            assert len(requested) <= MAX_RESOURCE_IDS
+            return {
+                "records": [{"id": rid, "label": rid.upper()} for rid in requested]
+            }
+
+        m.get(f"{mock_url}/resource", json=_responder)
+        resources = client.get_resources(ids)
+        assert len(m.request_history) == 2
+        assert [r.id for r in resources] == ids
+        assert resources[0].label == "ID-0"

@@ -27,6 +27,8 @@ DEFAULT_QUERY_TAIL = 20
 DEFAULT_QUERY_SERIES_LIMIT = 50
 MAX_QUERY_SERIES_LIMIT = 50
 MAX_QUERY_OBSERVATION_DEPTH = 100
+# API ``GET /resource`` rejects more than this many ids in one request.
+MAX_RESOURCE_IDS = 30
 
 
 class ApiKeyNotSetError(Exception):
@@ -507,11 +509,18 @@ class JSTDataClient:
         ]
 
     def get_resources(self, resource: Union[str, List[str]]) -> List[Resource]:
-        """Get details for a specific metric."""
-        data = self.make_request("resource", params={"resource": resource})
-        records = []
-        for r in data["records"]:
-            records.append(Resource(id=r["id"], label=r["label"]))
+        """Resolve labels for metric/entity/series ids (``GET /resource``).
+
+        The API accepts at most ``MAX_RESOURCE_IDS`` ids per request; larger
+        lists are fetched in batches.
+        """
+        ids = _as_id_list(resource) or []
+        records: List[Resource] = []
+        for i in range(0, len(ids), MAX_RESOURCE_IDS):
+            chunk = ids[i : i + MAX_RESOURCE_IDS]
+            data = self.make_request("resource", params={"resource": chunk})
+            for r in data["records"]:
+                records.append(Resource(id=r["id"], label=r["label"]))
         return records
 
     def query_df(self, **kwargs) -> pd.DataFrame:

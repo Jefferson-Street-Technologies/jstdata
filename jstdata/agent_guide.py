@@ -153,6 +153,54 @@ jst series observations <series-id> \\
   --format json
 ```
 
+### Rank GDP among EU countries
+
+1. Resolve the EU entity, then list members via relation (do not invent country ids):
+
+```bash
+jst entity search "european union" --limit 10 --format json
+jst entity search --relation part_of:<eu-entity-id> --taxonomy country \\
+  --limit 50 --format json
+```
+
+2. Resolve a GDP metric for the country population:
+
+```bash
+jst metric search gdp --taxonomy country --limit 20 --format json
+jst metric show <gdp-metric-id> --format json
+```
+
+3. Write a session with the chosen metric and every EU member entity id:
+
+```json
+{
+  "metric": ["<gdp-metric-id>"],
+  "entity": ["<fr>", "<de>", "<it>", "..."]
+}
+```
+
+4. Rank **only those session entities** (``rank`` does this by default when the
+   session has entities; agents can call ``/query`` the same way):
+
+```bash
+jst query \\
+  --metric <gdp-metric-id> \\
+  --entity <fr> --entity <de> --entity <it> \\
+  --tail 1 \\
+  --sort-by value \\
+  --format json
+```
+
+Human handoff:
+
+```bash
+jst run --session eu-gdp.json rank
+```
+
+With an empty entity list, ``rank`` falls back to the taxonomy/all population.
+Pass ``--session-entities=false`` to force that even when entities are staged.
+Optional ``--taxonomy country`` still ANDs with session entities when both apply.
+
 ### Prepare a human investigation
 
 1. Resolve metric/entity/taxonomy ids via search.
@@ -404,8 +452,9 @@ def render_session_section() -> str:
         "",
         "Saved workflows do **not** store session contents. After discovering metrics or",
         "entities, write them into a session JSON and pass `--session` on `jst run` or",
-        "`jst workflow run`. Steps such as `rank` (metrics in session) and `discover`",
-        "(entities in session) read that staged state.",
+        "`jst workflow run`. `discover` defaults to session metrics when any are staged",
+        "(pass `--session-metrics=false` for the full entity-anchored candidate search);",
+        "`rank` defaults to session entities when any are staged.",
         "",
         "### Session JSON fields",
         "",

@@ -243,6 +243,13 @@ def parse_step_kwargs(spec: StepSpec, tokens: Sequence[str]) -> dict[str, Any]:
                 f"Unknown option {flag} for step {spec.id!r}. See: jst step {spec.id}"
             )
         if arg.type in ("boolean", "bool") and inline is None:
+            # Bare ``--flag`` => True. Optional next token may be true/false.
+            if i + 1 < len(tokens) and not tokens[i + 1].startswith("--"):
+                nxt = tokens[i + 1].lower()
+                if nxt in ("1", "true", "yes", "0", "false", "no"):
+                    kwargs[arg.name] = _coerce(arg, tokens[i + 1])
+                    i += 2
+                    continue
             kwargs[arg.name] = True
             i += 1
             continue

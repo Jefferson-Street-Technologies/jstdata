@@ -102,3 +102,46 @@ def test_resolve_rank_taxonomy():
     )
     assert [r.spec.id for r in chained] == ["discover", "rank"]
     assert chained[1].kwargs["taxonomy"] == "country"
+
+
+def test_resolve_rank_session_entities():
+    import jstdata.workflows  # noqa: F401
+
+    defaulted = resolve_pipeline(["rank"])
+    assert defaulted[0].kwargs.get("session_entities") is True
+
+    flag_off = resolve_pipeline(["rank", "--session-entities", "false"])
+    assert flag_off[0].kwargs["session_entities"] is False
+
+    combined = resolve_pipeline(
+        ["rank", "--taxonomy", "country", "--session-entities", "true"]
+    )
+    assert combined[0].kwargs["taxonomy"] == "country"
+    assert combined[0].kwargs["session_entities"] is True
+
+    spec = get_step("rank")
+    arg = next(a for a in spec.to_dict()["arguments"] if a["name"] == "session_entities")
+    assert arg["default"] is True
+
+
+def test_rank_scopes_to_session_entities_when_present():
+    from unittest.mock import MagicMock
+
+    from jstdata.session import Session
+    from jstdata.workflows.rank import RankScreen
+
+    with_entities = RankScreen(
+        MagicMock(), Session(entity=["france", "germany"]), session_entities=True
+    )
+    assert with_entities._using_session_entities()
+    assert with_entities._scoped_entity_ids() == ["france", "germany"]
+
+    no_entities = RankScreen(MagicMock(), Session(metric=["gdp"]), session_entities=True)
+    assert not no_entities._using_session_entities()
+    assert no_entities._scoped_entity_ids() is None
+
+    opted_out = RankScreen(
+        MagicMock(), Session(entity=["france"]), session_entities=False
+    )
+    assert not opted_out._using_session_entities()
+    assert opted_out._scoped_entity_ids() is None
