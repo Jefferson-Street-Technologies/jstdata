@@ -1,4 +1,4 @@
-"""Investigation host: tree navigation, hot reload, shared step chrome."""
+"""Investigation host: tree navigation, command mode, drawers, hot reload."""
 
 from __future__ import annotations
 
@@ -8,27 +8,29 @@ from typing import Optional
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
-from textual.screen import Screen
+from textual.screen import ModalScreen, Screen
 from textual.widgets import Input, Label, Static
 
 from ..client import JSTDataClient
 from ..session import Session
-from ..workflows.base import hydrate_labels
-from ..workflows.export import ExportModal
-from ..workflows.find import FindModal
+from ..workflows.base import get_step, hydrate_labels
 from ..workflows.host import HelpScreen
-from ..workflows.session_manager import SessionManagerModal
 from .active import ActiveContext, active_path, load_active, save_active
-from .api import sync_workspace_from_session
+from .api import (
+    add_action,
+    remove_action,
+    sync_workspace_from_session,
+)
 from .bootstrap import ensure_bootstrap
+from .command_palette import CommandPalette
+from .commands import CommandError, ParsedCommand, parse_command_line
 from .model import Investigation, InvestigationError, Workspace
+from .search_drawer import SearchDrawer
 from .store import investigation_path, load_investigation
+from .workspace_drawer import WorkspaceDrawer
 
-# Ensure step catalog includes home + built-in analytical steps.
 from . import home as _home  # noqa: F401
 import jstdata.workflows  # noqa: F401
-
-from ..workflows.base import get_step
 
 POLL_INTERVAL = 0.4
 
@@ -78,6 +80,49 @@ class InvalidStateScreen(Screen):
             )
 
 
+class ConfirmForceModal(ModalScreen[bool]):
+    """Ask whether to re-run a destructive command with --force."""
+
+    DEFAULT_CSS = """
+    ConfirmForceModal {
+        align: center middle;
+        background: rgba(0, 0, 0, 0.35);
+    }
+    #confirm-box {
+        width: 64;
+        height: auto;
+        border: thick #fbbf24;
+        background: #111111;
+        padding: 1 2;
+    }
+    #confirm-title { color: #fbbf24; text-style: bold; margin-bottom: 1; }
+    #confirm-body { color: #e0e0e0; height: auto; margin-bottom: 1; }
+    #confirm-hint { color: #888; }
+    """
+
+    BINDINGS = [
+        Binding("y", "yes", "Yes", show=False),
+        Binding("n", "no", "No", show=False),
+        Binding("escape", "no", "No", show=False),
+    ]
+
+    def __init__(self, message: str) -> None:
+        super().__init__()
+        self.message = message
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="confirm-box"):
+            yield Label("CONFIRM", id="confirm-title")
+            yield Static(self.message, id="confirm-body")
+            yield Label("[bold]y[/bold] yes  ·  [bold]n[/bold]/[bold]esc[/bold] cancel", id="confirm-hint", markup=True)
+
+    def action_yes(self) -> None:
+        self.dismiss(True)
+
+    def action_no(self) -> None:
+        self.dismiss(False)
+
+
 class InvestigationHost(App):
     """TUI host bound to one investigation file + ``.active.yaml``."""
 
@@ -93,9 +138,7 @@ class InvestigationHost(App):
         Binding("ctrl+c", "quit", "Quit"),
         Binding("escape", "back", "Back"),
         Binding("question_mark", "show_help", "Step help", key_display="?"),
-        Binding("s", "session", "Session"),
-        Binding("f", "find", "Find"),
-        Binding("e", "export", "Export"),
+        Binding(":", "command_palette", "Command", key_display=":"),
         Binding("n", "next_action", "Next action"),
         Binding("p", "prev_action", "Prev action"),
         Binding("N", "next_workspace", "Next workspace", key_display="N"),
@@ -124,8 +167,7 @@ class InvestigationHost(App):
         self._ws_fingerprint: tuple | None = None
         self._invalid = False
         self._suppress_poll = False
-
-    # --- paths -------------------------------------------------------------
+        self._command_history: list[str] = []
 
     def _active_file(self) -> Path:
         return active_path(app_dir=self.app_dir)
@@ -134,8 +176,6 @@ class InvestigationHost(App):
         assert self.active is not None
         return investigation_path(self.active.investigation, root=self.inv_root)
 
-    # --- bootstrap / load --------------------------------------------------
-
     def on_mount(self) -> None:
         ensure_bootstrap(app_dir=self.app_dir)
         self._reload_everything(force_screen=True)
@@ -143,6 +183,17 @@ class InvestigationHost(App):
 
     def remember_label(self, resource_id: str, label: str) -> None:
         self.labels[resource_id] = label or resource_id
+
+    def persist_active_workspace(self) -> None:
+        """Flush live session selectors into the investigation YAML."""
+        self._persist_workspace_if_dirty()
+
+    def refresh_workspace_drawer(self) -> None:
+        for screen in self.screen_stack:
+            if isinstance(screen, WorkspaceDrawer):
+                screen.session = self.session
+                screen.labels = self.labels
+                screen.rebuild()
 
     @property
     def step_count(self) -> int:
@@ -166,8 +217,6 @@ class InvestigationHost(App):
             return get_step(action.type)
         except (InvestigationError, KeyError):
             return get_step("home")
-
-    # --- core reload -------------------------------------------------------
 
     def _snapshot_mtimes(self) -> None:
         try:
@@ -206,6 +255,7 @@ class InvestigationHost(App):
         self._ws_fingerprint = ws.resource_fingerprint()
         self.labels = {}
         hydrate_labels(self.client, self.session, self.labels)
+        self.refresh_workspace_drawer()
 
     def _enter_invalid(self, message: str) -> None:
         self._invalid = True
@@ -224,11 +274,14 @@ class InvestigationHost(App):
         if self._invalid or not self.investigation or not self.active:
             return
         screen = self._make_action_screen()
-        # Keep default screen + one action (+ optional modals).
-        self._pop_overlays()
+        self._pop_transient_overlays()
         if len(self.screen_stack) <= 1:
             self.push_screen(screen)
         else:
+            # Replace the action screen (index 1); keep drawers above if any.
+            # Simpler V2: drop drawers on action switch.
+            while len(self.screen_stack) > 2:
+                self.pop_screen()
             self.switch_screen(screen)
 
     def _make_action_screen(self) -> Screen:
@@ -258,17 +311,18 @@ class InvestigationHost(App):
             kwargs.setdefault(
                 "meta",
                 f"action {action.id}/{self._order[-1] if self._order else 0}  ·  "
-                f"{label} ({ws_pos})  ·  n/p actions  ·  N/P workspaces  ·  "
-                f"? help  ·  q quit",
+                f"{label} ({ws_pos})  ·  : commands  ·  n/p actions  ·  "
+                f"N/P workspaces  ·  ? help  ·  q quit",
             )
 
         return spec.create_screen(self.client, self.session, **kwargs)
 
-    def _pop_overlays(self) -> None:
-        while len(self.screen_stack) > 2:
+    def _pop_transient_overlays(self) -> None:
+        """Dismiss command palette / confirm; leave drawers alone when possible."""
+        while len(self.screen_stack) > 2 and isinstance(
+            self.screen, (CommandPalette, ConfirmForceModal)
+        ):
             self.pop_screen()
-
-    # --- persistence helpers -----------------------------------------------
 
     def _write_active(self, ctx: ActiveContext) -> None:
         self._suppress_poll = True
@@ -290,7 +344,6 @@ class InvestigationHost(App):
             ws = self.investigation.get_workspace(self.active.workspace)
         except InvestigationError:
             return
-        # Reflect live session into workspace model for comparison.
         probe = Workspace(id=ws.id, label=ws.label, description=ws.description)
         probe.apply_session(self.session)
         if probe.resource_fingerprint() == self._ws_fingerprint:
@@ -314,7 +367,6 @@ class InvestigationHost(App):
     def _poll_files(self) -> None:
         if self._suppress_poll:
             return
-        # Persist workspace edits from step UIs (console/find/etc.).
         self._persist_workspace_if_dirty()
 
         active_changed = False
@@ -350,8 +402,6 @@ class InvestigationHost(App):
         self._reload_everything(force_screen=False)
         if self._invalid or not self.active:
             return
-        # Force screen rebuild when focus or investigation identity changes,
-        # or whenever the investigation YAML changed.
         if (
             inv_changed
             or self.active.action != prev_action
@@ -360,8 +410,6 @@ class InvestigationHost(App):
         ):
             self._show_current_action(reset=True)
         self.notify("Investigation reloaded", timeout=2)
-
-    # --- navigation --------------------------------------------------------
 
     def action_next_action(self) -> None:
         self._navigate_action(+1)
@@ -403,7 +451,6 @@ class InvestigationHost(App):
         if self._invalid or not self.active or not self._ws_order:
             self.notify("No workspaces to navigate", severity="warning")
             return
-        # Flush staged resources before leaving the current workspace.
         self._persist_workspace_if_dirty()
         try:
             idx = self._ws_order.index(self.active.workspace)
@@ -429,13 +476,9 @@ class InvestigationHost(App):
         label = self.investigation.workspaces[new_ws].label or f"workspace {new_ws}"
         self.notify(f"Workspace {label}", timeout=2)
 
-    # --- shared chrome (mirrors WorkflowHost) ------------------------------
-
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action in {
-            "session",
-            "find",
-            "export",
+            "command_palette",
             "next_action",
             "prev_action",
             "next_workspace",
@@ -446,17 +489,104 @@ class InvestigationHost(App):
                 return False
         return True
 
-    def action_session(self) -> None:
+    def action_command_palette(self) -> None:
+        if self._invalid:
+            return
         self.push_screen(
-            SessionManagerModal(self.client, self.session, self.labels)
+            CommandPalette(history=self._command_history),
+            self._on_command_submitted,
         )
 
-    def action_find(self) -> None:
-        self.push_screen(FindModal(self.client, self.session))
+    def _on_command_submitted(self, line: str | None) -> None:
+        if not line:
+            return
+        if line not in self._command_history:
+            self._command_history.append(line)
+        try:
+            parsed = parse_command_line(line)
+        except CommandError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        self._dispatch_command(parsed)
 
-    def action_export(self) -> None:
-        default = f"{self.active.investigation if self.active else 'session'}.json"
-        self.push_screen(ExportModal(self.session, default_path=default))
+    def _dispatch_command(self, parsed: ParsedCommand) -> None:
+        if parsed.name == "workspace":
+            self._open_workspace_drawer()
+        elif parsed.name == "search":
+            self._open_search_drawer(parsed.args[0], parsed.args[1])
+        elif parsed.name == "add":
+            self._cmd_add(parsed)
+        elif parsed.name == "rm":
+            self._cmd_rm(parsed, force=bool(parsed.options.get("force")))
+
+    def _open_workspace_drawer(self) -> None:
+        # If already open, focus it by pushing a fresh one on top (dismiss old?).
+        # Pushing another is fine; Esc closes topmost.
+        self.push_screen(WorkspaceDrawer(self.session, self.labels))
+
+    def _open_search_drawer(self, resource_type: str, query: str) -> None:
+        self.push_screen(
+            SearchDrawer(
+                self.client,
+                self.session,
+                resource_type=resource_type,  # type: ignore[arg-type]
+                query=query,
+            )
+        )
+
+    def _cmd_add(self, parsed: ParsedCommand) -> None:
+        if not self.investigation:
+            self.notify("No investigation loaded", severity="error")
+            return
+        action_type = parsed.args[0]
+        try:
+            action = add_action(
+                self.investigation,
+                action_type,
+                parent_id=parsed.options.get("parent"),
+                args=parsed.options.get("args") or {},
+                description=parsed.options.get("description"),
+                activate=bool(parsed.options.get("activate", True)),
+                app_dir=self.app_dir,
+            )
+        except InvestigationError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        self._order = self.investigation.bfs_order()
+        self.active = load_active(app_dir=self.app_dir)
+        self.notify(
+            f"Added action {action.id} ({action.type})"
+            + (" — activated" if parsed.options.get("activate", True) else "")
+        )
+        if parsed.options.get("activate", True):
+            self._show_current_action(reset=True)
+
+    def _cmd_rm(self, parsed: ParsedCommand, *, force: bool) -> None:
+        if not self.investigation:
+            self.notify("No investigation loaded", severity="error")
+            return
+        action_id = int(parsed.options["action_id"])
+        try:
+            removed = remove_action(
+                self.investigation,
+                action_id,
+                force=force,
+                app_dir=self.app_dir,
+            )
+        except InvestigationError as exc:
+            msg = str(exc)
+            if not force and "--force" in msg:
+                self.push_screen(
+                    ConfirmForceModal(msg),
+                    lambda ok: self._cmd_rm(parsed, force=True) if ok else None,
+                )
+                return
+            self.notify(msg, severity="error")
+            return
+        self._order = self.investigation.bfs_order()
+        self.active = load_active(app_dir=self.app_dir)
+        self.notify("Removed " + ", ".join(str(i) for i in removed))
+        self._show_current_action(reset=True)
 
     def action_back(self) -> None:
         focused = self.focused

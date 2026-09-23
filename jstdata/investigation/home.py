@@ -107,6 +107,7 @@ HOME = register(
         create_screen=create_home_screen,
         arguments=(),
         bindings=(
+            StepBinding(":", "command", "Open command palette"),
             StepBinding("n / p", "navigate", "Next / previous action in BFS order"),
             StepBinding("N / P", "workspace", "Next / previous workspace"),
         ),
