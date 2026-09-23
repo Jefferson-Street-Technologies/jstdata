@@ -662,6 +662,64 @@ def workflow_run(
     )
 
 
+@cli.group("investigation")
+def investigation_group() -> None:
+    """Create and open persistent investigations."""
+
+
+@investigation_group.command("create")
+@click.argument("investigation_id")
+@click.option(
+    "--title",
+    default=None,
+    help="Display title (defaults to the investigation id)",
+)
+def investigation_create(investigation_id: str, title: str | None) -> None:
+    """Create an investigation, activate it, and open the TUI.
+
+    \b
+    jst investigation create housing-slowdown
+    jst investigation create eu-defense --title "European defense constraints"
+    """
+    from .investigation import (
+        InvestigationError,
+        create_investigation,
+        run_investigation_host,
+    )
+
+    try:
+        inv = create_investigation(investigation_id, title=title)
+    except InvestigationError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(2)
+    click.echo(f"Created investigation {inv.id!r} ({inv.title})")
+    run_investigation_host(client)
+
+
+@investigation_group.command("load")
+@click.argument("investigation_id")
+def investigation_load(investigation_id: str) -> None:
+    """Load an investigation, activate it, and open the TUI.
+
+    \b
+    jst investigation load tutorial
+    jst investigation load housing-slowdown
+    """
+    from .investigation import (
+        InvestigationError,
+        open_investigation,
+        run_investigation_host,
+    )
+
+    try:
+        inv = open_investigation(investigation_id)
+    except InvestigationError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(2)
+    click.echo(f"Loaded investigation {inv.id!r} ({inv.title})")
+    run_investigation_host(client)
+
+
 if __name__ == "__main__":
     try:
         cli()

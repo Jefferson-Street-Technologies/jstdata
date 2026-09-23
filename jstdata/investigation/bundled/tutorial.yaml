@@ -1,0 +1,18 @@
+id: tutorial
+title: Welcome to Jefferson Street
+workspaces:
+- id: 0
+  label: Scratch
+  description: >-
+    An empty workspace to stage metrics, entities, and series as you explore.
+    Hand-edit this investigation YAML or use step UIs; V0 keeps structural
+    action changes in the file / Python API.
+actions:
+- id: 0
+  type: home
+  description: >-
+    Jefferson Street is an IDE for financial research in the terminal.
+    You and an agent share an investigation — a tree of analytical actions
+    over staged workspaces. Use n/p to move through actions. Edit this YAML
+    (or ~/.jstdata/.active.yaml) and the TUI will pick up the change.
+  args: {}

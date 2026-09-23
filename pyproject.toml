@@ -5,7 +5,10 @@ description = "Python API, CLI, and interactive workflows for Jefferson Street f
 authors = ["Mahfuj Ahbab"]
 readme = "README.md"
 license = "MIT"
-include = ["jstdata/workflows/bundled/*.yaml"]
+include = [
+    "jstdata/workflows/bundled/*.yaml",
+    "jstdata/investigation/bundled/*.yaml",
+]
 homepage = "https://github.com/Jefferson-Street-Technologies/jstdata"
 repository = "https://github.com/Jefferson-Street-Technologies/jstdata"
 keywords = ["api", "cli", "data", "jefferson street", "economics", "finance"]

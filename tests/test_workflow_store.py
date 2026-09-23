@@ -50,7 +50,10 @@ def test_create_save_load_round_trip(tmp_path: Path):
     assert loaded.description == "Countries by GDP"
     assert [s.id for s in loaded.steps] == ["console", "rank"]
     assert loaded.steps[0].args == {"taxonomy": "country"}
-    assert loaded.steps[1].args == {"taxonomy": "country"}
+    assert loaded.steps[1].args == {
+        "taxonomy": "country",
+        "session_entities": True,
+    }
 
     tokens = workflow_to_tokens(loaded)
     assert tokens == [
@@ -61,9 +64,11 @@ def test_create_save_load_round_trip(tmp_path: Path):
         "rank",
         "--taxonomy",
         "country",
+        "--session-entities",
     ]
-    assert "console --taxonomy country : rank --taxonomy country" == format_pipeline(
-        loaded
+    assert (
+        "console --taxonomy country : rank --taxonomy country --session-entities"
+        == format_pipeline(loaded)
     )
 
     resolved = resolve_saved_workflow(loaded)

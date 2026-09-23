@@ -1,0 +1,1 @@
+"""Bundled investigation templates."""
