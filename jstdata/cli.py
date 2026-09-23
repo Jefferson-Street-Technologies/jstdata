@@ -720,6 +720,143 @@ def investigation_load(investigation_id: str) -> None:
     run_investigation_host(client)
 
 
+@investigation_group.command("ls")
+def investigation_ls() -> None:
+    """List investigations on disk (active marked with *).
+
+    \b
+    jst investigation ls
+    """
+    from .investigation import (
+        ensure_bootstrap,
+        get_active,
+        list_investigations,
+        load_investigation,
+    )
+    from .investigation.store import investigations_dir
+
+    ensure_bootstrap()
+    try:
+        active_id = get_active().investigation
+    except Exception:
+        active_id = None
+
+    ids = list_investigations()
+    if not ids:
+        click.echo("No investigations.")
+        return
+    root = investigations_dir()
+    for inv_id in ids:
+        marker = "*" if inv_id == active_id else " "
+        try:
+            inv = load_investigation(inv_id, root=root)
+            title = inv.title
+        except Exception:
+            title = "?"
+        click.echo(f"{marker} {inv_id:<28} {title}")
+
+
+@investigation_group.command("add")
+@click.argument("action_type")
+@click.option(
+    "--args",
+    "args_json",
+    default=None,
+    help='JSON object of step kwargs, e.g. \'{"taxonomy":"country"}\'',
+)
+@click.option(
+    "--parent",
+    "parent_id",
+    type=int,
+    default=None,
+    help="Parent action id (default: active action)",
+)
+@click.option(
+    "--description",
+    default=None,
+    help="Optional action description",
+)
+@click.option(
+    "--activate",
+    is_flag=True,
+    default=False,
+    help="Make the new action active after creating it",
+)
+def investigation_add(
+    action_type: str,
+    args_json: str | None,
+    parent_id: int | None,
+    description: str | None,
+    activate: bool,
+) -> None:
+    """Add an action under the active investigation.
+
+    \b
+    jst investigation add console
+    jst investigation add console --args '{"taxonomy":"country"}'
+    jst investigation add discover --parent 0 --activate
+    """
+    from .investigation import (
+        InvestigationError,
+        add_action,
+        parse_action_args_json,
+        require_active_investigation,
+    )
+
+    try:
+        inv, _ctx = require_active_investigation()
+        args = parse_action_args_json(args_json)
+        action = add_action(
+            inv,
+            action_type,
+            parent_id=parent_id,
+            args=args,
+            description=description,
+            activate=activate,
+        )
+    except InvestigationError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(2)
+    click.echo(
+        f"Added action {action.id} type={action.type} "
+        f"parent={action.parent_id}"
+        + (" (activated)" if activate else "")
+    )
+
+
+@investigation_group.command("rm")
+@click.argument("action_id", type=int)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Required to remove an action with children, or the active action",
+)
+def investigation_rm(action_id: int, force: bool) -> None:
+    """Remove an action (and descendants) from the active investigation.
+
+    \b
+    jst investigation rm 3
+    jst investigation rm 1 --force
+    """
+    from .investigation import (
+        InvestigationError,
+        remove_action,
+        require_active_investigation,
+    )
+
+    try:
+        inv, _ctx = require_active_investigation()
+        removed = remove_action(inv, action_id, force=force)
+    except InvestigationError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(2)
+    click.echo(
+        f"Removed action{'s' if len(removed) != 1 else ''} "
+        + ", ".join(str(i) for i in removed)
+    )
+
+
 if __name__ == "__main__":
     try:
         cli()

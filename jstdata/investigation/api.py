@@ -1,11 +1,12 @@
-"""Barebones Python API for investigations (V0).
+"""Investigation domain API (create/load + V1 mutation helpers).
 
-Human/agent live mutation arrives in V1 (CLI) and V2 (TUI). This module is the
-shared domain surface those interfaces will call.
+CLI and (later) TUI command mode call into this module rather than
+manipulating YAML ad hoc.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Optional
 
@@ -134,8 +135,11 @@ def add_action(
     activate: bool = False,
     app_dir: Optional[Path] = None,
     persist: bool = True,
+    validate_type: bool = True,
 ) -> Action:
     """Add a child action. Default parent is the current active action."""
+    if validate_type:
+        validate_action_type(action_type)
     if parent_id is None:
         ctx = try_load_active(app_dir=app_dir)
         if ctx is None or ctx.investigation != inv.id:
@@ -163,10 +167,42 @@ def remove_action(
     inv: Investigation,
     action_id: int,
     *,
+    force: bool = False,
     app_dir: Optional[Path] = None,
     persist: bool = True,
 ) -> list[int]:
-    """Cascade-delete an action and its descendants."""
+    """Cascade-delete an action and its descendants.
+
+    ``force`` is required when the action has children, or when it is the
+    active action of the active investigation.
+    """
+    if action_id == ROOT_ACTION_ID:
+        raise InvestigationError("Cannot remove the root action.")
+    if action_id not in inv.actions:
+        raise InvestigationError(
+            f"Unknown action {action_id} in investigation {inv.id!r}."
+        )
+
+    subtree = inv.subtree_ids(action_id)
+    has_children = len(subtree) > 1
+    ctx = try_load_active(app_dir=app_dir)
+    is_active = bool(
+        ctx and ctx.investigation == inv.id and ctx.action == action_id
+    )
+    if (has_children or is_active) and not force:
+        reasons: list[str] = []
+        if has_children:
+            reasons.append(
+                f"action {action_id} has {len(subtree) - 1} descendant(s)"
+            )
+        if is_active:
+            reasons.append("action is the active action")
+        raise InvestigationError(
+            "Refusing to remove: "
+            + "; ".join(reasons)
+            + ". Pass --force to confirm."
+        )
+
     removed = inv.remove_action_cascade(action_id)
     if persist:
         persist_investigation(inv, app_dir=app_dir)
@@ -181,6 +217,44 @@ def remove_action(
             app_dir=app_dir,
         )
     return removed
+
+
+def require_active_investigation(
+    *, app_dir: Optional[Path] = None
+) -> tuple[Investigation, ActiveContext]:
+    """Load the investigation named by ``.active.yaml``."""
+    ensure_bootstrap(app_dir=app_dir)
+    ctx = get_active(app_dir=app_dir)
+    inv = get_investigation(ctx.investigation, app_dir=app_dir)
+    return inv, ctx
+
+
+def parse_action_args_json(raw: Optional[str]) -> dict[str, Any]:
+    """Parse the ``--args`` JSON object (default empty)."""
+    if raw is None or raw.strip() == "":
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise InvestigationError(f"Invalid --args JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise InvestigationError("--args must be a JSON object.")
+    return data
+
+
+def validate_action_type(action_type: str) -> str:
+    """Ensure ``action_type`` is a registered step id."""
+    # Register built-in steps + home.
+    import jstdata.workflows  # noqa: F401
+    import jstdata.investigation.home  # noqa: F401
+
+    from ..workflows.base import get_step
+
+    try:
+        get_step(action_type)
+    except KeyError as exc:
+        raise InvestigationError(str(exc)) from exc
+    return action_type
 
 
 def sync_workspace_from_session(
@@ -212,8 +286,11 @@ __all__ = [
     "get_investigation",
     "list_investigations",
     "open_investigation",
+    "parse_action_args_json",
     "persist_investigation",
     "remove_action",
+    "require_active_investigation",
     "set_active",
     "sync_workspace_from_session",
+    "validate_action_type",
 ]

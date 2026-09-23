@@ -22,6 +22,7 @@ from jstdata.investigation import (
     create_investigation,
     ensure_bootstrap,
     get_active,
+    get_investigation,
     load_bundled_tutorial,
     load_investigation,
     open_investigation,
@@ -154,9 +155,122 @@ def test_create_and_open_api(tmp_path: Path):
     open_investigation("housing", app_dir=tmp_path)
     assert get_active(app_dir=tmp_path).action == child.id
 
-    remove_action(inv, child.id, app_dir=tmp_path)
+    remove_action(inv, child.id, force=True, app_dir=tmp_path)
     assert child.id not in inv.actions
     assert get_active(app_dir=tmp_path).action == ROOT_ACTION_ID
+
+
+def test_remove_requires_force_for_active_and_children(tmp_path: Path):
+    ensure_bootstrap(app_dir=tmp_path)
+    inv = create_investigation("force-rm", app_dir=tmp_path)
+    parent = add_action(inv, "console", app_dir=tmp_path)
+    child = add_action(inv, "discover", parent_id=parent.id, app_dir=tmp_path)
+
+    with pytest.raises(InvestigationError, match="descendant"):
+        remove_action(inv, parent.id, app_dir=tmp_path)
+
+    # Activate leaf, then refuse without --force
+    from jstdata.investigation import set_active
+
+    set_active("force-rm", action=child.id, app_dir=tmp_path)
+    with pytest.raises(InvestigationError, match="active action"):
+        remove_action(inv, child.id, app_dir=tmp_path)
+
+    removed = remove_action(inv, parent.id, force=True, app_dir=tmp_path)
+    assert set(removed) == {parent.id, child.id}
+    assert get_active(app_dir=tmp_path).action == ROOT_ACTION_ID
+
+
+def test_parse_action_args_json():
+    from jstdata.investigation import parse_action_args_json
+
+    assert parse_action_args_json(None) == {}
+    assert parse_action_args_json('{"taxonomy":"country"}') == {"taxonomy": "country"}
+    with pytest.raises(InvestigationError, match="JSON"):
+        parse_action_args_json("{")
+    with pytest.raises(InvestigationError, match="object"):
+        parse_action_args_json("[1,2]")
+
+
+def test_cli_ls_add_rm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from jstdata import investigation as inv_pkg
+    from jstdata.investigation import api as api_mod
+
+    def with_tmp(fn):
+        def wrapped(*args, **kwargs):
+            kwargs.setdefault("app_dir", tmp_path)
+            return fn(*args, **kwargs)
+
+        return wrapped
+
+    monkeypatch.setattr(inv_pkg, "ensure_bootstrap", with_tmp(api_mod.ensure_bootstrap))
+    monkeypatch.setattr(inv_pkg, "get_active", with_tmp(api_mod.get_active))
+    monkeypatch.setattr(
+        inv_pkg, "list_investigations",
+        lambda **kw: api_mod.list_investigations(root=tmp_path / "investigations"),
+    )
+    monkeypatch.setattr(
+        "jstdata.investigation.store.investigations_dir",
+        lambda **kw: tmp_path / "investigations",
+    )
+    monkeypatch.setattr(
+        inv_pkg,
+        "load_investigation",
+        lambda iid, root=None, **kw: api_mod.get_investigation(iid, app_dir=tmp_path),
+    )
+    monkeypatch.setattr(
+        inv_pkg,
+        "require_active_investigation",
+        with_tmp(api_mod.require_active_investigation),
+    )
+    monkeypatch.setattr(inv_pkg, "add_action", with_tmp(api_mod.add_action))
+    monkeypatch.setattr(inv_pkg, "remove_action", with_tmp(api_mod.remove_action))
+    monkeypatch.setattr(inv_pkg, "parse_action_args_json", api_mod.parse_action_args_json)
+
+    ensure_bootstrap(app_dir=tmp_path)
+    create_investigation("alpha", title="Alpha", app_dir=tmp_path)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["investigation", "ls"])
+    assert result.exit_code == 0, result.output
+    assert "* alpha" in result.output
+    assert "tutorial" in result.output
+
+    result = runner.invoke(
+        cli,
+        [
+            "investigation",
+            "add",
+            "console",
+            "--args",
+            '{"taxonomy":"country"}',
+            "--description",
+            "browse",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Added action 1 type=console parent=0" in result.output
+    inv = get_investigation("alpha", app_dir=tmp_path)
+    assert inv.actions[1].args == {"taxonomy": "country"}
+    assert get_active(app_dir=tmp_path).action == ROOT_ACTION_ID
+
+    result = runner.invoke(cli, ["investigation", "add", "discover", "--activate"])
+    assert result.exit_code == 0, result.output
+    assert "(activated)" in result.output
+    assert get_active(app_dir=tmp_path).action == 2
+
+    result = runner.invoke(cli, ["investigation", "rm", "2"])
+    assert result.exit_code == 2
+    assert "--force" in result.output
+
+    result = runner.invoke(cli, ["investigation", "rm", "2", "--force"])
+    assert result.exit_code == 0, result.output
+    assert "Removed action 2" in result.output
+    assert get_active(app_dir=tmp_path).action == ROOT_ACTION_ID
+
+    result = runner.invoke(cli, ["investigation", "add", "not-a-step"])
+    assert result.exit_code == 2
+    assert "Unknown step" in result.output
 
 
 def test_home_step_registered():

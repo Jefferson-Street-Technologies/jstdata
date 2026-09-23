@@ -7,10 +7,13 @@ from .api import (
     get_active,
     get_investigation,
     open_investigation,
+    parse_action_args_json,
     persist_investigation,
     remove_action,
+    require_active_investigation,
     set_active,
     sync_workspace_from_session,
+    validate_action_type,
 )
 from .bootstrap import ensure_bootstrap, load_bundled_tutorial
 from .host import InvestigationHost, run_investigation_host
@@ -56,12 +59,15 @@ __all__ = [
     "load_bundled_tutorial",
     "load_investigation",
     "open_investigation",
+    "parse_action_args_json",
     "persist_investigation",
     "remove_action",
+    "require_active_investigation",
     "run_investigation_host",
     "save_active",
     "save_investigation",
     "set_active",
     "sync_workspace_from_session",
+    "validate_action_type",
     "validate_investigation_id",
 ]
