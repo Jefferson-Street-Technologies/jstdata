@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
+import csv
 from dataclasses import asdict, dataclass, field
-from typing import Any, Mapping, Optional
+from datetime import datetime
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, List, Mapping, Optional, Union
 
-from ..session import Session
+if TYPE_CHECKING:
+    import pandas as pd
+
+    from ..client import JSTDataClient
+    from ..models import TimeSeries
+
+PathLike = Union[str, Path]
 
 ROOT_ACTION_ID = 0
 DEFAULT_WORKSPACE_ID = 0
@@ -17,9 +26,11 @@ class InvestigationError(ValueError):
 
 @dataclass
 class Workspace:
-    """Investigation-scoped analytical state (formerly Session).
+    """Staged analytical intent inside an investigation.
 
-    Ids are numerical. ``label`` is a TUI convenience only.
+    Mirrors ``JSTDataClient.query`` / ``jst api query`` parameters. No
+    observations — only resource ids and filters. Ids are numerical;
+    ``label`` / ``description`` are TUI conveniences.
     """
 
     id: int = DEFAULT_WORKSPACE_ID
@@ -40,41 +51,154 @@ class Workspace:
     end_time: Optional[int] = None
     order_by: Optional[str] = None
 
-    def to_session(self) -> Session:
-        """Project workspace resource selectors into a Session for steps."""
-        return Session(
-            metric=list(self.metric),
-            entity=list(self.entity),
-            series=list(self.series),
-            frequency=self.frequency,
-            taxonomy=self.taxonomy,
-            head=self.head,
-            tail=self.tail,
-            as_of=self.as_of,
-            sort_by=self.sort_by,
-            start_date=self.start_date,
-            end_date=self.end_date,
-            start_time=self.start_time,
-            end_time=self.end_time,
-            order_by=self.order_by,
+    def is_empty(self) -> bool:
+        """True when the workspace has no resource selectors."""
+        return not (self.metric or self.entity or self.series)
+
+    def resource_ids(self) -> list[str]:
+        """All metric, entity, and series IDs in the workspace."""
+        return [*self.metric, *self.entity, *self.series]
+
+    def to_query_kwargs(self) -> dict[str, Any]:
+        """kwargs suitable for ``JSTDataClient.query`` / ``query_df``.
+
+        Date/time fields are ignored: ``/query`` is head/tail/as_of only.
+        """
+        kwargs: dict[str, Any] = {}
+        if self.metric:
+            kwargs["metric"] = list(self.metric)
+        if self.entity:
+            kwargs["entity"] = list(self.entity)
+        if self.series:
+            kwargs["series"] = list(self.series)
+        if self.frequency is not None:
+            kwargs["frequency"] = self.frequency
+        if self.taxonomy is not None:
+            kwargs["taxonomy"] = self.taxonomy
+        if self.head is not None:
+            kwargs["head"] = self.head
+        if self.tail is not None:
+            kwargs["tail"] = self.tail
+        if self.as_of is not None:
+            kwargs["as_of"] = self.as_of
+        if self.sort_by is not None:
+            kwargs["sort_by"] = self.sort_by
+        if self.order_by is not None:
+            kwargs["order_by"] = self.order_by
+        return kwargs
+
+    def add_metric(self, resource_id: str) -> bool:
+        """Append a metric ID if not already present. Returns True if added."""
+        if resource_id in self.metric:
+            return False
+        self.metric.append(resource_id)
+        return True
+
+    def add_entity(self, resource_id: str) -> bool:
+        """Append an entity ID if not already present. Returns True if added."""
+        if resource_id in self.entity:
+            return False
+        self.entity.append(resource_id)
+        return True
+
+    def add_series(self, resource_id: str) -> bool:
+        """Append a series ID if not already present. Returns True if added."""
+        if resource_id in self.series:
+            return False
+        self.series.append(resource_id)
+        return True
+
+    def remove_id(self, resource_id: str) -> bool:
+        """Remove an ID from metric/entity/series lists. Returns True if removed."""
+        removed = False
+        for collection in (self.metric, self.entity, self.series):
+            while resource_id in collection:
+                collection.remove(resource_id)
+                removed = True
+        return removed
+
+    def execute(
+        self, client: JSTDataClient, **overrides: Any
+    ) -> List[TimeSeries]:
+        """Run this workspace against ``client.query``."""
+        kwargs = self.to_query_kwargs()
+        kwargs.update(overrides)
+        return client.query(**kwargs)
+
+    def execute_df(self, client: JSTDataClient, **overrides: Any) -> pd.DataFrame:
+        """Run this workspace and return a flattened DataFrame."""
+        kwargs = self.to_query_kwargs()
+        kwargs.update(overrides)
+        return client.query_df(**kwargs)
+
+    def to_cli(self, program: str = "jst") -> str:
+        """Render a reproducible ``jst api query`` invocation."""
+        parts = [program, "api", "query"]
+        for m in self.metric:
+            parts.append(f"--metric {m}")
+        for e in self.entity:
+            parts.append(f"--entity {e}")
+        for s in self.series:
+            parts.append(f"--series {s}")
+        if self.frequency:
+            parts.append(f"--frequency {self.frequency}")
+        if self.taxonomy:
+            parts.append(f"--taxonomy {self.taxonomy}")
+        if self.head is not None:
+            parts.append(f"--head {self.head}")
+        if self.tail is not None:
+            parts.append(f"--tail {self.tail}")
+        if self.as_of:
+            parts.append(f"--as-of {self.as_of}")
+        if self.sort_by:
+            parts.append(f"--sort-by {self.sort_by}")
+        return " ".join(parts)
+
+    def to_python(self) -> str:
+        """Render a reproducible Python snippet for this workspace."""
+        kwargs = self.to_query_kwargs()
+        if not kwargs:
+            args = ""
+        else:
+            args = ",\n".join(f"    {key}={value!r}" for key, value in kwargs.items())
+            args = f"\n{args}\n"
+        return (
+            "from jstdata import JSTDataClient\n"
+            "\n"
+            "client = JSTDataClient()\n"
+            f"df = client.query_df({args})\n"
+            "print(df)"
         )
 
-    def apply_session(self, session: Session) -> None:
-        """Copy resource selectors from a live Session into this workspace."""
-        self.metric = list(session.metric)
-        self.entity = list(session.entity)
-        self.series = list(session.series)
-        self.frequency = session.frequency
-        self.taxonomy = session.taxonomy
-        self.head = session.head
-        self.tail = session.tail
-        self.as_of = session.as_of
-        self.sort_by = session.sort_by
-        self.start_date = session.start_date
-        self.end_date = session.end_date
-        self.start_time = session.start_time
-        self.end_time = session.end_time
-        self.order_by = session.order_by
+    def to_csv(
+        self,
+        client: JSTDataClient,
+        path: Optional[PathLike] = None,
+        **overrides: Any,
+    ) -> Path:
+        """Execute this workspace and write observations to a CSV file."""
+        results = self.execute(client, **overrides)
+        out = Path(
+            path
+            if path is not None
+            else f"jst_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        )
+
+        with open(out, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["DATE", "LABEL", "VALUE", "UNITS", "SOURCE"])
+            for ts in results:
+                for obs in ts.observations:
+                    writer.writerow(
+                        [
+                            obs.observation_timestamp.strftime("%Y-%m-%d"),
+                            ts.series.label,
+                            obs.value,
+                            ts.series.units,
+                            ts.series.source,
+                        ]
+                    )
+        return out
 
     def resource_fingerprint(self) -> tuple:
         """Comparable snapshot of staged resources + filters."""
@@ -130,7 +254,7 @@ class Workspace:
 
 @dataclass
 class Action:
-    """One use of a reusable step type within an investigation tree."""
+    """One use of a reusable action type within an investigation tree."""
 
     id: int
     type: str

@@ -243,34 +243,17 @@ def parse_action_args_json(raw: Optional[str]) -> dict[str, Any]:
 
 
 def validate_action_type(action_type: str) -> str:
-    """Ensure ``action_type`` is a registered step id."""
-    # Register built-in steps + home.
-    import jstdata.workflows  # noqa: F401
+    """Ensure ``action_type`` is a registered action id."""
+    import jstdata.actions  # noqa: F401
     import jstdata.investigation.home  # noqa: F401
 
-    from ..workflows.base import get_step
+    from ..actions.base import get_action
 
     try:
-        get_step(action_type)
+        get_action(action_type)
     except KeyError as exc:
         raise InvestigationError(str(exc)) from exc
     return action_type
-
-
-def sync_workspace_from_session(
-    inv: Investigation,
-    workspace_id: int,
-    session,
-    *,
-    app_dir: Optional[Path] = None,
-    persist: bool = True,
-) -> Workspace:
-    """Write live Session selectors back into a workspace."""
-    ws = inv.get_workspace(workspace_id)
-    ws.apply_session(session)
-    if persist:
-        persist_investigation(inv, app_dir=app_dir)
-    return ws
 
 
 __all__ = [
@@ -291,6 +274,5 @@ __all__ = [
     "remove_action",
     "require_active_investigation",
     "set_active",
-    "sync_workspace_from_session",
     "validate_action_type",
 ]

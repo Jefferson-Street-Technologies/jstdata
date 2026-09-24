@@ -9,8 +9,8 @@ from textual.screen import Screen
 from textual.widgets import Label, Static
 
 from ..client import JSTDataClient
-from ..session import Session
-from ..workflows.base import StepBinding, StepSpec, register
+from ..investigation.model import Workspace
+from ..actions.base import ActionBinding, ActionSpec, register
 
 
 class HomeScreen(Screen):
@@ -57,7 +57,7 @@ class HomeScreen(Screen):
     def __init__(
         self,
         client: JSTDataClient,
-        session: Session,
+        workspace: Workspace,
         *,
         title: str = "Investigation",
         body: str = "",
@@ -66,7 +66,7 @@ class HomeScreen(Screen):
     ) -> None:
         super().__init__()
         self.client = client
-        self.session = session
+        self.workspace = workspace
         self.home_title = title
         self.body = body
         self.meta = meta
@@ -81,10 +81,10 @@ class HomeScreen(Screen):
                 yield Label(self.meta, id="home-meta")
 
 
-def create_home_screen(client, session, **kwargs):
+def create_home_screen(client, workspace, **kwargs):
     """Factory used by InvestigationHost for ``type: home`` actions.
 
-    Extra kwargs from the host (not StepArgument seeds):
+    Extra kwargs from the host (not ActionArgument seeds):
     ``title``, ``body``, ``meta``.
     """
     title = kwargs.pop("title", "Investigation")
@@ -92,7 +92,7 @@ def create_home_screen(client, session, **kwargs):
     meta = kwargs.pop("meta", "")
     return HomeScreen(
         client,
-        session,
+        workspace,
         title=title,
         body=body,
         meta=meta,
@@ -100,16 +100,16 @@ def create_home_screen(client, session, **kwargs):
 
 
 HOME = register(
-    StepSpec(
+    ActionSpec(
         id="home",
         name="Home",
         description="Investigation welcome / root screen.",
         create_screen=create_home_screen,
         arguments=(),
         bindings=(
-            StepBinding(":", "command", "Open command palette"),
-            StepBinding("n / p", "navigate", "Next / previous action in BFS order"),
-            StepBinding("N / P", "workspace", "Next / previous workspace"),
+            ActionBinding(":", "command", "Open command palette"),
+            ActionBinding("n / p", "navigate", "Next / previous action in BFS order"),
+            ActionBinding("N / P", "workspace", "Next / previous workspace"),
         ),
         example="jst investigation load tutorial",
     )

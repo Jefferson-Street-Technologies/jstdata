@@ -10,8 +10,8 @@ import pytest
 
 from jstdata.models import Resource
 from jstdata.resource_cache import CACHE_TTL, ResourceLabelCache, cache_key
-from jstdata.session import Session
-from jstdata.workflows.base import hydrate_labels
+from jstdata.investigation.model import Workspace
+from jstdata.actions.base import hydrate_labels
 
 
 def test_cache_key():
@@ -33,10 +33,10 @@ def test_hydrate_refreshes_workspace_when_any_stale(tmp_path: Path):
         Resource(id="germany", label="Germany"),
         Resource(id="gdp", label="Gross Domestic Product"),
     ]
-    session = Session(entity=["france", "germany"], metric=["gdp"])
+    workspace = Workspace(entity=["france", "germany"], metric=["gdp"])
     labels: dict[str, str] = {}
 
-    cache.hydrate_session(client, session, labels, now=now)
+    cache.hydrate_workspace(client, workspace, labels, now=now)
 
     client.get_resources.assert_called_once()
     called_ids = client.get_resources.call_args[0][0]
@@ -61,10 +61,10 @@ def test_hydrate_uses_cache_when_all_fresh(tmp_path: Path):
         pulled_at=now - timedelta(hours=1),
     )
     client = MagicMock()
-    session = Session(entity=["france"], metric=["gdp"])
+    workspace = Workspace(entity=["france"], metric=["gdp"])
     labels: dict[str, str] = {}
 
-    cache.hydrate_session(client, session, labels, now=now)
+    cache.hydrate_workspace(client, workspace, labels, now=now)
 
     client.get_resources.assert_not_called()
     assert labels == {"france": "France", "gdp": "GDP"}
@@ -75,10 +75,10 @@ def test_hydrate_labels_wrapper_uses_injected_cache(tmp_path: Path):
     now = datetime.now(timezone.utc)
     cache.put_many([("series", "s1", "Series One")], pulled_at=now)
     client = MagicMock()
-    session = Session(series=["s1"])
+    workspace = Workspace(series=["s1"])
     labels: dict[str, str] = {}
 
-    hydrate_labels(client, session, labels, cache=cache)
+    hydrate_labels(client, workspace, labels, cache=cache)
     client.get_resources.assert_not_called()
     assert labels["s1"] == "Series One"
 
@@ -93,9 +93,9 @@ def test_missing_cache_entry_triggers_full_refresh(tmp_path: Path):
         Resource(id="france", label="France"),
         Resource(id="germany", label="Germany"),
     ]
-    session = Session(entity=["france", "germany"])
+    workspace = Workspace(entity=["france", "germany"])
     labels: dict[str, str] = {}
-    cache.hydrate_session(client, session, labels, now=now)
+    cache.hydrate_workspace(client, workspace, labels, now=now)
 
     client.get_resources.assert_called_once()
     assert set(client.get_resources.call_args[0][0]) == {"france", "germany"}

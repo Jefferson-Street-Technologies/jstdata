@@ -1,6 +1,6 @@
-# AGENTS.md — jstdata workflows
+# AGENTS.md — jstdata investigations
 
-Guidance for humans and agents extending the interactive CLI.
+Guidance for humans and agents **extending** the interactive CLI.
 
 For **how to operate** the product as an agent (policy, modes, recipes), run
 `jst agent-guide`. This file is for **extending** the codebase.
@@ -9,148 +9,139 @@ For **how to operate** the product as an agent (policy, modes, recipes), run
 
 `jstdata` centers on four ideas:
 
-1. **Session** — portable analytical intent (`metric` / `entity` / `series` +
-   `head`/`tail`/`as_of`/`sort_by`/`taxonomy`). Mirrors `JSTDataClient.query`
-   parameters. No observations; can execute, export CSV, or render Python/CLI
-   snippets. **Source of truth** for what is staged. Deep history uses
-   `GET /series/{id}/observations`, not `/query` date windows. There is no
-   session CLI yet — write JSON by hand or via `Session.save` / the export modal.
-2. **Step** — a self-describing interactive TUI that edits a shared `Session`.
-   Steps are order-agnostic: any step must accept an empty or arbitrary session.
-3. **Host** — `WorkflowHost` runs one process over a pipeline of steps. It owns
-   the session for the lifetime of the run, plus a UI-only `labels: dict[id, str]`
-   cache (hydrated from the API; never persisted). Universal UI every step gets:
-   - `s` session modal (list / remove / inspect API JSON)
-   - `f` find modal (search catalog / add to session / inspect; Shift+Tab toggles
-     metrics vs entities)
-   - `e` export modal (copy Python, copy CLI, write session JSON)
-   - `n` / `p` next / previous step
+1. **Workspace** — staged analytical intent inside an investigation (`metric` /
+   `entity` / `series` + `head`/`tail`/`as_of`/`sort_by`/`taxonomy`). Mirrors
+   `JSTDataClient.query` / `jst api query` parameters. No observations. Deep
+   history uses `GET /series/{id}/observations`, not `/query` date windows.
+   Workspaces live in investigation YAML and are the live objects action screens
+   mutate.
+2. **Action** — a self-describing interactive TUI that edits the active
+   workspace. Actions are order-agnostic: any action must accept an empty or
+   arbitrary workspace. Cataloged under `jstdata/actions/`; register via
+   `ActionSpec`.
+3. **Host** — `InvestigationHost` runs one process over an investigation’s
+   action tree. It owns the active workspace + labels cache (hydrated from the
+   API; never persisted in the investigation). Universal UI:
+   - `:` command mode (`:workspace`, `:search`, `:add`, `:rm`, …)
+   - left workspace drawer / bottom search drawer
+   - `n` / `p` next / previous action in the tree
+   - `N` / `P` next / previous workspace
    - `q` quit
-   - `?` step-specific keybindings (from the step’s catalog entry)
-4. **Saved workflow** — named YAML under `~/.jstdata/workflows/` that stores
-   **step topology + step args only** (not session contents). Managed with
-   `jst workflow` (`ls` / `create` / `rm` / `run`). Plural `jst workflows` is a
-   compatibility alias. Bake discovered ids into a session JSON and pass
-   `--session` when running. Bundled workflows (e.g. `tutorial`) ship in-package
-   and are not deletable.
+   - `?` action-specific keybindings (from the catalog entry)
+4. **Investigation** — named YAML under `~/.jstdata/investigations/` that stores
+   **workspaces + action tree** (type, args, parent_id). Managed with
+   `jst investigation` (`create` / `load` / `ls`). Action mutations use
+   `jst action` (`add` / `rm`). Active investigation / workspace / action ids
+   live in `~/.jstdata/.active.yaml`. A bundled tutorial investigation is
+   bootstrapped when none exist.
 
-Composition happens in the **shell**, not a custom DSL:
+Composition is the **action tree**:
 
 ```bash
-jst run STEP [ARGS...] : STEP [ARGS...] : ...
-jst workflow create --id gdp-rank -- console : rank --taxonomy country
-jst workflow run gdp-rank --session labor.json
+jst investigation create gdp-rank
+jst action add console --args '{"taxonomy":"country"}'
+jst action add rank --args '{"taxonomy":"country"}' --activate
+jst investigation load gdp-rank
 ```
 
-Pipeline tokens for `workflow create` must follow a `--` boundary.
+Catalog + `ActionSpec` live in `jstdata/actions/`. The host runtime is
+`jstdata/investigation/host.py`. Actions register via import-time
+`register(ActionSpec)`. Built-in actions today: `console`, `discover`, `rank`.
 
-Catalog + parsing live in `jstdata/workflows/`. The host runtime is
-`workflows/host.py`; shared modals live beside it (`session_manager.py`,
-`find.py`, `export.py`). Steps register via import-time `register(StepSpec)`.
-Built-in steps today: `console`, `discover`, `rank`. The coached tutorial is
-`jst tutorial` (or `jst workflow run tutorial`).
+## Why actions matter
 
-## Why steps matter
+An action is the unit of product surface area. New research UIs should almost
+always be **new actions**, not forks of the console.
 
-A step is the unit of product surface area. New research workflows should almost
-always be **new steps**, not forks of the console.
+Because actions share a workspace and the host’s chrome:
 
-Because steps share a `Session` and the host’s session/export chrome:
+- Users can grow an investigation tree without leaving the process.
+- Workspace staging and search stay consistent.
+- Agents/humans can discover actions via `jst action ls` /
+  `jst action show <id> [--json]` without reading TUI code.
 
-- Users can chain specialized UIs without leaving the process.
-- Export and session management stay consistent.
-- Agents/humans can discover steps via `jst steps` / `jst step <id> [--json]`
-  without reading TUI code.
+Do **not** encode action ordering in metadata. Compatibility is “works with any
+workspace,” including empty.
 
-Do **not** encode step ordering in metadata. Compatibility is “works with any
-session,” including empty.
+## How to create an action
 
-## How to create a step
-
-1. **Add a module** under `jstdata/workflows/` (e.g. `company_selector.py`).
+1. **Add a module** under `jstdata/actions/` (e.g. `company_selector.py`).
 2. **Implement a screen factory**:
 
    ```python
-   def create_my_screen(client, session, **kwargs):
-       # kwargs come from StepArgument CLI flags
-       return MyScreen(client, session, **kwargs)
+   def create_my_screen(client, workspace, **kwargs):
+       # kwargs come from ActionArgument / jst action add --args JSON
+       return MyScreen(client, workspace, **kwargs)
    ```
 
-3. **Register a `StepSpec`**:
+3. **Register an `ActionSpec`**:
 
    ```python
-   from .base import StepArgument, StepBinding, StepSpec, register
+   from .base import ActionArgument, ActionBinding, ActionSpec, register
 
-   MY_STEP = register(
-       StepSpec(
-           id="my-step",                 # CLI id
-           name="My Step",
+   MY_ACTION = register(
+       ActionSpec(
+           id="my-action",               # CLI / YAML type id
+           name="My Action",
            description="One sentence.",
            create_screen=create_my_screen,
            arguments=(
-               StepArgument(
+               ActionArgument(
                    name="industry",
                    type="string",
                    description="Industry filter",
                ),
-               # Use multiple=True for repeatable flags (e.g. console --relation)
+               # Use multiple=True for list-valued seed args
            ),
            bindings=(
-               StepBinding("i", "inspect", "Inspect highlighted item"),
-               # Shown under ? and in `jst step my-step`
+               ActionBinding("i", "inspect", "Inspect highlighted item"),
+               # Shown under ? and in `jst action show my-action`
            ),
-           example="jst run my-step --industry semiconductors : console",
+           example=(
+               "jst action add my-action --args "
+               "'{\"industry\":\"semiconductors\"}'"
+           ),
        )
    )
    ```
 
-4. **Import the module** from `jstdata/workflows/__init__.py` so it registers
+4. **Import the module** from `jstdata/actions/__init__.py` so it registers
    (same pattern as `console` / `discover` / `rank`).
-5. **Implement the Textual `Screen`** so it mutates `session` only. When adding a
-   resource, also call `app.remember_label(id, label)` so host UI can show names.
-   Rely on host `s` / `f` / `e` for shared session/find/export UI; only declare
-   step-local keys on `bindings` and implement matching `action_*` methods.
+5. **Implement the Textual `Screen`** so it mutates `workspace` only. When adding
+   a resource, also call `app.remember_label(id, label)` so host UI can show
+   names. Rely on host `:` / drawers for shared workspace/search UI; only declare
+   action-local keys on `bindings` and implement matching `action_*` methods.
 
-Seed flags go on `arguments`. They configure the TUI; they do not replace
-interactive use. List-valued args round-trip through YAML / `workflow_to_tokens`
-as repeated `--flag` values.
+Seed args go on `arguments`. They configure the TUI via
+`jst action add <id> --args '{...}'`; they do not replace interactive use.
 
-## How to use a step
+## How to use an action
 
 | Goal | Command |
 |------|---------|
-| List steps | `jst steps` / `jst steps --json` |
-| Describe one step | `jst step <id>` / `jst step <id> --json` |
-| Run alone | `jst run console` / `jst run discover --mode union` / `jst run rank --taxonomy country` |
-| Scope console | `jst run console --taxonomy country --resource-type entity` |
-| Relation-scoped console | `jst run console --relation classified_as:sic:3674 --resource-type entity` |
-| Rank session entities | `jst run --session eu.json rank` (auto when session has entities) |
-| Discover session metrics | `jst run --session eu.json discover` (auto when session has metrics; `--session-metrics=false` for full candidates) |
-| Preload session JSON | `jst run --session path.json console` |
-| Set default export path | `jst run --output out.json console` |
-| Chain steps | `jst run console --taxonomy country : discover : rank --taxonomy country` |
-| Save a workflow | `jst workflow create --id gdp-rank -- console : rank --taxonomy country` |
-| Run a workflow | `jst workflow run gdp-rank --session labor.json` |
-| Tutorial | `jst tutorial` |
+| List actions | `jst action ls` / `jst action ls --json` |
+| Describe one action | `jst action show <id>` / `jst action show <id> --json` |
+| Create investigation | `jst investigation create <id>` |
+| Open investigation | `jst investigation load <id>` |
+| List investigations | `jst investigation ls` |
+| Add action | `jst action add console --args '{"taxonomy":"country"}'` |
+| Add and activate | `jst action add discover --activate` |
+| Remove action | `jst action rm <action-id> --force` |
+| Resolve resources | `jst api metric search …` / `jst api entity search …` |
+| Query / observations | `jst api query …` / `jst api series observations …` |
 | Agent bootstrap | `jst agent-guide` |
-| Inside the TUI | `s` session · `f` find · `e` export · `n`/`p` navigate · `?` step keys · `q` quit |
+| Inside the TUI | `:` commands · `n`/`p` actions · `N`/`P` workspaces · `?` · `q` |
 
-There is **no in-UI “load session” picker**. To reload, quit, recall the command
-from shell history, and add `--session`.
-
-Session writes happen from the export modal (`e`). The host picks a unique
-default filename unless `--output` is set.
-
-## Catalog / search notes (for step authors)
+## Catalog / search notes (for action authors)
 
 - Prefer `client.search_entities` / `search_metrics` with optional query (omit query
-  to list a filtered set). Support `--taxonomy`, repeatable anchors, and
-  `--mode union|intersect` where the API does.
-- Entity search also accepts repeatable `--relation` values
+  to list a filtered set). Support taxonomy, repeatable anchors, and
+  `mode union|intersect` where the API does.
+- Entity search also accepts repeatable relation values
   (`<relationship_type>:<to_entity_id>`, OR'd). Split on the **first** colon so
   ids like `sic:3674` stay intact. Types: `equivalent_to`, `classified_as`,
   `part_of`, `has_security` (not `identity` — use taxonomy for membership).
-- Taxonomy membership for query/rank is the population bound (`--taxonomy`), not
-  a generic graph filter. Rank scopes to session entity ids on `/query` by
-  default when the session has entities; use `--session-entities=false` to rank
-  the full taxonomy/all population instead.
+- Taxonomy membership for query/rank is the population bound (`taxonomy`), not
+  a generic graph filter. Rank scopes to workspace entity ids on `/query` by
+  default when the workspace has entities; use `workspace_entities=false` in
+  `--args` to rank the full taxonomy/all population instead.

@@ -1,6 +1,6 @@
 from .client import JSTDataClient
 from .models import Entity, Metric, Series, Observation, Taxonomy
-from .session import Session
+from .investigation.model import Workspace
 
 __all__ = [
     "JSTDataClient",
@@ -9,5 +9,5 @@ __all__ = [
     "Series",
     "Observation",
     "Taxonomy",
-    "Session",
+    "Workspace",
 ]

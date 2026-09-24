@@ -1,4 +1,4 @@
-"""Discover step — metric candidates for session entities, with a preview chart."""
+"""Discover action — metric candidates for workspace entities, with a preview chart."""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ from textual.widgets import Input, Label, ListItem, ListView, Static
 
 from ..client import JSTDataClient
 from ..models import Metric, TimeSeries
-from ..session import Session
-from .base import StepArgument, StepBinding, StepSpec, label_for, register
+from ..investigation.model import Workspace
+from .base import ActionArgument, ActionBinding, ActionSpec, label_for, register
 from .chart import LABEL_WIDTH, pick_frequency, pick_series_per_entity, render_preview
 
 PAGE_SIZE = 20
@@ -61,7 +61,7 @@ class DiscoverScreen(Screen):
             priority=True,
         ),
         Binding("enter", "preview_metric", "Preview metric", priority=True),
-        Binding("space", "add_metric", "Add metric to session", priority=True),
+        Binding("space", "add_metric", "Add metric to workspace", priority=True),
         Binding("j", "cursor_down", "Move highlight down", show=False),
         Binding("k", "cursor_up", "Move highlight up", show=False),
     ]
@@ -151,15 +151,15 @@ class DiscoverScreen(Screen):
     def __init__(
         self,
         client: JSTDataClient,
-        session: Session,
+        workspace: Workspace,
         mode: str = "union",
-        session_metrics: bool = True,
+        workspace_metrics: bool = True,
     ):
         super().__init__()
         self.client = client
-        self.session = session
+        self.workspace = workspace
         self.mode = mode if mode in MODES else "union"
-        self.session_metrics = bool(session_metrics)
+        self.workspace_metrics = bool(workspace_metrics)
         self.filter_query = ""
         self.page_offset = 0
         self.has_more = False
@@ -173,12 +173,12 @@ class DiscoverScreen(Screen):
         with Vertical(id="discover-body"):
             with Horizontal(id="top-row"):
                 with Vertical(classes="pane-container", id="entities-pane"):
-                    yield Label("ENTITIES // SESSION", classes="pane-header")
+                    yield Label("ENTITIES // WORKSPACE", classes="pane-header")
                     yield ListView(id="entities-list")
                     yield Static(
-                        "No entities in session.\n\n"
+                        "No entities in workspace.\n\n"
                         "Press [bold]f[/bold] to find entities and add them.\n"
-                        "Metrics in this step are generated from that set.",
+                        "Metrics in this action are generated from that set.",
                         id="empty-prompt",
                         markup=True,
                     )
@@ -221,9 +221,9 @@ class DiscoverScreen(Screen):
         return getattr(self.app, "labels", {})
 
     def _refresh_help_hint(self) -> None:
-        n = getattr(self.app, "step_count", 1)
-        i = getattr(self.app, "step_index", 0) + 1
-        scope = "session metrics" if self._using_session_metrics() else f"mode {self.mode}"
+        n = getattr(self.app, "action_count", 1)
+        i = getattr(self.app, "action_index", 0) + 1
+        scope = "workspace metrics" if self._using_workspace_metrics() else f"mode {self.mode}"
         parts = [
             f"discover {i}/{n}",
             scope,
@@ -232,7 +232,7 @@ class DiscoverScreen(Screen):
             "[bold]space[/bold] add",
             "[bold]tab[/bold] panes",
             "[bold]j/k[/bold] move",
-            "[bold]s[/bold] session",
+            "[bold]:[/bold] workspace",
             "[bold]f[/bold] find",
             "[bold]e[/bold] export",
             "[bold]n[/bold]/[bold]p[/bold]",
@@ -241,13 +241,13 @@ class DiscoverScreen(Screen):
         ]
         self.query_one("#help-hint").update(" // ".join(parts))
 
-    def _using_session_metrics(self) -> bool:
-        """True when the metrics pane is limited to non-empty session.metric."""
-        return bool(self.session_metrics and self.session.metric)
+    def _using_workspace_metrics(self) -> bool:
+        """True when the metrics pane is limited to non-empty workspace.metric."""
+        return bool(self.workspace_metrics and self.workspace.metric)
 
     def _sync_entities(self, force: bool = False) -> None:
-        entity_snap = tuple(self.session.entity)
-        metric_snap = tuple(self.session.metric)
+        entity_snap = tuple(self.workspace.entity)
+        metric_snap = tuple(self.workspace.metric)
         if (
             not force
             and entity_snap == self._entity_snapshot
@@ -280,9 +280,9 @@ class DiscoverScreen(Screen):
         self._refresh_help_hint()
         self.load_metrics(reset=True)
 
-    async def _fetch_session_metrics(self) -> list[Metric]:
-        """Resolve session metric ids to Metric rows, optionally name-filtered."""
-        ids = list(self.session.metric)
+    async def _fetch_workspace_metrics(self) -> list[Metric]:
+        """Resolve workspace metric ids to Metric rows, optionally name-filtered."""
+        ids = list(self.workspace.metric)
         labels = self._labels()
         missing = [mid for mid in ids if mid not in labels]
         if missing:
@@ -307,7 +307,7 @@ class DiscoverScreen(Screen):
 
     @work(exclusive=True, group="metrics")
     async def load_metrics(self, reset: bool = False) -> None:
-        if not self.session.entity:
+        if not self.workspace.entity:
             self.loading_more = False
             return
         if reset:
@@ -316,15 +316,15 @@ class DiscoverScreen(Screen):
         status = self.query_one("#metrics-status")
         status.update("Loading metrics…")
         query = self.filter_query.strip() or None
-        using_session = self._using_session_metrics()
+        using_workspace = self._using_workspace_metrics()
         try:
-            if using_session:
-                metrics = await self._fetch_session_metrics()
+            if using_workspace:
+                metrics = await self._fetch_workspace_metrics()
             else:
                 metrics = await asyncio.to_thread(
                     self.client.search_metrics,
                     query,
-                    entity=list(self.session.entity),
+                    entity=list(self.workspace.entity),
                     mode=self.mode,
                     limit=PAGE_SIZE,
                     offset=self.page_offset,
@@ -337,17 +337,17 @@ class DiscoverScreen(Screen):
             self._metrics = []
             self.query_one("#metrics-list", ListView).clear()
         self._metrics.extend(metrics)
-        self.has_more = (not using_session) and len(metrics) == PAGE_SIZE
+        self.has_more = (not using_workspace) and len(metrics) == PAGE_SIZE
         list_view = self.query_one("#metrics-list", ListView)
-        staged = set(self.session.metric)
+        staged = set(self.workspace.metric)
         for metric in metrics:
             list_view.append(MetricRow(metric, staged=metric.id in staged))
         shown = len(self._metrics)
         extra = "+" if self.has_more else ""
-        if using_session:
-            qlabel = f"“{query}”" if query else "session"
+        if using_workspace:
+            qlabel = f"“{query}”" if query else "workspace"
             status.update(f"{shown} · {qlabel}")
-            self.query_one("#metrics-header").update("METRICS // SESSION")
+            self.query_one("#metrics-header").update("METRICS // WORKSPACE")
         else:
             qlabel = f"“{query}”" if query else "all"
             status.update(f"{shown}{extra} · {qlabel} · {self.mode}")
@@ -428,12 +428,12 @@ class DiscoverScreen(Screen):
         if metric is None:
             self.notify("Highlight a metric first", severity="warning")
             return
-        if not self.session.add_metric(metric.id):
-            self.notify(f"{metric.id} is already in session", severity="warning")
+        if not self.workspace.add_metric(metric.id):
+            self.notify(f"{metric.id} is already in workspace", severity="warning")
             return
         if hasattr(self.app, "remember_label"):
             self.app.remember_label(metric.id, metric.name or metric.id)
-        self.notify(f"Added {metric.id} to session")
+        self.notify(f"Added {metric.id} to workspace")
         child = self.query_one("#metrics-list", ListView).highlighted_child
         if isinstance(child, MetricRow):
             child.staged = True
@@ -478,7 +478,7 @@ class DiscoverScreen(Screen):
     async def run_preview(self, metric: Metric) -> None:
         chart = self.query_one("#preview-chart", Static)
         header = self.query_one("#preview-header")
-        if not self.session.entity:
+        if not self.workspace.entity:
             chart.update("Add entities before previewing.")
             return
         header.update(f"PREVIEW // {metric.name}")
@@ -487,7 +487,7 @@ class DiscoverScreen(Screen):
             series_list: list[TimeSeries] = await asyncio.to_thread(
                 self.client.query,
                 metric=metric.id,
-                entity=list(self.session.entity),
+                entity=list(self.workspace.entity),
                 tail=PREVIEW_TAIL,
             )
         except Exception as e:
@@ -497,7 +497,7 @@ class DiscoverScreen(Screen):
         if not frequency:
             chart.update("No observations in the preview window.")
             return
-        picked = pick_series_per_entity(series_list, self.session.entity, frequency)
+        picked = pick_series_per_entity(series_list, self.workspace.entity, frequency)
         units = next(
             (ts.series.units for ts in picked.values() if ts is not None),
             "",
@@ -507,7 +507,7 @@ class DiscoverScreen(Screen):
             metric.name,
             frequency,
             units,
-            {eid: label_for(self._labels(), eid) for eid in self.session.entity},
+            {eid: label_for(self._labels(), eid) for eid in self.workspace.entity},
             picked,
             bar_width=width,
         )
@@ -515,58 +515,58 @@ class DiscoverScreen(Screen):
 
 
 def create_discover_screen(
-    client, session, mode="union", session_metrics=True, **kwargs
+    client, workspace, mode="union", workspace_metrics=True, **kwargs
 ):
     return DiscoverScreen(
-        client, session, mode=mode, session_metrics=session_metrics
+        client, workspace, mode=mode, workspace_metrics=workspace_metrics
     )
 
 
 DISCOVER = register(
-    StepSpec(
+    ActionSpec(
         id="discover",
         name="Discover",
         description=(
-            "Find metrics related to session entities, preview recent coverage, "
+            "Find metrics related to workspace entities, preview recent coverage, "
             "and stage promising metrics."
         ),
         create_screen=create_discover_screen,
         arguments=(
-            StepArgument(
+            ActionArgument(
                 name="mode",
                 type="string",
                 description="union (any entity) or intersect (every entity)",
                 default="union",
                 choices=MODES,
             ),
-            StepArgument(
-                name="session_metrics",
+            ActionArgument(
+                name="workspace_metrics",
                 type="boolean",
                 description=(
-                    "When true (default), show only session metrics if any "
+                    "When true (default), show only workspace metrics if any "
                     "are present; with an empty metric list, searches all "
-                    "metrics for the session entities. Set false to always "
+                    "metrics for the workspace entities. Set false to always "
                     "search the full candidate set."
                 ),
                 default=True,
             ),
         ),
         bindings=(
-            StepBinding("/", "focus_filter", "Filter the generated metric list"),
-            StepBinding(
+            ActionBinding("/", "focus_filter", "Filter the generated metric list"),
+            ActionBinding(
                 "enter",
                 "preview_metric",
                 "Preview the latest observations for the highlighted metric",
             ),
-            StepBinding(
-                "space", "add_metric", "Add highlighted metric to the session"
+            ActionBinding(
+                "space", "add_metric", "Add highlighted metric to the workspace"
             ),
-            StepBinding(
+            ActionBinding(
                 "tab", "cycle_panes", "Switch focus between metrics and preview"
             ),
-            StepBinding("j / k", "cursor", "Move metric highlight or scroll preview"),
-            StepBinding("escape", "leave_filter", "Leave the metric filter"),
+            ActionBinding("j / k", "cursor", "Move metric highlight or scroll preview"),
+            ActionBinding("escape", "leave_filter", "Leave the metric filter"),
         ),
-        example="jst run console --taxonomy country : discover --mode union",
+        example="jst action add discover --args '{\"mode\":\"union\"}'",
     )
 )

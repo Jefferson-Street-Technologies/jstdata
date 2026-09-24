@@ -1,4 +1,4 @@
-"""Console step — one-pane catalog search that stages into the session."""
+"""Console action — one-pane catalog search that stages into the workspace."""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ from textual.widgets import Input, Label, ListItem, ListView
 
 from ..client import JSTDataClient
 from ..models import Entity, Metric, Series, Resource as ApiResource
-from ..session import Session
-from .base import StepArgument, StepBinding, StepSpec, register
+from ..investigation.model import Workspace
+from .base import ActionArgument, ActionBinding, ActionSpec, register
 
 Resource: TypeAlias = Series | Entity | Metric | ApiResource
 
@@ -153,14 +153,14 @@ class WorkspaceScreen(Screen):
     def __init__(
         self,
         client: JSTDataClient,
-        session: Session,
+        workspace: Workspace,
         taxonomy: str | None = None,
         resource_type: str | None = None,
         relation: str | list[str] | None = None,
     ) -> None:
         super().__init__()
         self.client = client
-        self.session = session
+        self.workspace = workspace
         self.taxonomy = taxonomy or None
         self.taxonomy_name = taxonomy
         self.resource_type = (resource_type or "").strip().lower() or None
@@ -232,10 +232,10 @@ class WorkspaceScreen(Screen):
         self.query_one("#search-input", Input).placeholder = placeholder
 
     def _refresh_help_hint(self) -> None:
-        n = getattr(self.app, "step_count", 1)
-        i = getattr(self.app, "step_index", 0) + 1
-        step_id = getattr(self.app, "current_step_id", "console")
-        parts = [f"{step_id} {i}/{n}"]
+        n = getattr(self.app, "action_count", 1)
+        i = getattr(self.app, "action_index", 0) + 1
+        action_id = getattr(self.app, "current_action_id", "console")
+        parts = [f"{action_id} {i}/{n}"]
         if self.taxonomy:
             parts.append(f"tax {self.taxonomy}")
         if self.relations:
@@ -253,7 +253,7 @@ class WorkspaceScreen(Screen):
             [
                 "[bold]/[/bold] search",
                 "[bold]enter[/bold] add",
-                "[bold]s[/bold] session",
+                "[bold]:[/bold] workspace",
                 "[bold]f[/bold] find",
                 "[bold]e[/bold] export",
                 "[bold]n[/bold]/[bold]p[/bold]",
@@ -470,12 +470,12 @@ class WorkspaceScreen(Screen):
         self.query_one("#results-list", ListView).focus()
 
     @on(ListView.Selected, "#results-list")
-    def add_to_session(self, event: ListView.Selected) -> None:
+    def add_to_workspace(self, event: ListView.Selected) -> None:
         resource = event.item.resource
-        if not self._add_resource_to_session(resource):
-            self.notify(f"{resource.id} is already in session", severity="warning")
+        if not self._add_resource_to_workspace(resource):
+            self.notify(f"{resource.id} is already in workspace", severity="warning")
             return
-        self.notify("Added to session")
+        self.notify("Added to workspace")
 
     def _resource_label(self, resource: Resource) -> str:
         return (
@@ -484,28 +484,28 @@ class WorkspaceScreen(Screen):
             or resource.id
         )
 
-    def _add_resource_to_session(self, resource: Resource) -> bool:
+    def _add_resource_to_workspace(self, resource: Resource) -> bool:
         if isinstance(resource, Metric):
-            added = self.session.add_metric(resource.id)
+            added = self.workspace.add_metric(resource.id)
         elif isinstance(resource, Entity):
-            added = self.session.add_entity(resource.id)
+            added = self.workspace.add_entity(resource.id)
         elif isinstance(resource, Series):
-            added = self.session.add_series(resource.id)
-        elif resource.id in self.session.resource_ids():
+            added = self.workspace.add_series(resource.id)
+        elif resource.id in self.workspace.resource_ids():
             return False
         else:
-            added = self.session.add_series(resource.id)
+            added = self.workspace.add_series(resource.id)
         if added:
             self.app.remember_label(resource.id, self._resource_label(resource))
         return added
 
 
 def create_console_screen(
-    client, session, taxonomy=None, resource_type=None, relation=None, **kwargs
+    client, workspace, taxonomy=None, resource_type=None, relation=None, **kwargs
 ):
     return WorkspaceScreen(
         client,
-        session,
+        workspace,
         taxonomy=taxonomy,
         resource_type=resource_type,
         relation=relation,
@@ -513,15 +513,15 @@ def create_console_screen(
 
 
 CONSOLE = register(
-    StepSpec(
+    ActionSpec(
         id="console",
         name="Console",
         description=(
-            "Search metrics, entities, and series, then stage them into the session."
+            "Search metrics, entities, and series, then stage them into the workspace."
         ),
         create_screen=create_console_screen,
         arguments=(
-            StepArgument(
+            ActionArgument(
                 name="taxonomy",
                 type="string",
                 description=(
@@ -529,7 +529,7 @@ CONSOLE = register(
                     "(slug, e.g. sec-central-index-key)"
                 ),
             ),
-            StepArgument(
+            ActionArgument(
                 name="relation",
                 type="string",
                 multiple=True,
@@ -539,7 +539,7 @@ CONSOLE = register(
                     "e.g. classified_as:sic:3674). Repeatable; OR'd."
                 ),
             ),
-            StepArgument(
+            ActionArgument(
                 name="resource_type",
                 type="string",
                 description="Restrict search to series, metric, or entity",
@@ -547,14 +547,16 @@ CONSOLE = register(
             ),
         ),
         bindings=(
-            StepBinding("/", "focus_filter", "Search the catalog"),
-            StepBinding("enter", "submit", "Focus results / add highlighted item"),
-            StepBinding("j / ↓", "cursor_down", "Move highlight down"),
-            StepBinding("k / ↑", "cursor_up", "Move highlight up"),
-            StepBinding("escape", "leave_filter", "Leave the search field"),
+            ActionBinding("/", "focus_filter", "Search the catalog"),
+            ActionBinding("enter", "submit", "Focus results / add highlighted item"),
+            ActionBinding("j / ↓", "cursor_down", "Move highlight down"),
+            ActionBinding("k / ↑", "cursor_up", "Move highlight up"),
+            ActionBinding("escape", "leave_filter", "Leave the search field"),
         ),
         example=(
-            "jst run console --relation classified_as:sic:3674 --resource-type entity"
+            "jst action add console --args "
+            "'{\"relation\":[\"classified_as:sic:3674\"],"
+            "\"resource_type\":\"entity\"}'"
         ),
     )
 )

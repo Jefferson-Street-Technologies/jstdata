@@ -1,3 +1,5 @@
+import json
+
 import pytest
 import requests_mock
 from click.testing import CliRunner
@@ -14,7 +16,7 @@ def runner():
 @pytest.fixture
 def mock_url():
     """Fixture for the base URL of the Jefferson Street API."""
-    return 'https://api.jeffersonst.io'
+    return "https://api.jeffersonst.io"
 
 
 @pytest.fixture(autouse=True)
@@ -31,18 +33,17 @@ def test_cli_help(runner):
     result = runner.invoke(cli, ["--help"])
     assert result.exit_code == 0
     assert "Jefferson Street CLI - A Research OS for Financial Data." in result.output
+    assert "api" in result.output
+    assert "action" in result.output
+    assert "investigation" in result.output
 
 
 def test_metric_ls(runner, mock_url):
-    """Test 'metric ls' command."""
-    mock_data = {
-        "records": [
-            {"id": "gdp", "name": "Gross Domestic Product"}
-        ]
-    }
+    """Test 'api metric ls' command."""
+    mock_data = {"records": [{"id": "gdp", "name": "Gross Domestic Product"}]}
     with requests_mock.Mocker() as m:
         m.get(f"{mock_url}/metric", json=mock_data)
-        result = runner.invoke(cli, ["metric", "ls"])
+        result = runner.invoke(cli, ["api", "metric", "ls"])
         assert result.exit_code == 0
         assert "gdp" in result.output
         assert "Gross Domestic Product" in result.output
@@ -56,14 +57,14 @@ def test_taxonomy_ls(runner, mock_url):
     }
     with requests_mock.Mocker() as m:
         m.get(f"{mock_url}/taxonomy", json=mock_data)
-        result = runner.invoke(cli, ["taxonomy", "ls"])
+        result = runner.invoke(cli, ["api", "taxonomy", "ls"])
         assert result.exit_code == 0
         assert "sec-central-index-key" in result.output
         assert "SEC Central Index Key" in result.output
 
 
 def test_query_direct_id(runner, mock_url):
-    """Test 'query' command with direct IDs."""
+    """Test 'api query' command with direct IDs."""
     mock_query_data = {
         "records": [
             {
@@ -79,20 +80,26 @@ def test_query_direct_id(runner, mock_url):
                     {
                         "observation_timestamp": "2024-01-01T00:00:00",
                         "release_timestamp": "2024-01-01T00:00:00",
-                        "value": 100.0
+                        "value": 100.0,
                     }
-                ]
+                ],
             }
         ]
     }
-    # Mock search calls that resolve_id might make
     with requests_mock.Mocker() as m:
-        m.get(f"{mock_url}/search/metrics", json={"records": [{"id": "gdp", "name": "GDP"}]})
-        m.get(f"{mock_url}/search/entities", json={"records": [{"id": "usa", "label": "USA"}]})
+        m.get(
+            f"{mock_url}/search/metrics",
+            json={"records": [{"id": "gdp", "name": "GDP"}]},
+        )
+        m.get(
+            f"{mock_url}/search/entities",
+            json={"records": [{"id": "usa", "label": "USA"}]},
+        )
         m.get(f"{mock_url}/query", json=mock_query_data)
 
         result = runner.invoke(
-            cli, ["query", "--metric", "gdp", "--entity", "usa", "--limit", "50"]
+            cli,
+            ["api", "query", "--metric", "gdp", "--entity", "usa", "--limit", "50"],
         )
         assert result.exit_code == 0, result.output
         assert "ABC123" in result.output
@@ -103,7 +110,7 @@ def test_query_direct_id(runner, mock_url):
 
 
 def test_query_fuzzy_resolution(runner, mock_url):
-    """Test 'query' command with fuzzy resolution of keywords."""
+    """Test 'api query' with fuzzy resolution of keywords."""
     mock_query_data = {
         "records": [
             {
@@ -115,22 +122,27 @@ def test_query_fuzzy_resolution(runner, mock_url):
                     {
                         "observation_timestamp": "2024-01-01T00:00:00",
                         "release_timestamp": "2024-01-01T00:00:00",
-                        "value": 100.0
+                        "value": 100.0,
                     }
-                ]
+                ],
             }
         ]
     }
     with requests_mock.Mocker() as m:
-        # Resolve 'inflation' to 'cpi'
-        m.get(f"{mock_url}/search/metrics?query=inflation&limit=1", json={"records": [{"id": "cpi", "name": "CPI"}]})
-        # Resolve 'america' to 'usa'
-        m.get(f"{mock_url}/search/entities?query=america&limit=1", json={"records": [{"id": "usa", "label": "USA"}]})
+        m.get(
+            f"{mock_url}/search/metrics?query=inflation&limit=1",
+            json={"records": [{"id": "cpi", "name": "CPI"}]},
+        )
+        m.get(
+            f"{mock_url}/search/entities?query=america&limit=1",
+            json={"records": [{"id": "usa", "label": "USA"}]},
+        )
         m.get(f"{mock_url}/query", json=mock_query_data)
-        
-        result = runner.invoke(cli, ["query", "--metric", "inflation", "--entity", "america"])
+
+        result = runner.invoke(
+            cli, ["api", "query", "--metric", "inflation", "--entity", "america"]
+        )
         assert result.exit_code == 0
-        # Verify that the query was called with resolved IDs
         assert m.request_history[-1].qs["metric"] == ["cpi"]
         assert m.request_history[-1].qs["entity"] == ["usa"]
         assert m.request_history[-1].qs["tail"] == ["20"]
@@ -143,6 +155,7 @@ def test_query_sort_by_value_and_taxonomy(runner, mock_url):
         result = runner.invoke(
             cli,
             [
+                "api",
                 "query",
                 "--metric",
                 "gdp",
@@ -162,7 +175,7 @@ def test_query_sort_by_value_and_taxonomy(runner, mock_url):
         qs = m.request_history[-1].qs
         assert qs["metric"] == ["gdp"]
         assert qs["taxonomy"] == ["country"]
-        assert qs["frequency"] == ["annual"]  # requests_mock lowercases values
+        assert qs["frequency"] == ["annual"]
         assert qs["tail"] == ["1"]
         assert qs["sort_by"] == ["value"]
         assert qs["limit"] == ["50"]
@@ -186,6 +199,7 @@ def test_series_observations(runner, mock_url):
         result = runner.invoke(
             cli,
             [
+                "api",
                 "series",
                 "observations",
                 "ABC123",
@@ -202,43 +216,39 @@ def test_series_observations(runner, mock_url):
         assert qs["limit"] == ["100"]
 
 
-def test_steps_list(runner):
-    result = runner.invoke(cli, ["steps"])
+def test_action_ls(runner):
+    result = runner.invoke(cli, ["action", "ls"])
     assert result.exit_code == 0
     assert "console" in result.output
     assert "discover" in result.output
 
 
-def test_steps_json(runner):
-    import json
-
-    result = runner.invoke(cli, ["steps", "--json"])
+def test_action_ls_json(runner):
+    result = runner.invoke(cli, ["action", "ls", "--json"])
     assert result.exit_code == 0
     data = json.loads(result.output)
     assert any(s["id"] == "console" for s in data)
     assert any(s["id"] == "discover" for s in data)
 
 
-def test_step_help(runner):
-    result = runner.invoke(cli, ["step", "console"])
+def test_action_show(runner):
+    result = runner.invoke(cli, ["action", "show", "console"])
     assert result.exit_code == 0
     assert "Console" in result.output
-    assert "jst run console" in result.output
+    assert "jst action add console" in result.output
     assert "--resource-type" in result.output
 
 
-def test_step_help_discover(runner):
-    result = runner.invoke(cli, ["step", "discover"])
+def test_action_show_discover(runner):
+    result = runner.invoke(cli, ["action", "show", "discover"])
     assert result.exit_code == 0
     assert "Discover" in result.output
     assert "--mode" in result.output
     assert "space" in result.output
 
 
-def test_step_json(runner):
-    import json
-
-    result = runner.invoke(cli, ["step", "console", "--json"])
+def test_action_show_json(runner):
+    result = runner.invoke(cli, ["action", "show", "console", "--json"])
     assert result.exit_code == 0
     data = json.loads(result.output)
     assert data["id"] == "console"
@@ -248,28 +258,25 @@ def test_step_json(runner):
     assert any(b["key"] == "/" for b in data["bindings"])
 
 
-def test_step_unknown(runner):
-    result = runner.invoke(cli, ["step", "nope"])
+def test_action_show_unknown(runner):
+    result = runner.invoke(cli, ["action", "show", "nope"])
     assert result.exit_code == 1
-    assert "Unknown step" in result.output
+    assert "Unknown action" in result.output
 
 
-def test_run_unknown_step(runner):
-    result = runner.invoke(cli, ["run", "not-a-step"])
-    assert result.exit_code == 1
-    assert "Unknown step" in result.output
+def test_actions_plural_removed(runner):
+    result = runner.invoke(cli, ["actions"])
+    assert result.exit_code != 0
 
 
-def test_run_unknown_flag(runner):
-    result = runner.invoke(cli, ["run", "console", "--industry", "x"])
-    assert result.exit_code == 2
-    assert "Unknown option" in result.output
+def test_run_removed(runner):
+    result = runner.invoke(cli, ["run", "console"])
+    assert result.exit_code != 0
 
 
-def test_run_trailing_colon(runner):
-    result = runner.invoke(cli, ["run", "console", ":"])
-    assert result.exit_code == 2
-    assert "Trailing" in result.output
+def test_workflow_removed(runner):
+    result = runner.invoke(cli, ["workflow", "ls"])
+    assert result.exit_code != 0
 
 
 def test_metric_search_listing_and_entities(runner, mock_url):
@@ -281,6 +288,7 @@ def test_metric_search_listing_and_entities(runner, mock_url):
         result = runner.invoke(
             cli,
             [
+                "api",
                 "metric",
                 "search",
                 "--entity",

@@ -12,7 +12,6 @@ from .api import (
     remove_action,
     require_active_investigation,
     set_active,
-    sync_workspace_from_session,
     validate_action_type,
 )
 from .bootstrap import ensure_bootstrap, load_bundled_tutorial
@@ -34,7 +33,7 @@ from .store import (
     save_investigation,
     validate_investigation_id,
 )
-from . import home as _home  # noqa: F401 — register home step
+from . import home as _home  # noqa: F401 — register home action
 
 __all__ = [
     "Action",
@@ -67,7 +66,6 @@ __all__ = [
     "save_active",
     "save_investigation",
     "set_active",
-    "sync_workspace_from_session",
     "validate_action_type",
     "validate_investigation_id",
 ]

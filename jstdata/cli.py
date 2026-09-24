@@ -83,9 +83,16 @@ def config_set(key, value):
     client._cfg.write(**{key: value})
     click.echo(f"Set {key} to {value}")
 
-# --- Metric Commands ---
+# --- Low-level API (agent / power-user) ---
 
 @cli.group()
+def api():
+    """Direct API access. Prefer investigations for research; use api for resolution and queries."""
+    pass
+
+# --- Metric Commands ---
+
+@api.group()
 def metric():
     """Commands for interacting with Metrics (themes)."""
 
@@ -141,7 +148,7 @@ def metric_series(id, limit, offset, format):
 
 # --- Entity Commands ---
 
-@cli.group()
+@api.group()
 def entity():
     """Commands for interacting with Entities (contexts)."""
 
@@ -204,7 +211,7 @@ def entity_relations(id, limit, offset, format):
 
 # --- Taxonomy Commands ---
 
-@cli.group()
+@api.group()
 def taxonomy():
     """Commands for interacting with Taxonomies (membership catalogs)."""
 
@@ -241,7 +248,7 @@ def taxonomy_metrics(id, limit, offset, format):
 
 # --- Series Commands ---
 
-@cli.group()
+@api.group()
 def series():
     """Commands for interacting with Series (data points)."""
 
@@ -299,7 +306,7 @@ def series_observations(
 
 # --- Query Command ---
 
-@cli.command()
+@api.command()
 @click.option("--metric", multiple=True, help="Metric ID(s) or keywords")
 @click.option("--entity", multiple=True, help="Entity ID(s) or keywords")
 @click.option("--series", multiple=True, help="Series ID(s) or keywords")
@@ -349,7 +356,7 @@ def query(
     Bounded cross-sectional query. Mix metrics, entities, and series.
 
     Uses head/tail per series (not a date window). For deep history of one
-    series, use `jst series observations`. Use --sort-by value with
+    series, use `jst api series observations`. Use --sort-by value with
     --taxonomy to rank a population (e.g. country GDP).
     """
     m_ids = list(metric)
@@ -377,24 +384,6 @@ def query(
     
     format_and_print(results, format)
 
-@cli.command("tutorial")
-@click.option(
-    "--session",
-    type=click.Path(exists=True, dir_okay=False, path_type=str),
-    help="Preload a session JSON into the pipeline",
-)
-@click.option(
-    "--output",
-    type=click.Path(dir_okay=False, path_type=str),
-    help="Default path for export session writes",
-)
-def tutorial_cmd(session: str | None, output: str | None) -> None:
-    """Run the built-in interactive tutorial (alias for workflow run tutorial)."""
-    from .workflows import run_tutorial
-
-    run_tutorial(client, session_path=session, output_path=output)
-
-
 @cli.command("agent-guide")
 def agent_guide_cmd() -> None:
     """Print a markdown bootstrap guide for agents (version-tied)."""
@@ -403,262 +392,158 @@ def agent_guide_cmd() -> None:
     click.echo(render_agent_guide(cli), nl=False)
 
 
-@cli.command("steps")
+@cli.group("action")
+def action_group() -> None:
+    """Catalog and mutate investigation actions."""
+
+
+@action_group.command("ls")
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable catalog")
-def steps_cmd(as_json: bool) -> None:
-    """List available investigation steps."""
+def action_ls(as_json: bool) -> None:
+    """List available action types.
+
+    \b
+    jst action ls
+    jst action ls --json
+    """
     import json as json_lib
 
-    from .workflows import list_steps
+    from .actions import list_actions
 
-    specs = list_steps()
+    specs = list_actions()
     if as_json:
         click.echo(json_lib.dumps([s.to_dict() for s in specs], indent=2))
         return
     if not specs:
-        click.echo("No steps registered.")
+        click.echo("No actions registered.")
         return
     for spec in specs:
         click.echo(f"{spec.id:20} {spec.name} — {spec.description}")
 
 
-@cli.command("step")
-@click.argument("step_id")
-@click.option("--json", "as_json", is_flag=True, help="Machine-readable step metadata")
-def step_cmd(step_id: str, as_json: bool) -> None:
-    """Describe a step: arguments, requirements, example."""
+@action_group.command("show")
+@click.argument("action_id")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable action metadata")
+def action_show(action_id: str, as_json: bool) -> None:
+    """Describe an action type: seed args, keybindings, example.
+
+    \b
+    jst action show console
+    jst action show rank --json
+    """
     import json as json_lib
 
-    from .workflows import format_step_help, get_step
+    from .actions import format_action_help, get_action
 
     try:
-        spec = get_step(step_id)
+        spec = get_action(action_id)
     except KeyError as e:
         click.echo(str(e), err=True)
         sys.exit(1)
     if as_json:
         click.echo(json_lib.dumps(spec.to_dict(), indent=2))
         return
-    click.echo(format_step_help(spec), nl=False)
+    click.echo(format_action_help(spec), nl=False)
 
 
-@cli.command(
-    "run",
-    context_settings={
-        "ignore_unknown_options": True,
-        "allow_extra_args": True,
-        "allow_interspersed_args": False,
-    },
+@action_group.command("add")
+@click.argument("action_type")
+@click.option(
+    "--args",
+    "args_json",
+    default=None,
+    help='JSON object of action seed args, e.g. \'{"taxonomy":"country"}\'',
 )
 @click.option(
-    "--session",
-    type=click.Path(exists=True, dir_okay=False, path_type=str),
-    help="Preload a session JSON into the pipeline",
-)
-@click.option(
-    "--output",
-    type=click.Path(dir_okay=False, path_type=str),
-    help="Default path for export session writes",
-)
-@click.pass_context
-def run_cmd(ctx: click.Context, session: str | None, output: str | None) -> None:
-    """Run one or more steps, daisy-chained with ':'
-
-    \b
-    jst run console
-    jst run --session in.json console : console
-    jst run company-selector --industry semiconductors : console
-    """
-    from .workflows import PipelineError, run_pipeline
-
-    if not ctx.args:
-        click.echo(ctx.get_help())
-        raise SystemExit(2)
-    try:
-        run_pipeline(client, ctx.args, session_path=session, output_path=output)
-    except KeyError as e:
-        click.echo(str(e), err=True)
-        sys.exit(1)
-    except PipelineError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(2)
-
-
-@cli.group("workflow")
-def workflow_group() -> None:
-    """Save and run named step pipelines."""
-
-
-# Backward-compatible plural alias (same group object).
-cli.add_command(workflow_group, "workflows")
-
-
-@workflow_group.command("ls")
-def workflow_ls() -> None:
-    """List saved workflows."""
-    from .workflows import (
-        format_pipeline,
-        is_bundled_workflow,
-        list_saved_workflows,
-    )
-
-    workflows = list_saved_workflows()
-    if not workflows:
-        click.echo("No saved workflows.")
-        return
-    for wf in workflows:
-        desc = wf.description or "-"
-        tag = " (built-in)" if is_bundled_workflow(wf.id) else ""
-        click.echo(
-            f"{wf.id:24}{tag:11} {desc:40} {format_pipeline(wf)}"
-        )
-
-
-@workflow_group.command("rm")
-@click.argument("workflow_id")
-def workflow_rm(workflow_id: str) -> None:
-    """Delete a saved workflow."""
-    from .workflows import WorkflowStoreError, delete_workflow
-
-    try:
-        delete_workflow(workflow_id)
-    except WorkflowStoreError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
-    click.echo(f"Removed workflow {workflow_id!r}.")
-
-
-@workflow_group.command(
-    "create",
-    context_settings={
-        "ignore_unknown_options": True,
-        "allow_extra_args": True,
-        "allow_interspersed_args": False,
-    },
-)
-@click.option(
-    "--id",
-    "workflow_id",
-    required=True,
-    help="Slug id for the workflow (e.g. gdp-rank)",
+    "--parent",
+    "parent_id",
+    type=int,
+    default=None,
+    help="Parent action id (default: active action)",
 )
 @click.option(
     "--description",
-    default="",
-    help="Optional short description",
-)
-@click.pass_context
-def workflow_create(
-    ctx: click.Context, workflow_id: str, description: str
-) -> None:
-    """Save a step pipeline as a named workflow.
-
-    \b
-    jst workflow create --id gdp-rank -- console : rank --taxonomy country
-    jst workflow create --id gdp --description "GDP leaders" -- console : rank
-    """
-    import sys as _sys
-
-    from .workflows import (
-        PipelineError,
-        WorkflowStoreError,
-        create_workflow_from_tokens,
-        save_workflow,
-        workflow_exists,
-    )
-
-    # Hard boundary: pipeline must follow '--'. Enforce when this process
-    # looks like a real ``jst workflow create`` (CliRunner leaves sys.argv alone).
-    try:
-        create_at = _sys.argv.index("create")
-        via_workflow = any(
-            name in _sys.argv[:create_at] for name in ("workflow", "workflows")
-        )
-    except ValueError:
-        via_workflow = False
-    if via_workflow and "--" not in _sys.argv[create_at:]:
-        click.echo(
-            "Error: pass the pipeline after '--'.\n"
-            "Example: jst workflow create --id gdp-rank -- console : rank",
-            err=True,
-        )
-        sys.exit(2)
-    if not ctx.args:
-        click.echo(ctx.get_help())
-        raise SystemExit(2)
-
-    try:
-        if workflow_exists(workflow_id):
-            if not click.confirm(
-                f"Workflow {workflow_id!r} already exists. Overwrite?",
-                default=False,
-            ):
-                click.echo("Aborted.")
-                return
-        workflow = create_workflow_from_tokens(workflow_id, description, list(ctx.args))
-        path = save_workflow(workflow)
-    except WorkflowStoreError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(2)
-    except KeyError as e:
-        click.echo(str(e), err=True)
-        sys.exit(1)
-    except PipelineError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(2)
-
-    click.echo(f"Saved workflow {workflow.id!r} → {path}")
-
-
-@workflow_group.command("run")
-@click.argument("workflow_id")
-@click.option(
-    "--session",
-    type=click.Path(exists=True, dir_okay=False, path_type=str),
-    help="Preload a session JSON into the pipeline",
+    default=None,
+    help="Optional action description",
 )
 @click.option(
-    "--output",
-    type=click.Path(dir_okay=False, path_type=str),
-    help="Default path for export session writes",
+    "--activate",
+    is_flag=True,
+    default=False,
+    help="Make the new action active after creating it",
 )
-def workflow_run(
-    workflow_id: str, session: str | None, output: str | None
+def action_add(
+    action_type: str,
+    args_json: str | None,
+    parent_id: int | None,
+    description: str | None,
+    activate: bool,
 ) -> None:
-    """Run a saved workflow (validates before launching the UI).
+    """Add an action under the active investigation.
 
     \b
-    jst workflow run gdp-rank
-    jst workflow run gdp-rank --session in.json
+    jst action add console
+    jst action add console --args '{"taxonomy":"country"}'
+    jst action add discover --parent 0 --activate
     """
-    from .workflows import (
-        PipelineError,
-        TUTORIAL_WORKFLOW_ID,
-        WorkflowStoreError,
-        load_workflow,
-        resolve_saved_workflow,
-        run_resolved_pipeline,
-        run_tutorial,
+    from .investigation import (
+        InvestigationError,
+        add_action,
+        parse_action_args_json,
+        require_active_investigation,
     )
 
     try:
-        workflow = load_workflow(workflow_id)
-        if workflow_id == TUTORIAL_WORKFLOW_ID:
-            run_tutorial(client, session_path=session, output_path=output)
-            return
-        resolved = resolve_saved_workflow(workflow)
-    except WorkflowStoreError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
-    except KeyError as e:
-        click.echo(str(e), err=True)
-        sys.exit(1)
-    except PipelineError as e:
+        inv, _ctx = require_active_investigation()
+        args = parse_action_args_json(args_json)
+        action = add_action(
+            inv,
+            action_type,
+            parent_id=parent_id,
+            args=args,
+            description=description,
+            activate=activate,
+        )
+    except InvestigationError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(2)
+    click.echo(
+        f"Added action {action.id} type={action.type} "
+        f"parent={action.parent_id}"
+        + (" (activated)" if activate else "")
+    )
 
-    run_resolved_pipeline(
-        client, resolved, session_path=session, output_path=output
+
+@action_group.command("rm")
+@click.argument("action_id", type=int)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Required to remove an action with children, or the active action",
+)
+def action_rm(action_id: int, force: bool) -> None:
+    """Remove an action (and descendants) from the active investigation.
+
+    \b
+    jst action rm 3
+    jst action rm 1 --force
+    """
+    from .investigation import (
+        InvestigationError,
+        remove_action,
+        require_active_investigation,
+    )
+
+    try:
+        inv, _ctx = require_active_investigation()
+        removed = remove_action(inv, action_id, force=force)
+    except InvestigationError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(2)
+    click.echo(
+        f"Removed action{'s' if len(removed) != 1 else ''} "
+        + ", ".join(str(i) for i in removed)
     )
 
 
@@ -754,107 +639,6 @@ def investigation_ls() -> None:
         except Exception:
             title = "?"
         click.echo(f"{marker} {inv_id:<28} {title}")
-
-
-@investigation_group.command("add")
-@click.argument("action_type")
-@click.option(
-    "--args",
-    "args_json",
-    default=None,
-    help='JSON object of step kwargs, e.g. \'{"taxonomy":"country"}\'',
-)
-@click.option(
-    "--parent",
-    "parent_id",
-    type=int,
-    default=None,
-    help="Parent action id (default: active action)",
-)
-@click.option(
-    "--description",
-    default=None,
-    help="Optional action description",
-)
-@click.option(
-    "--activate",
-    is_flag=True,
-    default=False,
-    help="Make the new action active after creating it",
-)
-def investigation_add(
-    action_type: str,
-    args_json: str | None,
-    parent_id: int | None,
-    description: str | None,
-    activate: bool,
-) -> None:
-    """Add an action under the active investigation.
-
-    \b
-    jst investigation add console
-    jst investigation add console --args '{"taxonomy":"country"}'
-    jst investigation add discover --parent 0 --activate
-    """
-    from .investigation import (
-        InvestigationError,
-        add_action,
-        parse_action_args_json,
-        require_active_investigation,
-    )
-
-    try:
-        inv, _ctx = require_active_investigation()
-        args = parse_action_args_json(args_json)
-        action = add_action(
-            inv,
-            action_type,
-            parent_id=parent_id,
-            args=args,
-            description=description,
-            activate=activate,
-        )
-    except InvestigationError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(2)
-    click.echo(
-        f"Added action {action.id} type={action.type} "
-        f"parent={action.parent_id}"
-        + (" (activated)" if activate else "")
-    )
-
-
-@investigation_group.command("rm")
-@click.argument("action_id", type=int)
-@click.option(
-    "--force",
-    is_flag=True,
-    default=False,
-    help="Required to remove an action with children, or the active action",
-)
-def investigation_rm(action_id: int, force: bool) -> None:
-    """Remove an action (and descendants) from the active investigation.
-
-    \b
-    jst investigation rm 3
-    jst investigation rm 1 --force
-    """
-    from .investigation import (
-        InvestigationError,
-        remove_action,
-        require_active_investigation,
-    )
-
-    try:
-        inv, _ctx = require_active_investigation()
-        removed = remove_action(inv, action_id, force=force)
-    except InvestigationError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(2)
-    click.echo(
-        f"Removed action{'s' if len(removed) != 1 else ''} "
-        + ", ".join(str(i) for i in removed)
-    )
 
 
 if __name__ == "__main__":

@@ -31,7 +31,7 @@ from jstdata.investigation import (
     validate_investigation_id,
 )
 from jstdata.investigation.active import load_active, save_active
-from jstdata.workflows.base import get_step
+from jstdata.actions.base import get_action
 
 
 def test_validate_investigation_id():
@@ -88,13 +88,12 @@ def test_workspace_session_projection():
         entity=["france"],
         taxonomy="country",
     )
-    session = ws.to_session()
-    assert session.metric == ["gdp"]
-    assert session.entity == ["france"]
-    assert session.taxonomy == "country"
-    session.add_metric("cpi")
-    ws.apply_session(session)
+    assert ws.metric == ["gdp"]
+    assert ws.entity == ["france"]
+    assert ws.taxonomy == "country"
+    assert ws.add_metric("cpi") is True
     assert ws.metric == ["gdp", "cpi"]
+    assert "gdp" in ws.to_query_kwargs()["metric"]
 
 
 def test_tree_validation_rejects_orphan_and_cycle():
@@ -239,7 +238,7 @@ def test_cli_ls_add_rm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     result = runner.invoke(
         cli,
         [
-            "investigation",
+            "action",
             "add",
             "console",
             "--args",
@@ -254,29 +253,29 @@ def test_cli_ls_add_rm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     assert inv.actions[1].args == {"taxonomy": "country"}
     assert get_active(app_dir=tmp_path).action == ROOT_ACTION_ID
 
-    result = runner.invoke(cli, ["investigation", "add", "discover", "--activate"])
+    result = runner.invoke(cli, ["action", "add", "discover", "--activate"])
     assert result.exit_code == 0, result.output
     assert "(activated)" in result.output
     assert get_active(app_dir=tmp_path).action == 2
 
-    result = runner.invoke(cli, ["investigation", "rm", "2"])
+    result = runner.invoke(cli, ["action", "rm", "2"])
     assert result.exit_code == 2
     assert "--force" in result.output
 
-    result = runner.invoke(cli, ["investigation", "rm", "2", "--force"])
+    result = runner.invoke(cli, ["action", "rm", "2", "--force"])
     assert result.exit_code == 0, result.output
     assert "Removed action 2" in result.output
     assert get_active(app_dir=tmp_path).action == ROOT_ACTION_ID
 
-    result = runner.invoke(cli, ["investigation", "add", "not-a-step"])
+    result = runner.invoke(cli, ["action", "add", "not-a-step"])
     assert result.exit_code == 2
-    assert "Unknown step" in result.output
+    assert "Unknown action" in result.output
 
 
 def test_home_step_registered():
     import jstdata.investigation  # noqa: F401
 
-    spec = get_step("home")
+    spec = get_action("home")
     assert spec.id == "home"
     assert spec.name == "Home"
 

@@ -1,4 +1,4 @@
-"""Rank step — leaderboard for one session metric across a metric population."""
+"""Rank action — leaderboard for one workspace metric across a metric population."""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ from textual.widgets import Input, Label, ListItem, ListView, Static
 
 from ..client import JSTDataClient
 from ..models import TimeSeries
-from ..session import Session
-from .base import StepArgument, StepBinding, StepSpec, label_for, register
+from ..investigation.model import Workspace
+from .base import ActionArgument, ActionBinding, ActionSpec, label_for, register
 from .chart import (
     VALUE_WIDTH,
     format_rank_line,
@@ -77,7 +77,7 @@ class RankRow(ListItem):
 
 
 class RankScreen(Screen):
-    """Session metrics on the left; value-sorted leaderboard on the right."""
+    """Workspace metrics on the left; value-sorted leaderboard on the right."""
 
     BINDINGS = [
         Binding("slash", "focus_filter", "Filter ranking", key_display="/"),
@@ -91,7 +91,7 @@ class RankScreen(Screen):
             priority=True,
         ),
         Binding("enter", "confirm", "Add entity / open ranking", priority=True),
-        Binding("shift+enter", "add_entity", "Add entity to session", show=False, priority=True),
+        Binding("shift+enter", "add_entity", "Add entity to workspace", show=False, priority=True),
         Binding("j", "cursor_down", "Move highlight down", show=False),
         Binding("k", "cursor_up", "Move highlight up", show=False),
     ]
@@ -179,15 +179,15 @@ class RankScreen(Screen):
     def __init__(
         self,
         client: JSTDataClient,
-        session: Session,
+        workspace: Workspace,
         taxonomy: Optional[str] = None,
-        session_entities: bool = True,
+        workspace_entities: bool = True,
     ):
         super().__init__()
         self.client = client
-        self.session = session
+        self.workspace = workspace
         self.taxonomy = (taxonomy or "").strip() or None
-        self.session_entities = bool(session_entities)
+        self.workspace_entities = bool(workspace_entities)
         self.filter_query = ""
         self.page_offset = 0
         self.has_more = False
@@ -202,10 +202,10 @@ class RankScreen(Screen):
     def compose(self) -> ComposeResult:
         with Horizontal(id="rank-body"):
             with Vertical(classes="pane-container", id="metrics-pane"):
-                yield Label("METRICS // SESSION", classes="pane-header")
+                yield Label("METRICS // WORKSPACE", classes="pane-header")
                 yield ListView(id="metrics-list")
                 yield Static(
-                    "No metrics in session.\n\n"
+                    "No metrics in workspace.\n\n"
                     "Press [bold]f[/bold] to find metrics and add them.\n"
                     "Then highlight a metric — the ranking fills on the right.\n"
                     "Tab to the ranking, Enter to add an entity.",
@@ -240,12 +240,12 @@ class RankScreen(Screen):
         return getattr(self.app, "labels", {})
 
     def _refresh_help_hint(self) -> None:
-        n = getattr(self.app, "step_count", 1)
-        i = getattr(self.app, "step_index", 0) + 1
+        n = getattr(self.app, "action_count", 1)
+        i = getattr(self.app, "action_index", 0) + 1
         tax = self.taxonomy or "all"
         scope = (
-            "session entities"
-            if self._using_session_entities()
+            "workspace entities"
+            if self._using_workspace_entities()
             else f"taxonomy {tax}"
         )
         parts = [
@@ -255,7 +255,7 @@ class RankScreen(Screen):
             "[bold]enter[/bold] open rank / add",
             "[bold]tab[/bold] panes",
             "[bold]j/k[/bold] move",
-            "[bold]s[/bold] session",
+            "[bold]:[/bold] workspace",
             "[bold]f[/bold] find",
             "[bold]e[/bold] export",
             "[bold]n[/bold]/[bold]p[/bold]",
@@ -264,28 +264,28 @@ class RankScreen(Screen):
         ]
         self.query_one("#help-hint").update(" // ".join(parts))
 
-    def _using_session_entities(self) -> bool:
-        """True when ranking is scoped to non-empty session.entity."""
-        return bool(self.session_entities and self.session.entity)
+    def _using_workspace_entities(self) -> bool:
+        """True when ranking is scoped to non-empty workspace.entity."""
+        return bool(self.workspace_entities and self.workspace.entity)
 
     def _scoped_entity_ids(self) -> list[str] | None:
         """Entity ids for /query, or None to use taxonomy/all population."""
-        if not self._using_session_entities():
+        if not self._using_workspace_entities():
             return None
-        return list(self.session.entity)
+        return list(self.workspace.entity)
 
     def _entity_preference_ids(self) -> set[str] | None:
         """Ids to prefer when labeling multi-entity series."""
         prefer = self._taxonomy_ids
-        if self._using_session_entities():
-            session_ids = set(self.session.entity)
+        if self._using_workspace_entities():
+            scoped_ids = set(self.workspace.entity)
             if prefer is not None:
-                return prefer & session_ids or session_ids
-            return session_ids
+                return prefer & scoped_ids or scoped_ids
+            return scoped_ids
         return prefer
 
     def _sync_metrics(self, force: bool = False) -> None:
-        snapshot = tuple(self.session.metric)
+        snapshot = tuple(self.workspace.metric)
         if not force and snapshot == self._metric_snapshot:
             return
         self._metric_snapshot = snapshot
@@ -386,8 +386,8 @@ class RankScreen(Screen):
         return entries
 
     def _scope_label(self) -> str:
-        if self._using_session_entities():
-            return f"session ({len(self.session.entity)})"
+        if self._using_workspace_entities():
+            return f"workspace ({len(self.workspace.entity)})"
         return self.taxonomy or "all"
 
     @work(exclusive=True, group="taxonomy")
@@ -490,7 +490,7 @@ class RankScreen(Screen):
         qbit = f" · filter “{q}”" if q else ""
         if reset and not series_list:
             if entity_ids is not None:
-                scope_bit = " among session entities"
+                scope_bit = " among workspace entities"
             elif self.taxonomy:
                 scope_bit = f" in taxonomy “{self.taxonomy}”"
             else:
@@ -556,12 +556,12 @@ class RankScreen(Screen):
         return False
 
     def _add_entity(self, entry: RankEntry) -> None:
-        if not self.session.add_entity(entry.entity_id):
-            self.notify(f"{entry.entity_id} is already in session", severity="warning")
+        if not self.workspace.add_entity(entry.entity_id):
+            self.notify(f"{entry.entity_id} is already in workspace", severity="warning")
             return
         if hasattr(self.app, "remember_label"):
             self.app.remember_label(entry.entity_id, entry.entity_label)
-        self.notify(f"Added {entry.entity_id} to session")
+        self.notify(f"Added {entry.entity_id} to workspace")
 
     def action_confirm(self) -> None:
         """Enter: on the board, add entity; on metrics, jump to the board."""
@@ -660,65 +660,66 @@ class RankScreen(Screen):
 
 
 def create_rank_screen(
-    client, session, taxonomy=None, session_entities=True, **kwargs
+    client, workspace, taxonomy=None, workspace_entities=True, **kwargs
 ):
     return RankScreen(
         client,
-        session,
+        workspace,
         taxonomy=taxonomy,
-        session_entities=session_entities,
+        workspace_entities=workspace_entities,
     )
 
 
 RANK = register(
-    StepSpec(
+    ActionSpec(
         id="rank",
         name="Rank",
         description=(
-            "Rank entities for a session metric by latest value "
+            "Rank entities for a workspace metric by latest value "
             "(shared-scale leaderboard)."
         ),
         create_screen=create_rank_screen,
         arguments=(
-            StepArgument(
+            ActionArgument(
                 name="taxonomy",
                 type="string",
                 description=(
                     "Restrict ranking to entities in this taxonomy"
                 ),
             ),
-            StepArgument(
-                name="session_entities",
+            ActionArgument(
+                name="workspace_entities",
                 type="boolean",
                 description=(
-                    "When true (default), rank only session entities if any "
+                    "When true (default), rank only workspace entities if any "
                     "are present; with an empty entity list, ranks the full "
                     "taxonomy/all population. Set false to always ignore "
-                    "session entities."
+                    "workspace entities."
                 ),
                 default=True,
             ),
         ),
         bindings=(
-            StepBinding("/", "focus_filter", "Filter the current ranking page by name"),
-            StepBinding(
+            ActionBinding("/", "focus_filter", "Filter the current ranking page by name"),
+            ActionBinding(
                 "enter",
                 "confirm",
                 "On ranking: add entity. On metrics: open the ranking pane.",
             ),
-            StepBinding(
+            ActionBinding(
                 "shift+enter",
                 "add_entity",
-                "Add the highlighted ranked entity to the session",
+                "Add the highlighted ranked entity to the workspace",
             ),
-            StepBinding(
+            ActionBinding(
                 "tab", "cycle_panes", "Switch focus between metrics and ranking"
             ),
-            StepBinding("j / k", "cursor", "Move highlight in the focused list"),
-            StepBinding("escape", "leave_filter", "Leave the ranking filter"),
+            ActionBinding("j / k", "cursor", "Move highlight in the focused list"),
+            ActionBinding("escape", "leave_filter", "Leave the ranking filter"),
         ),
         example=(
-            "jst run --session eu.json rank --taxonomy country"
+            "jst action add rank --args "
+            "'{\"taxonomy\":\"country\",\"workspace_entities\":true}'"
         ),
     )
 )

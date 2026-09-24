@@ -12,14 +12,13 @@ from textual.screen import ModalScreen, Screen
 from textual.widgets import Input, Label, Static
 
 from ..client import JSTDataClient
-from ..session import Session
-from ..workflows.base import get_step, hydrate_labels
-from ..workflows.host import HelpScreen
+from ..actions.base import get_action, hydrate_labels
+from ..actions.help import HelpScreen
 from .active import ActiveContext, active_path, load_active, save_active
 from .api import (
     add_action,
     remove_action,
-    sync_workspace_from_session,
+    persist_investigation,
 )
 from .bootstrap import ensure_bootstrap
 from .command_palette import CommandPalette
@@ -30,7 +29,7 @@ from .store import investigation_path, load_investigation
 from .workspace_drawer import WorkspaceDrawer
 
 from . import home as _home  # noqa: F401
-import jstdata.workflows  # noqa: F401
+import jstdata.actions  # noqa: F401
 
 POLL_INTERVAL = 0.4
 
@@ -137,7 +136,7 @@ class InvestigationHost(App):
         Binding("q", "quit", "Quit"),
         Binding("ctrl+c", "quit", "Quit"),
         Binding("escape", "back", "Back"),
-        Binding("question_mark", "show_help", "Step help", key_display="?"),
+        Binding("question_mark", "show_help", "Action help", key_display="?"),
         Binding(":", "command_palette", "Command", key_display=":"),
         Binding("n", "next_action", "Next action"),
         Binding("p", "prev_action", "Prev action"),
@@ -157,7 +156,7 @@ class InvestigationHost(App):
         self.inv_root = None if app_dir is None else app_dir / "investigations"
         self.investigation: Investigation | None = None
         self.active: ActiveContext | None = None
-        self.session = Session()
+        self.workspace = Workspace()
         self.labels: dict[str, str] = {}
         self._order: list[int] = []
         self._ws_order: list[int] = []
@@ -185,22 +184,22 @@ class InvestigationHost(App):
         self.labels[resource_id] = label or resource_id
 
     def persist_active_workspace(self) -> None:
-        """Flush live session selectors into the investigation YAML."""
+        """Flush workspace mutations into the investigation YAML if dirty."""
         self._persist_workspace_if_dirty()
 
     def refresh_workspace_drawer(self) -> None:
         for screen in self.screen_stack:
             if isinstance(screen, WorkspaceDrawer):
-                screen.session = self.session
+                screen.workspace = self.workspace
                 screen.labels = self.labels
                 screen.rebuild()
 
     @property
-    def step_count(self) -> int:
+    def action_count(self) -> int:
         return max(len(self._order), 1)
 
     @property
-    def step_index(self) -> int:
+    def action_index(self) -> int:
         if not self.active or not self._order:
             return 0
         try:
@@ -209,14 +208,14 @@ class InvestigationHost(App):
             return 0
 
     @property
-    def current_step_spec(self):
+    def current_action_spec(self):
         if not self.investigation or not self.active:
-            return get_step("home")
+            return get_action("home")
         try:
             action = self.investigation.get_action(self.active.action)
-            return get_step(action.type)
+            return get_action(action.type)
         except (InvestigationError, KeyError):
-            return get_step("home")
+            return get_action("home")
 
     def _snapshot_mtimes(self) -> None:
         try:
@@ -251,10 +250,11 @@ class InvestigationHost(App):
             self._enter_invalid(str(exc))
 
     def _apply_workspace(self, ws: Workspace) -> None:
-        self.session = ws.to_session()
+        # Hold the live investigation workspace object; screens mutate it in place.
+        self.workspace = ws
         self._ws_fingerprint = ws.resource_fingerprint()
         self.labels = {}
-        hydrate_labels(self.client, self.session, self.labels)
+        hydrate_labels(self.client, self.workspace, self.labels)
         self.refresh_workspace_drawer()
 
     def _enter_invalid(self, message: str) -> None:
@@ -289,7 +289,7 @@ class InvestigationHost(App):
         action = self.investigation.get_action(self.active.action)
         ws = self.investigation.get_workspace(self.active.workspace)
         try:
-            spec = get_step(action.type)
+            spec = get_action(action.type)
         except KeyError as exc:
             raise InvestigationError(
                 f"Unknown action type {action.type!r} (action {action.id})."
@@ -315,7 +315,7 @@ class InvestigationHost(App):
                 f"N/P workspaces  ·  ? help  ·  q quit",
             )
 
-        return spec.create_screen(self.client, self.session, **kwargs)
+        return spec.create_screen(self.client, self.workspace, **kwargs)
 
     def _pop_transient_overlays(self) -> None:
         """Dismiss command palette / confirm; leave drawers alone when possible."""
@@ -344,19 +344,13 @@ class InvestigationHost(App):
             ws = self.investigation.get_workspace(self.active.workspace)
         except InvestigationError:
             return
-        probe = Workspace(id=ws.id, label=ws.label, description=ws.description)
-        probe.apply_session(self.session)
-        if probe.resource_fingerprint() == self._ws_fingerprint:
+        # Screens mutate ``self.workspace`` in place (same object as ``ws``).
+        if ws.resource_fingerprint() == self._ws_fingerprint:
             return
         self._suppress_poll = True
         try:
-            sync_workspace_from_session(
-                self.investigation,
-                self.active.workspace,
-                self.session,
-                app_dir=self.app_dir,
-            )
-            self._ws_fingerprint = probe.resource_fingerprint()
+            persist_investigation(self.investigation, app_dir=self.app_dir)
+            self._ws_fingerprint = ws.resource_fingerprint()
             try:
                 self._inv_mtime = self._inv_file().stat().st_mtime
             except OSError:
@@ -522,13 +516,13 @@ class InvestigationHost(App):
     def _open_workspace_drawer(self) -> None:
         # If already open, focus it by pushing a fresh one on top (dismiss old?).
         # Pushing another is fine; Esc closes topmost.
-        self.push_screen(WorkspaceDrawer(self.session, self.labels))
+        self.push_screen(WorkspaceDrawer(self.workspace, self.labels))
 
     def _open_search_drawer(self, resource_type: str, query: str) -> None:
         self.push_screen(
             SearchDrawer(
                 self.client,
-                self.session,
+                self.workspace,
                 resource_type=resource_type,  # type: ignore[arg-type]
                 query=query,
             )
@@ -608,7 +602,7 @@ class InvestigationHost(App):
                 pass
 
     def action_show_help(self) -> None:
-        spec = self.current_step_spec
+        spec = self.current_action_spec
         self.push_screen(HelpScreen(spec.name, list(spec.bindings)))
 
 

@@ -1,6 +1,7 @@
 # Jefferson Street Data (jstdata)
 
-A Python interface and Research OS for the Jefferson Street financial and economic data API.
+A Python interface and Investigation IDE for the Jefferson Street financial and
+economic data API.
 
 ## Design Philosophy: From Filing Cabinet to Knowledge Graph
 
@@ -10,7 +11,7 @@ A Python interface and Research OS for the Jefferson Street financial and econom
 - **Entity Graph**: Entities are nodes in a relational graph — walk from a company to its SIC, a security ticker, or a geography.
 - **Taxonomies**: Named populations (`country`, `sec-central-index-key`, …) scope search, query, and ranking.
 - **Intent over IDs**: CLI and Python favor fuzzy search over memorizing slugs; always resolve before querying.
-- **Sessions & workflows**: Stage resolved ids in a session JSON; compose interactive steps in the shell and save them as named workflows.
+- **Investigations**: Durable research artifacts — workspaces (staged ids + filters) and a tree of actions (analytical TUIs).
 - **Reproducible Discovery**: High-speed discovery in the TUI transitions into immutable Python / CLI snippets.
 
 ---
@@ -52,65 +53,47 @@ jst config show --verbose
 jst config set api_key XXX
 ```
 
-## Interactive investigation (`jst run`)
+## Investigations
 
-Compose TUI **steps** in the shell. Steps share one **Session** (staged metrics /
-entities / series + query filters) for the lifetime of the run.
-
-```bash
-# Catalog search → stage entities/metrics/series
-jst run console
-
-# Scope to a taxonomy and resource type
-jst run console --taxonomy sec-central-index-key --resource-type entity
-
-# Filter entities by typed graph edges (repeatable; OR'd)
-jst run console --relation classified_as:sic:7372 --resource-type entity
-
-# Chain steps
-jst run console --taxonomy country : discover --mode union : rank --taxonomy country
-
-# Preload a session JSON; set default export path
-jst run --session labor.json --output out.json rank --taxonomy country
-```
-
-Built-in steps:
-
-| Step | Role |
-|------|------|
-| `console` | Search catalog; stage into the session |
-| `discover` | Find metrics for session entities; preview coverage |
-| `rank` | Leaderboard entities for a session metric |
-
-Host keys (every step): `s` session · `f` find · `e` export · `n`/`p` next/prev · `?` step help · `q` quit.
+An **investigation** is the durable research unit: YAML under
+`~/.jstdata/investigations/` with **workspaces** (staged metrics / entities /
+series + query filters) and a tree of **actions** (reusable TUI screens).
 
 ```bash
-jst steps
-jst step console
-jst step rank --json
+jst investigation create housing-slowdown
+jst investigation load housing-slowdown
+jst investigation ls
+
+# Add actions (children of the active action unless --parent is set)
+jst action add console --args '{"taxonomy":"country","resource_type":"entity"}'
+jst action add discover --args '{"mode":"union"}' --activate
+jst action add rank --args '{"taxonomy":"country"}'
+jst action rm 2 --force
 ```
 
-### Saved workflows
+Built-in actions:
 
-Persist step pipelines (not session contents) under `~/.jstdata/workflows/`:
+| Action | Role |
+|--------|------|
+| `console` | Search catalog; stage into the workspace |
+| `discover` | Find metrics for workspace entities; preview coverage |
+| `rank` | Leaderboard entities for a workspace metric |
 
 ```bash
-jst workflow create --id gdp-rank --description "GDP board" -- \
-  console --taxonomy country : rank --taxonomy country
-
-jst workflow ls
-jst workflow run gdp-rank --session labor.json
-jst workflow rm gdp-rank
+jst action ls
+jst action show console
+jst action show rank --json
 ```
 
-(`jst workflows` remains a compatibility alias.)
+Inside the TUI: `:` command mode (`:workspace`, `:search metric gdp`, `:add`,
+`:rm`) · `n`/`p` actions · `N`/`P` workspaces · `?` help · `q` quit.
+
+Active context lives in `~/.jstdata/.active.yaml`.
 
 ### Tutorial
 
-```bash
-jst tutorial
-# same as: jst workflow run tutorial
-```
+First `jst investigation create` / `load` bootstraps a bundled tutorial
+investigation when none exist.
 
 ### Agents
 
@@ -119,37 +102,39 @@ jst agent-guide
 ```
 
 Prints a version-tied operating manual (hard rules, modes, recipes, and the live
-CLI/step reference). Prefer it over guessing command shapes or inventing ids.
+CLI/action reference). Prefer it over guessing command shapes or inventing ids.
 
-## The Scriptable CLI (`jst`)
+## The Scriptable API CLI (`jst api`)
 
-Pipe-friendly commands for automation and quick extraction.
+Pipe-friendly resource commands for automation and quick extraction. Nested
+under `jst api` so they stay distinct from investigation commands.
 
 ```bash
 # Fuzzy / set search (omit QUERY to list the matching set)
-jst metric search "defense spending" --taxonomy country --limit 20 --format json
-jst entity search --relation classified_as:sic:3674 --limit 50 --format json
-jst entity search --metric gdp --metric cpi --mode intersect --format json
+jst api metric search "defense spending" --taxonomy country --limit 20 --format json
+jst api entity search --relation classified_as:sic:3674 --limit 50 --format json
+jst api entity search --metric gdp --metric cpi --mode intersect --format json
 
 # Taxonomies
-jst taxonomy ls --format json
-jst taxonomy entities country --limit 20 --format json
+jst api taxonomy ls --format json
+jst api taxonomy entities country --limit 20 --format json
 
 # Bounded cross-sectional query (head/tail per series)
-jst query --metric inflation --entity "United States" --frequency Monthly --tail 20
-jst query --metric gdp --taxonomy country --tail 1 --sort-by value --limit 50 --format json
+jst api query --metric inflation --entity "United States" --frequency Monthly --tail 20
+jst api query --metric gdp --taxonomy country --tail 1 --sort-by value --limit 50 --format json
 
 # Deep history for one known series
-jst series observations ABC123 --start-date 2000-01-01 --limit 1000
+jst api series observations ABC123 --start-date 2000-01-01 --limit 1000
 
 # Entity graph
-jst entity relations cik:1045810 --format pretty
+jst api entity relations cik:1045810 --format pretty
 ```
 
 ## The Python API
 
 ```python
-from jstdata import JSTDataClient, Session
+from jstdata import JSTDataClient
+from jstdata.investigation import Workspace
 
 client = JSTDataClient()
 
@@ -180,17 +165,18 @@ entities = client.search_entities(
 # Deep history for one series
 obs = client.get_series_observations("ABC123", start_date="2000-01-01")
 
-# Stage intent for a later `jst run` / `jst workflow run`
-session = Session(
+# Workspace helpers project the same selectors as jst api query
+ws = Workspace(
     metric=["gross-domestic-product"],
     taxonomy="country",
     tail=1,
     sort_by="value",
 )
-session.save("labor.json")
+print(ws.to_cli())
+df = ws.execute_df(client)
 ```
 
 ## Extending the product
 
-See [AGENTS.md](AGENTS.md) for how steps, the host, and saved workflows are
+See [AGENTS.md](AGENTS.md) for how investigations, workspaces, and actions are
 structured when adding new interactive surface area.

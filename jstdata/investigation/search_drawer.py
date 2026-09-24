@@ -14,7 +14,7 @@ from textual.widgets import Label, ListItem, ListView
 
 from ..client import JSTDataClient
 from ..models import Entity, Metric, Series
-from ..session import Session
+from ..investigation.model import Workspace
 
 SearchType = Literal["metric", "entity", "series"]
 
@@ -118,13 +118,13 @@ class SearchDrawer(ModalScreen[None]):
     def __init__(
         self,
         client: JSTDataClient,
-        session: Session,
+        workspace: Workspace,
         resource_type: SearchType,
         query: str,
     ) -> None:
         super().__init__()
         self.client = client
-        self.session = session
+        self.workspace = workspace
         self.resource_type: SearchType = resource_type
         self.search_query = query
 
@@ -175,11 +175,11 @@ class SearchDrawer(ModalScreen[None]):
 
     def _add_resource(self, resource: Any) -> bool:
         if isinstance(resource, Metric) or self.resource_type == "metric":
-            added = self.session.add_metric(resource.id)
+            added = self.workspace.add_metric(resource.id)
         elif isinstance(resource, Entity) or self.resource_type == "entity":
-            added = self.session.add_entity(resource.id)
+            added = self.workspace.add_entity(resource.id)
         elif isinstance(resource, Series) or self.resource_type == "series":
-            added = self.session.add_series(resource.id)
+            added = self.workspace.add_series(resource.id)
         else:
             return False
         if added and hasattr(self.app, "remember_label"):

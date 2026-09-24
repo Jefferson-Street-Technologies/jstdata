@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from .client import APP_DIR, JSTDataClient
-from .session import Session
+from .investigation.model import Workspace
 
 CACHE_TTL = timedelta(hours=12)
 DEFAULT_CACHE_PATH = APP_DIR / "cache" / "resources.json"
@@ -24,12 +24,12 @@ def cache_key(resource_type: str, resource_id: str) -> str:
     return f"{resource_type}:{resource_id}"
 
 
-def _resource_type_for_id(session: Session, resource_id: str) -> str:
-    if resource_id in session.metric:
+def _resource_type_for_id(workspace: Workspace, resource_id: str) -> str:
+    if resource_id in workspace.metric:
         return "metric"
-    if resource_id in session.entity:
+    if resource_id in workspace.entity:
         return "entity"
-    if resource_id in session.series:
+    if resource_id in workspace.series:
         return "series"
     return "series"
 
@@ -113,27 +113,27 @@ class ResourceLabelCache:
             }
         self.save()
 
-    def hydrate_session(
+    def hydrate_workspace(
         self,
         client: JSTDataClient,
-        session: Session,
+        workspace: Workspace,
         labels: dict[str, str],
         *,
         now: Optional[datetime] = None,
     ) -> None:
-        """Fill ``labels`` for all session resource ids, refreshing if needed.
+        """Fill ``labels`` for all workspace resource ids, refreshing if needed.
 
         If any staged resource is absent from the cache or older than
-        ``CACHE_TTL``, all session ids are fetched via ``client.get_resources``
+        ``CACHE_TTL``, all workspace ids are fetched via ``client.get_resources``
         and written back to the cache.
         """
         typed: list[tuple[str, str]] = []
         seen: set[str] = set()
-        for rid in session.resource_ids():
+        for rid in workspace.resource_ids():
             if rid in seen:
                 continue
             seen.add(rid)
-            typed.append((_resource_type_for_id(session, rid), rid))
+            typed.append((_resource_type_for_id(workspace, rid), rid))
         if not typed:
             return
 

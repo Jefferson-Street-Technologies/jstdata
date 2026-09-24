@@ -9,9 +9,24 @@ from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Label, ListItem, ListView
 
-from ..session import Session
-from ..workflows.base import label_for
-from ..workflows.session_manager import SessionResourceRow
+from ..investigation.model import Workspace
+from ..actions.base import label_for
+
+
+class WorkspaceResourceRow(ListItem):
+    """One staged resource in the workspace drawer list."""
+
+    def __init__(self, resource_id: str, resource_type: str, display_name: str) -> None:
+        super().__init__()
+        self.resource_id = resource_id
+        self.resource_type = resource_type
+        self.display_name = display_name
+
+    def compose(self) -> ComposeResult:
+        yield Label(
+            f"{self.resource_type.upper():<8} {self.display_name}  [{self.resource_id}]",
+            classes="sess-row-label",
+        )
 
 
 class WorkspaceDrawer(ModalScreen[None]):
@@ -44,7 +59,7 @@ class WorkspaceDrawer(ModalScreen[None]):
         border: solid #222;
     }
 
-    SessionResourceRow {
+    WorkspaceResourceRow {
         height: 1;
         min-height: 1;
         max-height: 1;
@@ -53,8 +68,8 @@ class WorkspaceDrawer(ModalScreen[None]):
         overflow: hidden;
     }
 
-    SessionResourceRow:hover,
-    SessionResourceRow.-highlighted {
+    WorkspaceResourceRow:hover,
+    WorkspaceResourceRow.-highlighted {
         background: #1a3a1a;
     }
 
@@ -88,9 +103,9 @@ class WorkspaceDrawer(ModalScreen[None]):
         Binding("up", "cursor_up", "Up", show=False),
     ]
 
-    def __init__(self, session: Session, labels: dict[str, str]) -> None:
+    def __init__(self, workspace: Workspace, labels: dict[str, str]) -> None:
         super().__init__()
-        self.session = session
+        self.workspace = workspace
         self.labels = labels
 
     def compose(self) -> ComposeResult:
@@ -111,11 +126,11 @@ class WorkspaceDrawer(ModalScreen[None]):
         list_view = self.query_one("#ws-drawer-list", ListView)
         list_view.clear()
         entries: list[tuple[str, str]] = []
-        for mid in self.session.metric:
+        for mid in self.workspace.metric:
             entries.append(("metric", mid))
-        for eid in self.session.entity:
+        for eid in self.workspace.entity:
             entries.append(("entity", eid))
-        for sid in self.session.series:
+        for sid in self.workspace.series:
             entries.append(("series", sid))
         if not entries:
             list_view.append(
@@ -124,19 +139,19 @@ class WorkspaceDrawer(ModalScreen[None]):
             return
         for rtype, rid in entries:
             list_view.append(
-                SessionResourceRow(rid, rtype, label_for(self.labels, rid))
+                WorkspaceResourceRow(rid, rtype, label_for(self.labels, rid))
             )
 
-    def _highlighted_row(self) -> SessionResourceRow | None:
+    def _highlighted_row(self) -> WorkspaceResourceRow | None:
         child = self.query_one("#ws-drawer-list", ListView).highlighted_child
-        return child if isinstance(child, SessionResourceRow) else None
+        return child if isinstance(child, WorkspaceResourceRow) else None
 
     def action_remove(self) -> None:
         row = self._highlighted_row()
         if row is None:
             return
         rid = row.resource_id
-        self.session.remove_id(rid)
+        self.workspace.remove_id(rid)
         self.labels.pop(rid, None)
         self.rebuild()
         self.notify(f"Removed {rid}")
