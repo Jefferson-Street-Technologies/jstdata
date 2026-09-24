@@ -107,7 +107,11 @@ HOME = register(
         create_screen=create_home_screen,
         arguments=(),
         bindings=(
-            ActionBinding(":", "command", "Open command palette"),
+            ActionBinding(
+                ":",
+                "command",
+                "Open command palette (Tab cycle, Space/Enter lock)",
+            ),
             ActionBinding(
                 "n / p · ↑/↓",
                 "siblings",

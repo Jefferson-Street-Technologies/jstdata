@@ -49,6 +49,15 @@ COMMANDS: tuple[CommandSpec, ...] = (
 _COMMAND_BY_NAME = {c.name: c for c in COMMANDS}
 SEARCH_TYPES = frozenset({"metric", "entity", "series"})
 
+_ADD_FLAGS = (
+    "--args",
+    "--parent",
+    "--description",
+    "--activate",
+    "--no-activate",
+)
+_RM_FLAGS = ("--force",)
+
 
 @dataclass
 class ParsedCommand:
@@ -63,6 +72,119 @@ def list_command_suggestions(prefix: str = "") -> list[CommandSpec]:
     if not p:
         return list(COMMANDS)
     return [c for c in COMMANDS if c.name.startswith(p)]
+
+
+def _action_type_ids() -> list[str]:
+    """Registered action type ids (catalog), sorted."""
+    import jstdata.actions  # noqa: F401
+    import jstdata.investigation.home  # noqa: F401
+
+    from ..actions.base import list_actions
+
+    return [spec.id for spec in list_actions()]
+
+
+def _strip_leading_colon(raw: str) -> str:
+    """Drop a leading ``:`` and its surrounding left-padding; keep a trailing space."""
+    i = 0
+    while i < len(raw) and raw[i].isspace():
+        i += 1
+    if i < len(raw) and raw[i] == ":":
+        i += 1
+        while i < len(raw) and raw[i].isspace():
+            i += 1
+    return raw[i:]
+
+
+def _tokens_and_partial(text: str) -> tuple[list[str], str]:
+    """Split into completed tokens and the partial token under the cursor.
+
+    A trailing space means the partial token is empty (ready for the next word).
+    """
+    if not text:
+        return [], ""
+    ends_space = text[-1].isspace()
+    try:
+        tokens = shlex.split(text)
+    except ValueError:
+        tokens = text.split()
+    if ends_space:
+        return tokens, ""
+    if not tokens:
+        return [], ""
+    return tokens[:-1], tokens[-1]
+
+
+def _prefix_matches(candidates: list[str], partial: str) -> list[str]:
+    p = partial.lower()
+    return [c for c in candidates if c.lower().startswith(p)]
+
+
+def _rebuild(head: list[str], choice: str) -> str:
+    return " ".join([*head, choice]).strip()
+
+
+def complete_command_line(raw: str) -> list[str]:
+    """Return candidate command lines for Tab cycling (no leading ``:``).
+
+    Candidates are full lines to substitute into the input. Empty list means
+    nothing to complete for the current position.
+
+    When the input is exactly a known command name (e.g. ``add``), candidates
+    are the *next* token's options (``add console``, …) so Tab cycles those
+    rather than no-oping on the command name itself.
+    """
+    text = _strip_leading_colon(raw)
+    head, partial = _tokens_and_partial(text)
+
+    if not head:
+        matches = _prefix_matches([c.name for c in COMMANDS], partial)
+        # Exact command name → jump to next-token completions.
+        if len(matches) == 1 and matches[0] == partial.lower() and partial:
+            return complete_command_line(matches[0] + " ")
+        return matches
+
+    cmd = head[0].lower()
+    if cmd not in _COMMAND_BY_NAME:
+        return []
+
+    if cmd == "workspace":
+        return []
+
+    if cmd == "search":
+        if len(head) == 1:
+            matches = _prefix_matches(sorted(SEARCH_TYPES), partial)
+            return [_rebuild(head, m) for m in matches]
+        return []
+
+    if cmd == "add":
+        if len(head) == 1:
+            matches = _prefix_matches(_action_type_ids(), partial)
+            return [_rebuild(head, m) for m in matches]
+        used = set(head[2:])
+        value_flags = {"--args", "--parent", "--description"}
+        if head[-1] in value_flags:
+            return []
+        available = [f for f in _ADD_FLAGS if f not in used]
+        if "--activate" in used:
+            available = [f for f in available if f != "--no-activate"]
+        if "--no-activate" in used:
+            available = [f for f in available if f != "--activate"]
+        matches = _prefix_matches(available, partial)
+        return [_rebuild(head, m) for m in matches]
+
+    if cmd == "rm":
+        if len(head) == 1:
+            if partial.startswith("-"):
+                matches = _prefix_matches(list(_RM_FLAGS), partial)
+                return [_rebuild(head, m) for m in matches]
+            return []
+        used = set(head[2:])
+        available = [f for f in _RM_FLAGS if f not in used]
+        matches = _prefix_matches(available, partial)
+        return [_rebuild(head, m) for m in matches]
+
+    return []
 
 
 def parse_command_line(raw: str) -> ParsedCommand:
