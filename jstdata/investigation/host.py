@@ -5,10 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import ModalScreen, Screen
+from textual.timer import Timer
 from textual.widgets import Input, Label, Static
 
 from ..client import JSTDataClient
@@ -23,7 +25,12 @@ from .api import (
 from .bootstrap import ensure_bootstrap
 from .command_palette import CommandPalette
 from .commands import CommandError, ParsedCommand, parse_command_line
-from .model import Investigation, InvestigationError, Workspace
+from .model import (
+    Investigation,
+    InvestigationError,
+    ROOT_ACTION_ID,
+    Workspace,
+)
 from .search_drawer import SearchDrawer
 from .store import investigation_path, load_investigation
 from .workspace_drawer import WorkspaceDrawer
@@ -147,7 +154,11 @@ class InvestigationHost(App):
         Binding("P", "parent_action", "To parent", key_display="P"),
         Binding("right", "child_action", "Into child", show=False),
         Binding("left", "parent_action", "To parent", show=False),
+        # ``dd`` is handled in on_key — Textual commas mean alternate keys, not chords.
     ]
+
+    # Seconds to wait for the second ``d`` (vim-style).
+    _DD_TIMEOUT = 0.45
 
     def __init__(
         self,
@@ -172,6 +183,8 @@ class InvestigationHost(App):
         self._invalid = False
         self._suppress_poll = False
         self._command_history: list[str] = []
+        self._pending_d = False
+        self._d_timer: Timer | None = None
 
     def _active_file(self) -> Path:
         return active_path(app_dir=self.app_dir)
@@ -421,6 +434,67 @@ class InvestigationHost(App):
 
     def action_parent_action(self) -> None:
         self._navigate_shallower()
+
+    def _clear_pending_d(self) -> None:
+        self._pending_d = False
+        if self._d_timer is not None:
+            self._d_timer.stop()
+            self._d_timer = None
+
+    def _delete_action_allowed(self) -> bool:
+        """Same gates as check_action for delete — used by the ``dd`` chord."""
+        if self._invalid or not self.active or not self.investigation:
+            return False
+        if isinstance(self.focused, Input):
+            return False
+        if isinstance(self.screen, (WorkspaceDrawer, SearchDrawer, CommandPalette)):
+            return False
+        return True
+
+    def on_key(self, event: events.Key) -> None:
+        # Textual has no sequential chords; ``Binding("d,d")`` means ``d`` OR ``d``.
+        if event.key != "d":
+            if self._pending_d:
+                self._clear_pending_d()
+            return
+        if not self._delete_action_allowed():
+            self._clear_pending_d()
+            return
+        if self._pending_d:
+            self._clear_pending_d()
+            event.prevent_default()
+            event.stop()
+            self.action_delete_action()
+            return
+        self._pending_d = True
+        self._d_timer = self.set_timer(self._DD_TIMEOUT, self._clear_pending_d)
+        event.prevent_default()
+        event.stop()
+
+    def action_delete_action(self) -> None:
+        """``dd`` — cascade-delete the active action (and children). No confirm."""
+        if not self._delete_action_allowed():
+            return
+        assert self.active is not None
+        assert self.investigation is not None
+        action_id = self.active.action
+        if action_id == ROOT_ACTION_ID:
+            self.notify("Cannot delete the root action", severity="warning")
+            return
+        try:
+            removed = remove_action(
+                self.investigation,
+                action_id,
+                force=True,
+                app_dir=self.app_dir,
+            )
+        except InvestigationError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        self._order = self.investigation.bfs_order()
+        self.active = load_active(app_dir=self.app_dir)
+        self.notify("Deleted " + ", ".join(str(i) for i in removed))
+        self._show_current_action(reset=True)
 
     def cycle_workspace(self, delta: int) -> None:
         """Switch workspaces (workspace drawer). Reopens the drawer if it was top."""

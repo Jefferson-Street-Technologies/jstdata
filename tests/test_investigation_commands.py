@@ -6,7 +6,9 @@ import pytest
 
 from jstdata.investigation.commands import (
     CommandError,
+    action_arg_doc_lines,
     complete_command_line,
+    completion_doc,
     list_command_suggestions,
     parse_command_line,
 )
@@ -72,6 +74,39 @@ def test_complete_rm_force():
     assert complete_command_line("rm 3 ") == ["rm 3 --force"]
     assert complete_command_line("rm 3 --") == ["rm 3 --force"]
     assert complete_command_line("rm 3 --force ") == []
+
+
+def test_completion_docs_for_actions_and_args():
+    assert "workspace" in completion_doc("workspace").lower() or completion_doc(
+        "workspace"
+    )
+    assert "Search" in completion_doc("search metric") or "metric" in completion_doc(
+        "search metric"
+    ).lower()
+    console_doc = completion_doc("add console")
+    assert console_doc
+    assert "metric" in console_doc.lower() or "stage" in console_doc.lower()
+    arg_lines = action_arg_doc_lines("console")
+    assert any("taxonomy" in line for line in arg_lines)
+    assert any("relation" in line for line in arg_lines)
+    assert "JSON" in completion_doc("add console --args")
+    home_args = action_arg_doc_lines("home")
+    assert home_args == ["  (no seed args)"]
+
+
+def test_format_suggestions_includes_action_docs():
+    from jstdata.investigation.command_palette import CommandPalette
+
+    palette = CommandPalette()
+    text = palette._format_suggestions("add c")
+    assert "add console" in text
+    assert "taxonomy" in text
+    # Highlighted cycle expands args under the selected type.
+    palette._completions = complete_command_line("add ")
+    palette._comp_index = palette._completions.index("add console")
+    highlighted = palette._format_suggestions("add console")
+    assert "taxonomy" in highlighted
+    assert "relation" in highlighted
 
 
 def test_tab_from_add_cycles_action_types_not_flags():

@@ -12,7 +12,9 @@ from textual.widgets import Input, Static
 from .commands import (
     COMMANDS,
     CommandError,
+    action_arg_doc_lines,
     complete_command_line,
+    completion_doc,
     list_command_suggestions,
     parse_command_line,
 )
@@ -38,7 +40,7 @@ class CommandPalette(ModalScreen[str | None]):
 
     #cmd-suggestions {
         height: auto;
-        max-height: 8;
+        max-height: 14;
         color: #c0c0c0;
         padding: 0 1;
     }
@@ -111,18 +113,66 @@ class CommandPalette(ModalScreen[str | None]):
             return self._completions
         return complete_command_line(text)
 
+    def _escape_markup(self, text: str) -> str:
+        return text.replace("[", "\\[")
+
+    def _format_completion_row(
+        self, cand: str, *, highlighted: bool, show_args: bool
+    ) -> list[str]:
+        """Candidate line (+ optional arg docs for an action type)."""
+        safe = self._escape_markup(cand)
+        doc = self._escape_markup(completion_doc(cand))
+        if highlighted:
+            head = f"[reverse bold #0a0a0a on #4ade80]{safe}[/]"
+            row = f"{head}  {doc}" if doc else head
+        else:
+            row = f"{safe:<28}  {doc}" if doc else safe
+        rows = [row]
+        tokens = cand.split()
+        if (
+            show_args
+            and len(tokens) == 2
+            and tokens[0].lower() == "add"
+            and not tokens[1].startswith("-")
+        ):
+            for line in action_arg_doc_lines(tokens[1]):
+                rows.append(self._escape_markup(line))
+        return rows
+
     def _format_suggestions(self, text: str) -> str:
         body = self._body(text)
         parts = body.split(None, 1) if body else []
         completions = self._candidate_list(text)
         if completions:
-            lines = []
+            lines: list[str] = []
+            # When completing flags for `add <type>`, show that type's args once.
+            add_type = self._shared_add_action_type(completions)
+            if add_type and self._comp_index < 0:
+                lines.append(f"  args for {add_type}:")
+                lines.extend(
+                    self._escape_markup(line)
+                    for line in action_arg_doc_lines(add_type)
+                )
+            action_type_cands = [
+                c
+                for c in completions
+                if len(c.split()) == 2
+                and c.split()[0].lower() == "add"
+                and not c.split()[1].startswith("-")
+            ]
+            # Expand args for the highlighted type, or the sole action-type match.
+            expand_all_types = len(action_type_cands) == 1
             for i, cand in enumerate(completions):
-                safe = cand.replace("[", "\\[")
-                if i == self._comp_index:
-                    lines.append(f"[reverse bold #0a0a0a on #4ade80]{safe}[/]")
-                else:
-                    lines.append(safe)
+                show_args = (i == self._comp_index) or (
+                    expand_all_types and cand in action_type_cands
+                )
+                lines.extend(
+                    self._format_completion_row(
+                        cand,
+                        highlighted=(i == self._comp_index),
+                        show_args=show_args,
+                    )
+                )
             return "\n".join(lines)
         if parts and parts[0] in {c.name for c in COMMANDS}:
             match = next(c for c in COMMANDS if c.name == parts[0])
@@ -133,6 +183,25 @@ class CommandPalette(ModalScreen[str | None]):
         if not specs:
             return ""
         return "\n".join(s.help_line() for s in specs)
+
+    @staticmethod
+    def _shared_add_action_type(completions: list[str]) -> str | None:
+        """If every candidate is ``add <type> --flag``, return ``<type>``."""
+        found: str | None = None
+        for cand in completions:
+            tokens = cand.split()
+            if (
+                len(tokens) < 3
+                or tokens[0].lower() != "add"
+                or tokens[1].startswith("-")
+                or not tokens[-1].startswith("-")
+            ):
+                return None
+            if found is None:
+                found = tokens[1]
+            elif found != tokens[1]:
+                return None
+        return found
 
     def _with_colon_style(self, completed: str, current: str) -> str:
         if current.lstrip().startswith(":"):

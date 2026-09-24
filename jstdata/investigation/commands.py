@@ -58,6 +58,22 @@ _ADD_FLAGS = (
 )
 _RM_FLAGS = ("--force",)
 
+_ADD_FLAG_DOCS = {
+    "--args": "Seed args as a JSON object (see action fields below)",
+    "--parent": "Parent action id (default: active)",
+    "--description": "Optional note stored on the action node",
+    "--activate": "Switch to the new action after adding (default)",
+    "--no-activate": "Keep the current action active",
+}
+_RM_FLAG_DOCS = {
+    "--force": "Confirm cascade delete / removing the active action",
+}
+_SEARCH_TYPE_DOCS = {
+    "metric": "Search metrics in the catalog",
+    "entity": "Search entities in the catalog",
+    "series": "Search series in the catalog",
+}
+
 
 @dataclass
 class ParsedCommand:
@@ -72,6 +88,72 @@ def list_command_suggestions(prefix: str = "") -> list[CommandSpec]:
     if not p:
         return list(COMMANDS)
     return [c for c in COMMANDS if c.name.startswith(p)]
+
+
+def completion_doc(candidate: str) -> str:
+    """One-line docstring for a Tab-completion candidate."""
+    tokens = candidate.strip().split()
+    if not tokens:
+        return ""
+    if len(tokens) == 1:
+        spec = _COMMAND_BY_NAME.get(tokens[0].lower())
+        return spec.summary if spec else ""
+
+    cmd = tokens[0].lower()
+    if cmd == "search" and len(tokens) == 2:
+        return _SEARCH_TYPE_DOCS.get(tokens[1].lower(), "")
+
+    if cmd == "add":
+        if len(tokens) == 2 and not tokens[1].startswith("-"):
+            return _action_description(tokens[1])
+        flag = tokens[-1]
+        if flag.startswith("-"):
+            return _ADD_FLAG_DOCS.get(flag, "")
+
+    if cmd == "rm":
+        flag = tokens[-1]
+        if flag.startswith("-"):
+            return _RM_FLAG_DOCS.get(flag, "")
+
+    return ""
+
+
+def action_arg_doc_lines(action_type: str) -> list[str]:
+    """Indented lines documenting ``--args`` fields for an action type."""
+    import jstdata.actions  # noqa: F401
+    import jstdata.investigation.home  # noqa: F401
+
+    from ..actions.base import get_action
+
+    try:
+        spec = get_action(action_type)
+    except KeyError:
+        return []
+    if not spec.arguments:
+        return ["  (no seed args)"]
+    lines: list[str] = []
+    for arg in spec.arguments:
+        bits = [arg.type]
+        if arg.multiple:
+            bits.append("repeatable")
+        if arg.required:
+            bits.append("required")
+        if arg.choices:
+            bits.append("choices: " + "|".join(arg.choices))
+        lines.append(f"  {arg.name} ({', '.join(bits)})  {arg.description}")
+    return lines
+
+
+def _action_description(action_type: str) -> str:
+    import jstdata.actions  # noqa: F401
+    import jstdata.investigation.home  # noqa: F401
+
+    from ..actions.base import get_action
+
+    try:
+        return get_action(action_type).description
+    except KeyError:
+        return ""
 
 
 def _action_type_ids() -> list[str]:

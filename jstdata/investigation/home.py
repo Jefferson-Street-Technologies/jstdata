@@ -122,6 +122,11 @@ HOME = register(
                 "depth",
                 "Into first child / up to parent",
             ),
+            ActionBinding(
+                "dd",
+                "delete_action",
+                "Delete this action and all children (no confirm)",
+            ),
         ),
         example="jst investigation load tutorial",
     )
