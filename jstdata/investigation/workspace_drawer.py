@@ -101,6 +101,10 @@ class WorkspaceDrawer(ModalScreen[None]):
         Binding("k", "cursor_up", "Up", show=False),
         Binding("down", "cursor_down", "Down", show=False),
         Binding("up", "cursor_up", "Up", show=False),
+        Binding("h", "prev_workspace", "Prev workspace", show=False),
+        Binding("l", "next_workspace", "Next workspace", show=False),
+        Binding("left", "prev_workspace", "Prev workspace", show=False),
+        Binding("right", "next_workspace", "Next workspace", show=False),
     ]
 
     def __init__(self, workspace: Workspace, labels: dict[str, str]) -> None:
@@ -113,6 +117,7 @@ class WorkspaceDrawer(ModalScreen[None]):
             yield Label("WORKSPACE", id="ws-drawer-title")
             yield ListView(id="ws-drawer-list")
             yield Label(
+                "[bold]j/k[/bold] rows  ·  [bold]h/l[/bold] workspaces  ·  "
                 "[bold]backspace[/bold] remove  ·  [bold]esc[/bold] close",
                 id="ws-drawer-hint",
                 markup=True,
@@ -120,7 +125,13 @@ class WorkspaceDrawer(ModalScreen[None]):
 
     def on_mount(self) -> None:
         self.rebuild()
+        self._refresh_title()
         self.query_one("#ws-drawer-list", ListView).focus()
+
+    def _refresh_title(self) -> None:
+        wid = getattr(self.workspace, "id", "?")
+        wlabel = getattr(self.workspace, "label", None) or f"workspace {wid}"
+        self.query_one("#ws-drawer-title", Label).update(f"WORKSPACE · {wlabel}")
 
     def rebuild(self) -> None:
         list_view = self.query_one("#ws-drawer-list", ListView)
@@ -166,6 +177,18 @@ class WorkspaceDrawer(ModalScreen[None]):
 
     def action_cursor_up(self) -> None:
         self.query_one("#ws-drawer-list", ListView).action_cursor_up()
+
+    def action_next_workspace(self) -> None:
+        self._cycle_workspace(+1)
+
+    def action_prev_workspace(self) -> None:
+        self._cycle_workspace(-1)
+
+    def _cycle_workspace(self, delta: int) -> None:
+        cycle = getattr(self.app, "cycle_workspace", None)
+        if callable(cycle):
+            # Host pops this drawer, switches workspace, and re-pushes a fresh one.
+            cycle(delta)
 
     def action_dismiss(self) -> None:
         self.dismiss()

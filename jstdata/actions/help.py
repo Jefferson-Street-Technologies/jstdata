@@ -77,7 +77,8 @@ class HelpScreen(ModalScreen):
         with Vertical(id="help-container"):
             yield Label(f"{self.action_name.upper()} // KEYBINDINGS", id="help-title")
             yield Label(
-                "Investigation keys: : commands · n/p actions · N/P workspaces · q quit.",
+                "Investigation keys: : commands · n/p siblings · N/P depth · "
+                "↑↓←→ same · :workspace then h/l for workspaces · q quit.",
                 id="help-note",
             )
             if not self.action_bindings:

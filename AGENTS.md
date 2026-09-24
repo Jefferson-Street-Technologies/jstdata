@@ -24,8 +24,9 @@ For **how to operate** the product as an agent (policy, modes, recipes), run
    API; never persisted in the investigation). Universal UI:
    - `:` command mode (`:workspace`, `:search`, `:add`, `:rm`, …)
    - left workspace drawer / bottom search drawer
-   - `n` / `p` next / previous action in the tree
-   - `N` / `P` next / previous workspace
+   - `n` / `p` (or ↑/↓) next / previous sibling action
+   - `N` / `P` (or →/←) into first child / up to parent
+   - In `:workspace` drawer: `j`/`k` rows, `h`/`l` cycle workspaces
    - `q` quit
    - `?` action-specific keybindings (from the catalog entry)
 4. **Investigation** — named YAML under `~/.jstdata/investigations/` that stores
@@ -123,6 +124,7 @@ Seed args go on `arguments`. They configure the TUI via
 | Describe one action | `jst action show <id>` / `jst action show <id> --json` |
 | Create investigation | `jst investigation create <id>` |
 | Open investigation | `jst investigation load <id>` |
+| Resume active | `jst run` |
 | List investigations | `jst investigation ls` |
 | Add action | `jst action add console --args '{"taxonomy":"country"}'` |
 | Add and activate | `jst action add discover --activate` |
@@ -130,7 +132,7 @@ Seed args go on `arguments`. They configure the TUI via
 | Resolve resources | `jst api metric search …` / `jst api entity search …` |
 | Query / observations | `jst api query …` / `jst api series observations …` |
 | Agent bootstrap | `jst agent-guide` |
-| Inside the TUI | `:` commands · `n`/`p` actions · `N`/`P` workspaces · `?` · `q` |
+| Inside the TUI | `:` commands · `n`/`p` siblings · `N`/`P` depth · `:workspace` then `h`/`l` · `?` · `q` |
 
 ## Catalog / search notes (for action authors)
 

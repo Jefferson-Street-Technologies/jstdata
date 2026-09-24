@@ -108,8 +108,16 @@ HOME = register(
         arguments=(),
         bindings=(
             ActionBinding(":", "command", "Open command palette"),
-            ActionBinding("n / p", "navigate", "Next / previous action in BFS order"),
-            ActionBinding("N / P", "workspace", "Next / previous workspace"),
+            ActionBinding(
+                "n / p · ↑/↓",
+                "siblings",
+                "Next / previous sibling action",
+            ),
+            ActionBinding(
+                "N / P · →/←",
+                "depth",
+                "Into first child / up to parent",
+            ),
         ),
         example="jst investigation load tutorial",
     )

@@ -378,6 +378,20 @@ class Investigation:
         kids.sort(key=lambda a: a.id)
         return kids
 
+    def siblings(self, action_id: int) -> list[Action]:
+        """Actions that share ``action_id``'s parent (including itself), by id.
+
+        The root is alone in its sibling group.
+        """
+        action = self.get_action(action_id)
+        if action.parent_id is None:
+            return [action]
+        return self.children(action.parent_id)
+
+    def sibling_ids(self, action_id: int) -> list[int]:
+        """Ids of ``siblings(action_id)``."""
+        return [a.id for a in self.siblings(action_id)]
+
     def bfs_order(self) -> list[int]:
         """Breadth-first traversal ids starting at the root."""
         self.validate()

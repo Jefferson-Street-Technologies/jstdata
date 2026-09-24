@@ -63,6 +63,7 @@ series + query filters) and a tree of **actions** (reusable TUI screens).
 jst investigation create housing-slowdown
 jst investigation load housing-slowdown
 jst investigation ls
+jst run   # reopen the active investigation / workspace / action
 
 # Add actions (children of the active action unless --parent is set)
 jst action add console --args '{"taxonomy":"country","resource_type":"entity"}'
@@ -86,7 +87,8 @@ jst action show rank --json
 ```
 
 Inside the TUI: `:` command mode (`:workspace`, `:search metric gdp`, `:add`,
-`:rm`) · `n`/`p` actions · `N`/`P` workspaces · `?` help · `q` quit.
+`:rm`) · `n`/`p` (↑/↓) siblings · `N`/`P` (→/←) depth · in workspace drawer
+`h`/`l` cycle workspaces · `?` help · `q` quit.
 
 Active context lives in `~/.jstdata/.active.yaml`.
 

@@ -549,8 +549,7 @@ CONSOLE = register(
         bindings=(
             ActionBinding("/", "focus_filter", "Search the catalog"),
             ActionBinding("enter", "submit", "Focus results / add highlighted item"),
-            ActionBinding("j / ↓", "cursor_down", "Move highlight down"),
-            ActionBinding("k / ↑", "cursor_up", "Move highlight up"),
+            ActionBinding("j / k", "cursor", "Move highlight down / up"),
             ActionBinding("escape", "leave_filter", "Leave the search field"),
         ),
         example=(

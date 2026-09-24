@@ -40,7 +40,7 @@ def test_agent_guide_cli():
     assert "`jst api metric search`" in out
     assert "`jst investigation create`" in out
     assert "`jst action add`" in out
-    assert "jst run" not in out
+    assert "`jst run`" in out
     assert "jst workflow" not in out
     assert "Never invent" in out
     assert "--format json" in out

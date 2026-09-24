@@ -269,9 +269,34 @@ def test_actions_plural_removed(runner):
     assert result.exit_code != 0
 
 
-def test_run_removed(runner):
-    result = runner.invoke(cli, ["run", "console"])
-    assert result.exit_code != 0
+def test_run_launches_active(runner, monkeypatch, tmp_path):
+    launched: list[str] = []
+
+    def fake_run(client, *, app_dir=None):
+        launched.append("run")
+
+    from jstdata import investigation as inv_pkg
+    from jstdata.investigation import api as api_mod
+    import jstdata.investigation.active as active_mod
+    import jstdata.investigation.store as store_mod
+
+    monkeypatch.setattr(store_mod, "INVESTIGATIONS_DIR", tmp_path / "investigations")
+    monkeypatch.setattr(active_mod, "APP_DIR", tmp_path)
+    monkeypatch.setattr("jstdata.client.APP_DIR", tmp_path)
+    monkeypatch.setattr(inv_pkg, "run_investigation_host", fake_run)
+
+    def require_tmp(*, app_dir=None):
+        return api_mod.require_active_investigation(app_dir=tmp_path)
+
+    monkeypatch.setattr(inv_pkg, "require_active_investigation", require_tmp)
+
+    api_mod.ensure_bootstrap(app_dir=tmp_path)
+    api_mod.create_investigation("alpha", title="Alpha", app_dir=tmp_path)
+
+    result = runner.invoke(cli, ["run"])
+    assert result.exit_code == 0, result.output
+    assert "alpha" in result.output
+    assert launched == ["run"]
 
 
 def test_workflow_removed(runner):

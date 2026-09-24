@@ -79,7 +79,7 @@ def test_workspace_order():
     assert inv.workspace_order() == [0, 1, 2]
 
 
-def test_workspace_session_projection():
+def test_workspace_resource_helpers():
     ws = Workspace(
         id=0,
         label="Main",
@@ -94,6 +94,19 @@ def test_workspace_session_projection():
     assert ws.add_metric("cpi") is True
     assert ws.metric == ["gdp", "cpi"]
     assert "gdp" in ws.to_query_kwargs()["metric"]
+
+
+def test_action_siblings_and_children():
+    inv = Investigation.new("tree")
+    a = inv.add_action("console", parent_id=0)
+    b = inv.add_action("console", parent_id=0)
+    c = inv.add_action("discover", parent_id=a.id)
+    assert inv.sibling_ids(a.id) == [a.id, b.id]
+    assert inv.sibling_ids(b.id) == [a.id, b.id]
+    assert inv.sibling_ids(0) == [0]
+    assert [x.id for x in inv.children(0)] == [a.id, b.id]
+    assert [x.id for x in inv.children(a.id)] == [c.id]
+    assert inv.siblings(c.id) == [c]
 
 
 def test_tree_validation_rejects_orphan_and_cycle():

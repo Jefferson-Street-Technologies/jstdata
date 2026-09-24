@@ -547,6 +547,31 @@ def action_rm(action_id: int, force: bool) -> None:
     )
 
 
+@cli.command("run")
+def run_cmd() -> None:
+    """Open the TUI for the active investigation / workspace / action.
+
+    \b
+    jst run
+    """
+    from .investigation import (
+        InvestigationError,
+        require_active_investigation,
+        run_investigation_host,
+    )
+
+    try:
+        inv, ctx = require_active_investigation()
+    except InvestigationError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(2)
+    click.echo(
+        f"Running {inv.id!r} ({inv.title})  "
+        f"workspace={ctx.workspace}  action={ctx.action}"
+    )
+    run_investigation_host(client)
+
+
 @cli.group("investigation")
 def investigation_group() -> None:
     """Create and open persistent investigations."""

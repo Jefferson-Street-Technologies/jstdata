@@ -138,10 +138,15 @@ class InvestigationHost(App):
         Binding("escape", "back", "Back"),
         Binding("question_mark", "show_help", "Action help", key_display="?"),
         Binding(":", "command_palette", "Command", key_display=":"),
-        Binding("n", "next_action", "Next action"),
-        Binding("p", "prev_action", "Prev action"),
-        Binding("N", "next_workspace", "Next workspace", key_display="N"),
-        Binding("P", "prev_workspace", "Prev workspace", key_display="P"),
+        # Tree: siblings laterally, depth via N/P (and arrows).
+        Binding("n", "next_sibling", "Next sibling"),
+        Binding("p", "prev_sibling", "Prev sibling"),
+        Binding("down", "next_sibling", "Next sibling", show=False),
+        Binding("up", "prev_sibling", "Prev sibling", show=False),
+        Binding("N", "child_action", "Into child", key_display="N"),
+        Binding("P", "parent_action", "To parent", key_display="P"),
+        Binding("right", "child_action", "Into child", show=False),
+        Binding("left", "parent_action", "To parent", show=False),
     ]
 
     def __init__(
@@ -310,9 +315,9 @@ class InvestigationHost(App):
             )
             kwargs.setdefault(
                 "meta",
-                f"action {action.id}/{self._order[-1] if self._order else 0}  ·  "
-                f"{label} ({ws_pos})  ·  : commands  ·  n/p actions  ·  "
-                f"N/P workspaces  ·  ? help  ·  q quit",
+                f"action {action.id}  ·  {label} ({ws_pos})  ·  "
+                f": commands  ·  n/p siblings  ·  N/P depth  ·  "
+                f"? help  ·  q quit",
             )
 
         return spec.create_screen(self.client, self.workspace, **kwargs)
@@ -405,41 +410,74 @@ class InvestigationHost(App):
             self._show_current_action(reset=True)
         self.notify("Investigation reloaded", timeout=2)
 
-    def action_next_action(self) -> None:
-        self._navigate_action(+1)
+    def action_next_sibling(self) -> None:
+        self._navigate_sibling(+1)
 
-    def action_prev_action(self) -> None:
-        self._navigate_action(-1)
+    def action_prev_sibling(self) -> None:
+        self._navigate_sibling(-1)
 
-    def action_next_workspace(self) -> None:
-        self._navigate_workspace(+1)
+    def action_child_action(self) -> None:
+        self._navigate_deeper()
 
-    def action_prev_workspace(self) -> None:
-        self._navigate_workspace(-1)
+    def action_parent_action(self) -> None:
+        self._navigate_shallower()
 
-    def _navigate_action(self, delta: int) -> None:
-        if self._invalid or not self.active or not self._order:
+    def cycle_workspace(self, delta: int) -> None:
+        """Switch workspaces (workspace drawer). Reopens the drawer if it was top."""
+        reopen = isinstance(self.screen, WorkspaceDrawer)
+        if reopen:
+            self.pop_screen()
+        self._navigate_workspace(delta)
+        if reopen:
+            self.push_screen(WorkspaceDrawer(self.workspace, self.labels))
+
+    def _activate_action(self, action_id: int) -> None:
+        assert self.active is not None
+        ctx = ActiveContext(
+            investigation=self.active.investigation,
+            workspace=self.active.workspace,
+            action=action_id,
+        )
+        self._write_active(ctx)
+        self._show_current_action(reset=True)
+
+    def _navigate_sibling(self, delta: int) -> None:
+        if self._invalid or not self.active or not self.investigation:
             self.notify("No actions to navigate", severity="warning")
             return
+        sibs = self.investigation.sibling_ids(self.active.action)
+        if not sibs:
+            return
         try:
-            idx = self._order.index(self.active.action)
+            idx = sibs.index(self.active.action)
         except ValueError:
             idx = 0
         new_idx = idx + delta
         if new_idx < 0:
-            self.notify("First action", severity="warning")
+            self.notify("First sibling", severity="warning")
             return
-        if new_idx >= len(self._order):
-            self.notify("Last action", severity="warning")
+        if new_idx >= len(sibs):
+            self.notify("Last sibling", severity="warning")
             return
-        new_action = self._order[new_idx]
-        ctx = ActiveContext(
-            investigation=self.active.investigation,
-            workspace=self.active.workspace,
-            action=new_action,
-        )
-        self._write_active(ctx)
-        self._show_current_action(reset=True)
+        self._activate_action(sibs[new_idx])
+
+    def _navigate_deeper(self) -> None:
+        if self._invalid or not self.active or not self.investigation:
+            return
+        kids = self.investigation.children(self.active.action)
+        if not kids:
+            self.notify("No child actions", severity="warning")
+            return
+        self._activate_action(kids[0].id)
+
+    def _navigate_shallower(self) -> None:
+        if self._invalid or not self.active or not self.investigation:
+            return
+        action = self.investigation.get_action(self.active.action)
+        if action.parent_id is None:
+            self.notify("Already at root", severity="warning")
+            return
+        self._activate_action(action.parent_id)
 
     def _navigate_workspace(self, delta: int) -> None:
         if self._invalid or not self.active or not self._ws_order:
@@ -471,15 +509,26 @@ class InvestigationHost(App):
         self.notify(f"Workspace {label}", timeout=2)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        if action in {
+        tree_actions = {
             "command_palette",
-            "next_action",
-            "prev_action",
-            "next_workspace",
-            "prev_workspace",
+            "next_sibling",
+            "prev_sibling",
+            "child_action",
+            "parent_action",
             "show_help",
-        }:
+        }
+        if action in tree_actions:
             if isinstance(self.focused, Input):
+                return False
+            # Drawers own up/down (and their own chrome); don't steal arrows.
+            if action in {
+                "next_sibling",
+                "prev_sibling",
+                "child_action",
+                "parent_action",
+            } and isinstance(
+                self.screen, (WorkspaceDrawer, SearchDrawer, CommandPalette)
+            ):
                 return False
         return True
 

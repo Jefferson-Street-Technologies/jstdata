@@ -31,9 +31,10 @@ _HARD_RULES = """\
   workspaces, or action `--args`.
 - **Use `--format json`** on `jst api` resource and search commands unless the user
   needs a table.
-- **Do not launch interactive TUIs** (`jst investigation create` / `load`) unless the
-  user explicitly asks you to operate the UI. Prefer CLI mutation of the active
-  investigation (`jst action add` / `rm`) or hand them a `load` command.
+- **Do not launch interactive TUIs** (`jst run` / `jst investigation create` /
+  `load`) unless the user explicitly asks you to operate the UI. Prefer CLI
+  mutation of the active investigation (`jst action add` / `rm`) or hand them a
+  `jst run` / `load` command.
 - **Do not paginate exhaustively.** During discovery, use `--limit` 20–50. Do not walk
   `offset` through the catalog unless the returned set is clearly insufficient.
 - **Do not enumerate** `jst api metric ls`, `jst api series ls`, or full taxonomy
@@ -214,6 +215,7 @@ Research is an **investigation**: a tree of **actions** over **workspaces**.
 jst investigation create housing-slowdown
 jst investigation load housing-slowdown
 jst investigation ls
+jst run
 jst action add console --args '{"taxonomy":"country"}'
 jst action add discover --activate
 jst action rm 2 --force
@@ -223,6 +225,8 @@ jst action rm 2 --force
 - Seed args go in `--args` JSON on `action add` (or `:add` in the TUI).
 - New actions are children of the active action unless `--parent` is set.
 - Humans use `:` in the TUI (`:workspace`, `:search metric gdp`, `:add`, `:rm`).
+  Tree keys: `n`/`p` siblings, `N`/`P` depth (arrows too). Workspace drawer:
+  `h`/`l` cycles workspaces.
 - Agents prefer CLI mutation + `jst api …` for resolution; do not drive the TUI.
 
 Active context lives in `~/.jstdata/.active.yaml` (investigation, workspace id, action id).
