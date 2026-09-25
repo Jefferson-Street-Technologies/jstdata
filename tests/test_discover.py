@@ -218,3 +218,34 @@ def test_discover_workspace_metrics_scope():
         workspace_metrics=False,
     )
     assert not opted_out._using_workspace_metrics()
+
+
+def test_discover_metric_scope_includes_taxonomy():
+    from unittest.mock import MagicMock
+
+    from jstdata.investigation.model import Workspace
+    from jstdata.actions.discover import DiscoverScreen
+
+    empty = DiscoverScreen(MagicMock(), Workspace())
+    assert not empty._has_metric_scope()
+
+    with_entities = DiscoverScreen(MagicMock(), Workspace(entity=["usa"]))
+    assert with_entities._has_metric_scope()
+
+    with_tax = DiscoverScreen(MagicMock(), Workspace(taxonomy="country"))
+    assert with_tax._has_metric_scope()
+
+
+def test_take_page_intelligent_pagination():
+    from jstdata.actions.pagination import page_fetch_limit, take_page
+
+    assert page_fetch_limit(20) == 21
+    page, more = take_page(list(range(21)), 20)
+    assert page == list(range(20))
+    assert more is True
+    page, more = take_page(list(range(20)), 20)
+    assert page == list(range(20))
+    assert more is False
+    page, more = take_page(list(range(3)), 20)
+    assert page == list(range(3))
+    assert more is False

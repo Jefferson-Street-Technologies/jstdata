@@ -32,7 +32,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "search",
         "Search the catalog and add to the workspace",
-        usage="search <metric|entity|series> <query>",
+        usage="search <metric|entity|series|taxonomy|all> <query>",
     ),
     CommandSpec(
         "add",
@@ -47,7 +47,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
 )
 
 _COMMAND_BY_NAME = {c.name: c for c in COMMANDS}
-SEARCH_TYPES = frozenset({"metric", "entity", "series"})
+SEARCH_TYPES = frozenset({"metric", "entity", "series", "taxonomy", "all"})
 
 _ADD_FLAGS = (
     "--args",
@@ -72,6 +72,8 @@ _SEARCH_TYPE_DOCS = {
     "metric": "Search metrics in the catalog",
     "entity": "Search entities in the catalog",
     "series": "Search series in the catalog",
+    "taxonomy": "List taxonomies (/taxonomy), filter locally by query",
+    "all": "Unified search (/search) across metrics, entities, and series",
 }
 
 
@@ -302,16 +304,20 @@ def parse_command_line(raw: str) -> ParsedCommand:
 
 def _parse_search(rest: list[str]) -> ParsedCommand:
     if len(rest) < 2:
-        raise CommandError("Usage: search <metric|entity|series> <query>")
+        raise CommandError(
+            "Usage: search <metric|entity|series|taxonomy|all> <query>"
+        )
     rtype = rest[0].lower()
     if rtype not in SEARCH_TYPES:
         raise CommandError(
             f"Unknown resource type {rest[0]!r}. "
-            "Use metric, entity, or series."
+            "Use metric, entity, series, taxonomy, or all."
         )
     query = " ".join(rest[1:]).strip()
     if not query:
-        raise CommandError("Usage: search <metric|entity|series> <query>")
+        raise CommandError(
+            "Usage: search <metric|entity|series|taxonomy|all> <query>"
+        )
     return ParsedCommand(name="search", args=[rtype, query])
 
 

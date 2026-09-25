@@ -137,6 +137,8 @@ class WorkspaceDrawer(ModalScreen[None]):
         list_view = self.query_one("#ws-drawer-list", ListView)
         list_view.clear()
         entries: list[tuple[str, str]] = []
+        if self.workspace.taxonomy:
+            entries.append(("taxonomy", self.workspace.taxonomy))
         for mid in self.workspace.metric:
             entries.append(("metric", mid))
         for eid in self.workspace.entity:
@@ -162,7 +164,10 @@ class WorkspaceDrawer(ModalScreen[None]):
         if row is None:
             return
         rid = row.resource_id
-        self.workspace.remove_id(rid)
+        if row.resource_type == "taxonomy":
+            self.workspace.taxonomy = None
+        else:
+            self.workspace.remove_id(rid)
         self.labels.pop(rid, None)
         self.rebuild()
         self.notify(f"Removed {rid}")

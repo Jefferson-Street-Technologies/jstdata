@@ -39,17 +39,23 @@ def test_complete_command_names():
 
 def test_complete_search_types():
     assert complete_command_line("search ") == [
+        "search all",
         "search entity",
         "search metric",
         "search series",
+        "search taxonomy",
     ]
     # Exact "search" also jumps to type completions.
     assert complete_command_line("search") == [
+        "search all",
         "search entity",
         "search metric",
         "search series",
+        "search taxonomy",
     ]
     assert complete_command_line("search m") == ["search metric"]
+    assert complete_command_line("search t") == ["search taxonomy"]
+    assert complete_command_line("search a") == ["search all"]
     assert complete_command_line("search metric ") == []
 
 
@@ -175,10 +181,30 @@ def test_parse_search():
     parsed = parse_command_line("search metric gdp growth")
     assert parsed.name == "search"
     assert parsed.args == ["metric", "gdp growth"]
+    parsed = parse_command_line("search taxonomy country")
+    assert parsed.args == ["taxonomy", "country"]
+    parsed = parse_command_line("search all gdp")
+    assert parsed.args == ["all", "gdp"]
     with pytest.raises(CommandError, match="resource type"):
         parse_command_line("search foo bar")
     with pytest.raises(CommandError, match="Usage"):
         parse_command_line("search metric")
+
+
+def test_filter_taxonomies_client_side():
+    from jstdata.investigation.search_drawer import _filter_taxonomies
+    from jstdata.models import Taxonomy
+
+    taxes = [
+        Taxonomy(id="country", name="Countries"),
+        Taxonomy(id="sec-central-index-key", name="SEC CIK"),
+        Taxonomy(id="industry", name="Industries"),
+    ]
+    assert [t.id for t in _filter_taxonomies(taxes, "coun")] == ["country"]
+    assert [t.id for t in _filter_taxonomies(taxes, "SEC")] == [
+        "sec-central-index-key"
+    ]
+    assert [t.id for t in _filter_taxonomies(taxes, "xyz")] == []
 
 
 def test_parse_add_defaults_activate():

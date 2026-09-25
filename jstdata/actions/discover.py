@@ -9,7 +9,6 @@ from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, ScrollableContainer, Vertical
-from textual.screen import Screen
 from textual.widgets import Input, Label, ListItem, ListView, Static
 
 from ..client import JSTDataClient
@@ -17,6 +16,8 @@ from ..models import Metric, TimeSeries
 from ..investigation.model import Workspace
 from .base import ActionArgument, ActionBinding, ActionSpec, label_for, register
 from .chart import LABEL_WIDTH, pick_frequency, pick_series_per_entity, render_preview
+from .pagination import page_fetch_limit, take_page
+from .screen import BaseScreen
 
 PAGE_SIZE = 20
 PREVIEW_TAIL = 20
@@ -46,7 +47,7 @@ class MetricRow(ListItem):
         yield Label(f"{mark}{self.metric.name}  [{self.metric.id}]")
 
 
-class DiscoverScreen(Screen):
+class DiscoverScreen(BaseScreen):
     """Entities roster, candidate metrics, and a recent-observation bar preview."""
 
     BINDINGS = [
@@ -137,15 +138,6 @@ class DiscoverScreen(Screen):
         padding: 0 1;
         color: #e0e0e0;
     }
-
-    #cmd-bar {
-        height: 3;
-        background: #0f0f0f;
-        border-top: solid #4ade80;
-        align: left middle;
-        padding: 0 1;
-    }
-    #help-hint { color: #888; }
     """
 
     def __init__(
@@ -167,18 +159,24 @@ class DiscoverScreen(Screen):
         self.search_task: asyncio.Task[None] | None = None
         self._entity_snapshot: tuple[str, ...] = ()
         self._metric_snapshot: tuple[str, ...] = ()
+        self._taxonomy_snapshot: str | None = None
         self._metrics: list[Metric] = []
 
-    def compose(self) -> ComposeResult:
+    def compose_body(self) -> ComposeResult:
         with Vertical(id="discover-body"):
             with Horizontal(id="top-row"):
                 with Vertical(classes="pane-container", id="entities-pane"):
-                    yield Label("ENTITIES // WORKSPACE", classes="pane-header")
+                    yield Label(
+                        "ENTITIES // WORKSPACE",
+                        classes="pane-header",
+                        id="entities-header",
+                    )
                     yield ListView(id="entities-list")
                     yield Static(
-                        "No entities in workspace.\n\n"
-                        "Press [bold]f[/bold] to find entities and add them.\n"
-                        "Metrics in this action are generated from that set.",
+                        "No entities or taxonomy in workspace.\n\n"
+                        "Add entities (:search entity …) or set a taxonomy "
+                        "(:search taxonomy …).\n"
+                        "Metrics are generated from that scope.",
                         id="empty-prompt",
                         markup=True,
                     )
@@ -205,12 +203,10 @@ class DiscoverScreen(Screen):
                         "Highlight a metric and press Enter to preview.",
                         id="preview-chart",
                     )
-        with Horizontal(id="cmd-bar"):
-            yield Label("", id="help-hint")
 
     def on_mount(self) -> None:
+        super().on_mount()
         self.query_one("#entities-list", ListView).can_focus = False
-        self._refresh_help_hint()
         self._sync_entities(force=True)
         self.query_one("#metrics-list", ListView).focus()
 
@@ -220,60 +216,78 @@ class DiscoverScreen(Screen):
     def _labels(self) -> dict[str, str]:
         return getattr(self.app, "labels", {})
 
-    def _refresh_help_hint(self) -> None:
-        n = getattr(self.app, "action_count", 1)
-        i = getattr(self.app, "action_index", 0) + 1
-        scope = "workspace metrics" if self._using_workspace_metrics() else f"mode {self.mode}"
-        parts = [
-            f"discover {i}/{n}",
-            scope,
+    def footer_status(self) -> list[str]:
+        parts = super().footer_status()
+        if self._using_workspace_metrics():
+            parts.append("workspace metrics")
+        elif self.workspace.entity:
+            parts.append(f"mode {self.mode}")
+        elif self.workspace.taxonomy:
+            parts.append(f"taxonomy {self.workspace.taxonomy}")
+        else:
+            parts.append(f"mode {self.mode}")
+        return parts
+
+    def footer_action_keys(self) -> list[str]:
+        return [
             "[bold]/[/bold] filter",
             "[bold]enter[/bold] preview",
             "[bold]space[/bold] add",
             "[bold]tab[/bold] panes",
-            "[bold]j/k[/bold] move",
-            "[bold]:[/bold] workspace",
-            "[bold]f[/bold] find",
-            "[bold]e[/bold] export",
-            "[bold]n[/bold]/[bold]p[/bold]",
-            "[bold]q[/bold] quit",
-            "[bold]?[/bold]",
+            "[bold]j[/bold]/[bold]k[/bold] move",
         ]
-        self.query_one("#help-hint").update(" // ".join(parts))
+
+    def _refresh_help_hint(self) -> None:
+        self.refresh_footer()
 
     def _using_workspace_metrics(self) -> bool:
         """True when the metrics pane is limited to non-empty workspace.metric."""
         return bool(self.workspace_metrics and self.workspace.metric)
 
+    def _has_metric_scope(self) -> bool:
+        """Entities and/or a taxonomy can anchor metric discovery."""
+        return bool(self.workspace.entity or self.workspace.taxonomy)
+
     def _sync_entities(self, force: bool = False) -> None:
         entity_snap = tuple(self.workspace.entity)
         metric_snap = tuple(self.workspace.metric)
+        tax_snap = self.workspace.taxonomy
         if (
             not force
             and entity_snap == self._entity_snapshot
             and metric_snap == self._metric_snapshot
+            and tax_snap == self._taxonomy_snapshot
         ):
             return
         self._entity_snapshot = entity_snap
         self._metric_snapshot = metric_snap
+        self._taxonomy_snapshot = tax_snap
         empty = self.query_one("#empty-prompt")
         roster = self.query_one("#entities-list", ListView)
+        header = self.query_one("#entities-header", Label)
         roster.clear()
-        if not entity_snap:
+        if not entity_snap and not tax_snap:
             empty.display = True
             roster.display = False
+            header.update("ENTITIES // WORKSPACE")
             self.query_one("#metrics-list", ListView).clear()
             self._metrics = []
             self.query_one("#metrics-status").update(
-                "Add entities to generate metrics."
+                "Add entities or a taxonomy to generate metrics."
             )
             self._refresh_help_hint()
             return
         empty.display = False
         roster.display = True
         labels = self._labels()
-        for eid in entity_snap:
-            roster.append(EntityRow(eid, label_for(labels, eid)))
+        if entity_snap:
+            header.update("ENTITIES // WORKSPACE")
+            for eid in entity_snap:
+                roster.append(EntityRow(eid, label_for(labels, eid)))
+        else:
+            assert tax_snap is not None
+            header.update("SCOPE // TAXONOMY")
+            roster.append(EntityRow(tax_snap, label_for(labels, tax_snap)))
         self.page_offset = 0
         self._metrics = []
         self.query_one("#metrics-list", ListView).clear()
@@ -305,9 +319,44 @@ class DiscoverScreen(Screen):
             metrics.append(Metric(id=mid, name=name))
         return metrics
 
+    async def _fetch_scoped_metrics(self) -> tuple[list[Metric], bool]:
+        """Page of metrics for workspace entities or taxonomy (limit+1 sentinel)."""
+        query = self.filter_query.strip() or None
+        fetch_limit = page_fetch_limit(PAGE_SIZE)
+        if self.workspace.entity:
+            raw = await asyncio.to_thread(
+                self.client.search_metrics,
+                query,
+                entity=list(self.workspace.entity),
+                mode=self.mode,
+                limit=fetch_limit,
+                offset=self.page_offset,
+            )
+            return take_page(raw, PAGE_SIZE)
+
+        tax = self.workspace.taxonomy
+        assert tax is not None
+        if query:
+            # Text filter uses search scoped to the taxonomy.
+            raw = await asyncio.to_thread(
+                self.client.search_metrics,
+                query,
+                taxonomy=tax,
+                limit=fetch_limit,
+                offset=self.page_offset,
+            )
+        else:
+            raw = await asyncio.to_thread(
+                self.client.get_taxonomy_metrics,
+                tax,
+                fetch_limit,
+                self.page_offset,
+            )
+        return take_page(raw, PAGE_SIZE)
+
     @work(exclusive=True, group="metrics")
     async def load_metrics(self, reset: bool = False) -> None:
-        if not self.workspace.entity:
+        if not self._has_metric_scope() and not self._using_workspace_metrics():
             self.loading_more = False
             return
         if reset:
@@ -320,15 +369,13 @@ class DiscoverScreen(Screen):
         try:
             if using_workspace:
                 metrics = await self._fetch_workspace_metrics()
+                has_more = False
             else:
-                metrics = await asyncio.to_thread(
-                    self.client.search_metrics,
-                    query,
-                    entity=list(self.workspace.entity),
-                    mode=self.mode,
-                    limit=PAGE_SIZE,
-                    offset=self.page_offset,
-                )
+                if not self._has_metric_scope():
+                    status.update("Add entities or a taxonomy to generate metrics.")
+                    self.loading_more = False
+                    return
+                metrics, has_more = await self._fetch_scoped_metrics()
         except Exception as e:
             status.update(f"Error: {e}")
             self.loading_more = False
@@ -337,7 +384,7 @@ class DiscoverScreen(Screen):
             self._metrics = []
             self.query_one("#metrics-list", ListView).clear()
         self._metrics.extend(metrics)
-        self.has_more = (not using_workspace) and len(metrics) == PAGE_SIZE
+        self.has_more = has_more
         list_view = self.query_one("#metrics-list", ListView)
         staged = set(self.workspace.metric)
         for metric in metrics:
@@ -348,10 +395,15 @@ class DiscoverScreen(Screen):
             qlabel = f"“{query}”" if query else "workspace"
             status.update(f"{shown} · {qlabel}")
             self.query_one("#metrics-header").update("METRICS // WORKSPACE")
-        else:
+        elif self.workspace.entity:
             qlabel = f"“{query}”" if query else "all"
             status.update(f"{shown}{extra} · {qlabel} · {self.mode}")
             self.query_one("#metrics-header").update(f"METRICS // {self.mode.upper()}")
+        else:
+            tax = self.workspace.taxonomy or ""
+            qlabel = f"“{query}”" if query else "all"
+            status.update(f"{shown}{extra} · {qlabel} · taxonomy")
+            self.query_one("#metrics-header").update(f"METRICS // {tax.upper()}")
         self.loading_more = False
 
     def action_focus_filter(self) -> None:
@@ -478,18 +530,47 @@ class DiscoverScreen(Screen):
     async def run_preview(self, metric: Metric) -> None:
         chart = self.query_one("#preview-chart", Static)
         header = self.query_one("#preview-header")
-        if not self.workspace.entity:
-            chart.update("Add entities before previewing.")
+        entities = list(self.workspace.entity)
+        taxonomy = self.workspace.taxonomy
+        if not entities and not taxonomy:
+            chart.update("Add entities or a taxonomy before previewing.")
             return
         header.update(f"PREVIEW // {metric.name}")
         chart.update("Loading observations…")
+        fetch_limit = page_fetch_limit(PAGE_SIZE)
         try:
-            series_list: list[TimeSeries] = await asyncio.to_thread(
-                self.client.query,
-                metric=metric.id,
-                entity=list(self.workspace.entity),
-                tail=PREVIEW_TAIL,
-            )
+            if entities:
+                series_list, _has_more = take_page(
+                    await asyncio.to_thread(
+                        self.client.query,
+                        metric=metric.id,
+                        entity=entities,
+                        taxonomy=taxonomy,
+                        tail=PREVIEW_TAIL,
+                        limit=fetch_limit,
+                        offset=0,
+                    ),
+                    PAGE_SIZE,
+                )
+                entity_ids = entities
+            else:
+                assert taxonomy is not None
+                series_list, _has_more = take_page(
+                    await asyncio.to_thread(
+                        self.client.query,
+                        metric=metric.id,
+                        taxonomy=taxonomy,
+                        tail=PREVIEW_TAIL,
+                        limit=fetch_limit,
+                        offset=0,
+                    ),
+                    PAGE_SIZE,
+                )
+                entity_ids = []
+                for ts in series_list:
+                    for ent in ts.series.entities:
+                        if ent.id not in entity_ids:
+                            entity_ids.append(ent.id)
         except Exception as e:
             chart.update(f"Preview failed: {e}")
             return
@@ -497,7 +578,7 @@ class DiscoverScreen(Screen):
         if not frequency:
             chart.update("No observations in the preview window.")
             return
-        picked = pick_series_per_entity(series_list, self.workspace.entity, frequency)
+        picked = pick_series_per_entity(series_list, entity_ids, frequency)
         units = next(
             (ts.series.units for ts in picked.values() if ts is not None),
             "",
@@ -507,7 +588,7 @@ class DiscoverScreen(Screen):
             metric.name,
             frequency,
             units,
-            {eid: label_for(self._labels(), eid) for eid in self.workspace.entity},
+            {eid: label_for(self._labels(), eid) for eid in entity_ids},
             picked,
             bar_width=width,
         )
@@ -527,8 +608,8 @@ DISCOVER = register(
         id="discover",
         name="Discover",
         description=(
-            "Find metrics related to workspace entities, preview recent coverage, "
-            "and stage promising metrics."
+            "Find metrics related to workspace entities or taxonomy, preview "
+            "recent coverage, and stage promising metrics."
         ),
         create_screen=create_discover_screen,
         arguments=(
@@ -545,8 +626,8 @@ DISCOVER = register(
                 description=(
                     "When true (default), show only workspace metrics if any "
                     "are present; with an empty metric list, searches all "
-                    "metrics for the workspace entities. Set false to always "
-                    "search the full candidate set."
+                    "metrics for the workspace entities or taxonomy. Set false "
+                    "to always search the full candidate set."
                 ),
                 default=True,
             ),

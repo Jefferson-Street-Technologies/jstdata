@@ -13,10 +13,10 @@ from textual.screen import ModalScreen
 from textual.widgets import Label, ListItem, ListView
 
 from ..client import JSTDataClient
-from ..models import Entity, Metric, Series
+from ..models import Entity, Metric, Series, Taxonomy
 from ..investigation.model import Workspace
 
-SearchType = Literal["metric", "entity", "series"]
+SearchType = Literal["metric", "entity", "series", "taxonomy", "all"]
 
 
 def _resource_label(resource: Any) -> str:
@@ -25,6 +25,45 @@ def _resource_label(resource: Any) -> str:
         or getattr(resource, "name", None)
         or getattr(resource, "id", "Unknown")
     )
+
+
+def _resource_type_of(resource: Any, fallback: str) -> str:
+    if isinstance(resource, Metric):
+        return "metric"
+    if isinstance(resource, Entity):
+        return "entity"
+    if isinstance(resource, Series):
+        return "series"
+    if isinstance(resource, Taxonomy):
+        return "taxonomy"
+    return fallback
+
+
+def _fetch_all_taxonomies(client: JSTDataClient) -> list[Taxonomy]:
+    """Page through ``GET /taxonomy`` until exhausted."""
+    out: list[Taxonomy] = []
+    offset = 0
+    page = 100
+    while True:
+        batch = client.list_taxonomies(limit=page, offset=offset)
+        out.extend(batch)
+        if len(batch) < page:
+            break
+        offset += page
+        if offset >= 10_000:
+            break
+    return out
+
+
+def _filter_taxonomies(taxonomies: list[Taxonomy], query: str) -> list[Taxonomy]:
+    needle = query.strip().lower()
+    if not needle:
+        return list(taxonomies)
+    return [
+        t
+        for t in taxonomies
+        if needle in t.id.lower() or needle in (t.name or "").lower()
+    ]
 
 
 class SearchResultRow(ListItem):
@@ -135,8 +174,11 @@ class SearchDrawer(ModalScreen[None]):
                 id="search-drawer-title",
             )
             yield ListView(id="search-drawer-list")
+            enter_label = (
+                "set taxonomy" if self.resource_type == "taxonomy" else "add"
+            )
             yield Label(
-                "[bold]enter[/bold] add  ·  [bold]j[/bold]/[bold]k[/bold]  ·  "
+                f"[bold]enter[/bold] {enter_label}  ·  [bold]j[/bold]/[bold]k[/bold]  ·  "
                 "[bold]esc[/bold] close",
                 id="search-drawer-hint",
                 markup=True,
@@ -150,35 +192,52 @@ class SearchDrawer(ModalScreen[None]):
         list_view = self.query_one("#search-drawer-list", ListView)
         list_view.clear()
         try:
-            if self.resource_type == "entity":
-                results = await asyncio.to_thread(
-                    self.client.search_entities, self.search_query, limit=40
-                )
-            elif self.resource_type == "series":
-                results = await asyncio.to_thread(
-                    self.client.search_series, self.search_query, limit=40
-                )
-            else:
-                results = await asyncio.to_thread(
-                    self.client.search_metrics, self.search_query, limit=40
-                )
+            rows = await asyncio.to_thread(self._fetch_results)
         except Exception as e:
             self.notify(f"Search error: {e}", severity="error")
             return
-        if not results:
+        if not rows:
             list_view.append(
                 ListItem(Label("No results", classes="search-row-label"), disabled=True)
             )
             return
-        for r in results:
-            list_view.append(SearchResultRow(r, self.resource_type))
+        for resource, rtype in rows:
+            list_view.append(SearchResultRow(resource, rtype))
 
-    def _add_resource(self, resource: Any) -> bool:
-        if isinstance(resource, Metric) or self.resource_type == "metric":
+    def _fetch_results(self) -> list[tuple[Any, str]]:
+        """Return ``(resource, display_type)`` pairs for the list."""
+        if self.resource_type == "taxonomy":
+            taxonomies = _filter_taxonomies(
+                _fetch_all_taxonomies(self.client), self.search_query
+            )
+            return [(t, "taxonomy") for t in taxonomies]
+
+        if self.resource_type == "all":
+            results = self.client.search(self.search_query, limit=40)
+            return [(r, _resource_type_of(r, "series")) for r in results]
+
+        if self.resource_type == "entity":
+            results = self.client.search_entities(self.search_query, limit=40)
+        elif self.resource_type == "series":
+            results = self.client.search_series(self.search_query, limit=40)
+        else:
+            results = self.client.search_metrics(self.search_query, limit=40)
+        return [(r, self.resource_type) for r in results]
+
+    def _add_resource(self, resource: Any, resource_type: str) -> bool:
+        if isinstance(resource, Taxonomy) or resource_type == "taxonomy":
+            if self.workspace.taxonomy == resource.id:
+                return False
+            self.workspace.taxonomy = resource.id
+            if hasattr(self.app, "remember_label"):
+                self.app.remember_label(resource.id, _resource_label(resource))
+            return True
+
+        if isinstance(resource, Metric) or resource_type == "metric":
             added = self.workspace.add_metric(resource.id)
-        elif isinstance(resource, Entity) or self.resource_type == "entity":
+        elif isinstance(resource, Entity) or resource_type == "entity":
             added = self.workspace.add_entity(resource.id)
-        elif isinstance(resource, Series) or self.resource_type == "series":
+        elif isinstance(resource, Series) or resource_type == "series":
             added = self.workspace.add_series(resource.id)
         else:
             return False
@@ -197,14 +256,23 @@ class SearchDrawer(ModalScreen[None]):
             self._try_add(child)
 
     def _try_add(self, row: SearchResultRow) -> None:
-        if not self._add_resource(row.resource):
-            self.notify(f"{row.resource.id} already in workspace", severity="warning")
+        if not self._add_resource(row.resource, row.resource_type):
+            if row.resource_type == "taxonomy":
+                self.notify(
+                    f"Taxonomy already set to {row.resource.id}", severity="warning"
+                )
+            else:
+                self.notify(
+                    f"{row.resource.id} already in workspace", severity="warning"
+                )
             return
-        self.notify(f"Added {row.resource.id}")
+        if row.resource_type == "taxonomy":
+            self.notify(f"Taxonomy set to {row.resource.id}")
+        else:
+            self.notify(f"Added {row.resource.id}")
         persist = getattr(self.app, "persist_active_workspace", None)
         if callable(persist):
             persist()
-        # Refresh workspace drawer if open
         refresh = getattr(self.app, "refresh_workspace_drawer", None)
         if callable(refresh):
             refresh()

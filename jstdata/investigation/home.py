@@ -5,15 +5,15 @@ from __future__ import annotations
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
-from textual.screen import Screen
 from textual.widgets import Label, Static
 
 from ..client import JSTDataClient
 from ..investigation.model import Workspace
 from ..actions.base import ActionBinding, ActionSpec, register
+from ..actions.screen import BaseScreen
 
 
-class HomeScreen(Screen):
+class HomeScreen(BaseScreen):
     """Simple text root for an investigation."""
 
     BINDINGS = [
@@ -21,10 +21,6 @@ class HomeScreen(Screen):
     ]
 
     DEFAULT_CSS = """
-    HomeScreen {
-        background: #0a0a0a;
-    }
-
     #home-body {
         padding: 2 4;
         height: 1fr;
@@ -47,11 +43,6 @@ class HomeScreen(Screen):
         color: #c0c0c0;
         height: auto;
     }
-
-    #home-meta {
-        color: #888;
-        margin-top: 2;
-    }
     """
 
     def __init__(
@@ -61,7 +52,6 @@ class HomeScreen(Screen):
         *,
         title: str = "Investigation",
         body: str = "",
-        meta: str = "",
         **kwargs,
     ) -> None:
         super().__init__()
@@ -69,33 +59,36 @@ class HomeScreen(Screen):
         self.workspace = workspace
         self.home_title = title
         self.body = body
-        self.meta = meta
 
-    def compose(self) -> ComposeResult:
+    def compose_body(self) -> ComposeResult:
         with Vertical(id="home-body"):
             yield Label("JEFFERSON STREET", id="home-kicker")
             yield Label(self.home_title, id="home-title")
             with VerticalScroll():
                 yield Static(self.body or "(no description)", id="home-copy")
-            if self.meta:
-                yield Label(self.meta, id="home-meta")
+
+    def footer_status(self) -> list[str]:
+        parts = super().footer_status()
+        ws = self.workspace
+        label = ws.label or f"workspace {ws.id}"
+        parts.append(label)
+        return parts
 
 
 def create_home_screen(client, workspace, **kwargs):
     """Factory used by InvestigationHost for ``type: home`` actions.
 
     Extra kwargs from the host (not ActionArgument seeds):
-    ``title``, ``body``, ``meta``.
+    ``title``, ``body``.
     """
     title = kwargs.pop("title", "Investigation")
     body = kwargs.pop("body", "")
-    meta = kwargs.pop("meta", "")
+    kwargs.pop("meta", None)  # legacy; footer is shared via BaseScreen
     return HomeScreen(
         client,
         workspace,
         title=title,
         body=body,
-        meta=meta,
     )
 
 

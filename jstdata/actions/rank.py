@@ -11,7 +11,7 @@ from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.screen import Screen
+from textual.css.query import NoMatches
 from textual.widgets import Input, Label, ListItem, ListView, Static
 
 from ..client import JSTDataClient
@@ -26,6 +26,8 @@ from .chart import (
     pick_entity,
     shared_pane_max,
 )
+from .pagination import page_fetch_limit, take_page
+from .screen import BaseScreen
 
 PAGE_SIZE = 50
 RANK_DEBOUNCE_S = 0.4
@@ -76,7 +78,7 @@ class RankRow(ListItem):
         )
 
 
-class RankScreen(Screen):
+class RankScreen(BaseScreen):
     """Workspace metrics on the left; value-sorted leaderboard on the right."""
 
     BINDINGS = [
@@ -165,15 +167,6 @@ class RankScreen(Screen):
         color: #888;
         padding: 0 1;
     }
-
-    #cmd-bar {
-        height: 3;
-        background: #0f0f0f;
-        border-top: solid #4ade80;
-        align: left middle;
-        padding: 0 1;
-    }
-    #help-hint { color: #888; }
     """
 
     def __init__(
@@ -199,7 +192,7 @@ class RankScreen(Screen):
         self._taxonomy_ids: set[str] | None = None
         self._prefer_entity_ids: set[str] | None = None
 
-    def compose(self) -> ComposeResult:
+    def compose_body(self) -> ComposeResult:
         with Horizontal(id="rank-body"):
             with Vertical(classes="pane-container", id="metrics-pane"):
                 yield Label("METRICS // WORKSPACE", classes="pane-header")
@@ -221,11 +214,9 @@ class RankScreen(Screen):
                 )
                 yield ListView(id="rank-list")
                 yield Label("", id="board-status")
-        with Horizontal(id="cmd-bar"):
-            yield Label("", id="help-hint")
 
     def on_mount(self) -> None:
-        self._refresh_help_hint()
+        super().on_mount()
         if self.taxonomy:
             self.load_taxonomy_ids()
         else:
@@ -239,30 +230,27 @@ class RankScreen(Screen):
     def _labels(self) -> dict[str, str]:
         return getattr(self.app, "labels", {})
 
-    def _refresh_help_hint(self) -> None:
-        n = getattr(self.app, "action_count", 1)
-        i = getattr(self.app, "action_index", 0) + 1
+    def footer_status(self) -> list[str]:
+        parts = super().footer_status()
         tax = self.taxonomy or "all"
         scope = (
             "workspace entities"
             if self._using_workspace_entities()
             else f"taxonomy {tax}"
         )
-        parts = [
-            f"rank {i}/{n}",
-            scope,
+        parts.append(scope)
+        return parts
+
+    def footer_action_keys(self) -> list[str]:
+        return [
             "[bold]/[/bold] filter",
             "[bold]enter[/bold] open rank / add",
             "[bold]tab[/bold] panes",
-            "[bold]j/k[/bold] move",
-            "[bold]:[/bold] workspace",
-            "[bold]f[/bold] find",
-            "[bold]e[/bold] export",
-            "[bold]n[/bold]/[bold]p[/bold]",
-            "[bold]q[/bold] quit",
-            "[bold]?[/bold]",
+            "[bold]j[/bold]/[bold]k[/bold] move",
         ]
-        self.query_one("#help-hint").update(" // ".join(parts))
+
+    def _refresh_help_hint(self) -> None:
+        self.refresh_footer()
 
     def _using_workspace_entities(self) -> bool:
         """True when ranking is scoped to non-empty workspace.entity."""
@@ -307,7 +295,13 @@ class RankScreen(Screen):
         self.call_after_refresh(self._select_initial_metric)
 
     def _select_initial_metric(self) -> None:
-        roster = self.query_one("#metrics-list", ListView)
+        # call_after_refresh can fire after the screen was swapped away (n/p, dd, …).
+        if not self.is_mounted:
+            return
+        try:
+            roster = self.query_one("#metrics-list", ListView)
+        except NoMatches:
+            return
         if not len(roster):
             return
         if roster.index is None:
@@ -440,15 +434,18 @@ class RankScreen(Screen):
 
         status.update("Loading ranking…")
         try:
-            series_list: list[TimeSeries] = await asyncio.to_thread(
-                self.client.query,
-                metric=metric_id,
-                entity=entity_ids,
-                taxonomy=self.taxonomy,
-                tail=1,
-                sort_by="value",
-                limit=PAGE_SIZE,
-                offset=self.page_offset,
+            series_list, has_more = take_page(
+                await asyncio.to_thread(
+                    self.client.query,
+                    metric=metric_id,
+                    entity=entity_ids,
+                    taxonomy=self.taxonomy,
+                    tail=1,
+                    sort_by="value",
+                    limit=page_fetch_limit(PAGE_SIZE),
+                    offset=self.page_offset,
+                ),
+                PAGE_SIZE,
             )
         except Exception as e:
             status.update(f"Error: {e}")
@@ -461,7 +458,7 @@ class RankScreen(Screen):
             self._board = []
         page = self._entries_from_series(series_list)
         self._board.extend(page)
-        self.has_more = len(series_list) == PAGE_SIZE
+        self.has_more = has_more
         self._rebuild_rank_list()
 
         meta_bits: list[str] = []

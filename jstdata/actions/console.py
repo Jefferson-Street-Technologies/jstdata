@@ -9,13 +9,13 @@ from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.screen import Screen
 from textual.widgets import Input, Label, ListItem, ListView
 
 from ..client import JSTDataClient
 from ..models import Entity, Metric, Series, Resource as ApiResource
 from ..investigation.model import Workspace
 from .base import ActionArgument, ActionBinding, ActionSpec, register
+from .screen import BaseScreen
 
 Resource: TypeAlias = Series | Entity | Metric | ApiResource
 
@@ -60,7 +60,7 @@ class SearchResultRow(ListItem):
         )
 
 
-class WorkspaceScreen(Screen):
+class WorkspaceScreen(BaseScreen):
     """Single-pane search: prefetch a catalog, filter locally when it fits."""
 
     BINDINGS = [
@@ -139,15 +139,6 @@ class WorkspaceScreen(Screen):
         background: #1a3a1a;
         color: #4ade80;
     }
-
-    #cmd-bar {
-        height: 3;
-        background: #0f0f0f;
-        border-top: solid #4ade80;
-        align: left middle;
-        padding: 0 1;
-    }
-    #help-hint { color: #888; }
     """
 
     def __init__(
@@ -179,7 +170,7 @@ class WorkspaceScreen(Screen):
             return self.relations[0]
         return f"{len(self.relations)} relations"
 
-    def compose(self) -> ComposeResult:
+    def compose_body(self) -> ComposeResult:
         with Vertical(id="workspace-body"):
             with Vertical(classes="pane-container", id="results-pane"):
                 yield Label(
@@ -197,12 +188,10 @@ class WorkspaceScreen(Screen):
                     yield Label("SRC", classes="col-src")
                     yield Label("TYPE", classes="col-type")
                 yield ListView(id="results-list")
-        with Horizontal(id="cmd-bar"):
-            yield Label("", id="help-hint")
 
     def on_mount(self) -> None:
+        super().on_mount()
         self._apply_search_chrome()
-        self._refresh_help_hint()
         self.run_prefetch()
         self.query_one("#results-list", ListView).focus()
 
@@ -231,11 +220,8 @@ class WorkspaceScreen(Screen):
         self.query_one("#results-header").update(header)
         self.query_one("#search-input", Input).placeholder = placeholder
 
-    def _refresh_help_hint(self) -> None:
-        n = getattr(self.app, "action_count", 1)
-        i = getattr(self.app, "action_index", 0) + 1
-        action_id = getattr(self.app, "current_action_id", "console")
-        parts = [f"{action_id} {i}/{n}"]
+    def footer_status(self) -> list[str]:
+        parts = super().footer_status()
         if self.taxonomy:
             parts.append(f"tax {self.taxonomy}")
         if self.relations:
@@ -245,23 +231,17 @@ class WorkspaceScreen(Screen):
             parts.append(f"rel {rel}")
         if self.resource_type:
             parts.append(self.resource_type)
-        if self.large_search_space:
-            parts.append("server search")
-        else:
-            parts.append("local")
-        parts.extend(
-            [
-                "[bold]/[/bold] search",
-                "[bold]enter[/bold] add",
-                "[bold]:[/bold] workspace",
-                "[bold]f[/bold] find",
-                "[bold]e[/bold] export",
-                "[bold]n[/bold]/[bold]p[/bold]",
-                "[bold]q[/bold] quit",
-                "[bold]?[/bold]",
-            ]
-        )
-        self.query_one("#help-hint").update(" // ".join(parts))
+        parts.append("server search" if self.large_search_space else "local")
+        return parts
+
+    def footer_action_keys(self) -> list[str]:
+        return [
+            "[bold]/[/bold] search",
+            "[bold]enter[/bold] add",
+        ]
+
+    def _refresh_help_hint(self) -> None:
+        self.refresh_footer()
 
     def _show_rows(self, resources: list[Resource]) -> None:
         list_view = self.query_one("#results-list", ListView)

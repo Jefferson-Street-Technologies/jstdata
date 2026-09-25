@@ -320,18 +320,6 @@ class InvestigationHost(App):
             if ws.description:
                 body = (body + "\n\n" if body else "") + f"Workspace: {ws.description}"
             kwargs.setdefault("body", body)
-            label = ws.label or f"workspace {ws.id}"
-            ws_pos = (
-                f"{self._ws_order.index(ws.id) + 1}/{len(self._ws_order)}"
-                if ws.id in self._ws_order
-                else str(ws.id)
-            )
-            kwargs.setdefault(
-                "meta",
-                f"action {action.id}  ·  {label} ({ws_pos})  ·  "
-                f": commands  ·  n/p siblings  ·  N/P depth  ·  "
-                f"? help  ·  q quit",
-            )
 
         return spec.create_screen(self.client, self.workspace, **kwargs)
 
