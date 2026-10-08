@@ -16,17 +16,20 @@ from jstdata.investigation import (
     ActiveContext,
     Investigation,
     InvestigationError,
+    ResearchContext,
     TUTORIAL_ID,
     Workspace,
     add_action,
     create_investigation,
     ensure_bootstrap,
+    focus_replace_context,
     get_active,
     get_investigation,
     load_bundled_tutorial,
     load_investigation,
     open_investigation,
     remove_action,
+    resolve_input_context,
     save_investigation,
     validate_investigation_id,
 )
@@ -94,6 +97,78 @@ def test_workspace_resource_helpers():
     assert ws.add_metric("cpi") is True
     assert ws.metric == ["gdp", "cpi"]
     assert "gdp" in ws.to_query_kwargs()["metric"]
+
+
+def test_resolve_input_context_focus_replace():
+    ws = Workspace(
+        id=0,
+        metric=["gdp", "cpi"],
+        entity=["france", "germany", "spain"],
+        taxonomy="country",
+    )
+    # No overrides → full global bag.
+    full = resolve_input_context(ws, None)
+    assert full.metric == ["gdp", "cpi"]
+    assert full.entity == ["france", "germany", "spain"]
+    assert full.taxonomy == "country"
+
+    # Focus entity; metrics + taxonomy inherit.
+    focused = resolve_input_context(
+        ws, ResearchContext(entity=["germany"])
+    )
+    assert focused.entity == ["germany"]
+    assert focused.metric == ["gdp", "cpi"]
+    assert focused.taxonomy == "country"
+
+    # Parent metric override + child entity focus (table Enter² path).
+    parent = ResearchContext(metric=["gdp"])
+    child_overrides = focus_replace_context(parent, entity=["france"])
+    assert child_overrides.metric == ["gdp"]
+    assert child_overrides.entity == ["france"]
+    resolved = resolve_input_context(ws, child_overrides)
+    assert resolved.metric == ["gdp"]
+    assert resolved.entity == ["france"]
+    assert resolved.taxonomy == "country"
+
+
+def test_action_context_yaml_round_trip(tmp_path: Path):
+    inv = Investigation.new("ctx-demo")
+    child = inv.add_action(
+        "table",
+        parent_id=ROOT_ACTION_ID,
+        args={"sort_by": "value"},
+        context=ResearchContext(entity=["alphabet"], metric=["long_term_debt"]),
+        description="Alphabet LTD",
+    )
+    root = tmp_path / "investigations"
+    save_investigation(inv, root=root)
+    loaded = load_investigation("ctx-demo", root=root)
+    action = loaded.get_action(child.id)
+    assert action.type == "table"
+    assert action.context is not None
+    assert action.context.entity == ["alphabet"]
+    assert action.context.metric == ["long_term_debt"]
+    assert action.args == {"sort_by": "value"}
+
+    # Empty context omitted from YAML.
+    bare = inv.add_action("table", parent_id=ROOT_ACTION_ID)
+    assert "context" not in bare.to_dict()
+
+
+def test_add_action_persists_context(tmp_path: Path):
+    ensure_bootstrap(app_dir=tmp_path)
+    inv = create_investigation("bagel", app_dir=tmp_path)
+    child = add_action(
+        inv,
+        "table",
+        context=ResearchContext(entity=["msft"]),
+        activate=True,
+        app_dir=tmp_path,
+    )
+    reloaded = get_investigation("bagel", app_dir=tmp_path)
+    assert reloaded.actions[child.id].context is not None
+    assert reloaded.actions[child.id].context.entity == ["msft"]
+    assert get_active(app_dir=tmp_path).action == child.id
 
 
 def test_action_siblings_and_children():
@@ -256,8 +331,6 @@ def test_cli_ls_add_rm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             "console",
             "--args",
             '{"taxonomy":"country"}',
-            "--description",
-            "browse",
         ],
     )
     assert result.exit_code == 0, result.output

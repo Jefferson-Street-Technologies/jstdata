@@ -442,7 +442,7 @@ class RankScreen(BaseScreen):
                     taxonomy=self.taxonomy,
                     tail=1,
                     sort_by="value",
-                    limit=page_fetch_limit(PAGE_SIZE),
+                    limit=PAGE_SIZE,
                     offset=self.page_offset,
                 ),
                 PAGE_SIZE,

@@ -2,6 +2,7 @@ import sys
 import click
 from typing import List, Union, Optional
 
+from .add_options import apply_click_add_options
 from .client import ApiKeyNotSetError, JSTDataClient, InvalidApiKeyError
 from .utils import common_params, common_search_params, format_and_print
 
@@ -448,35 +449,11 @@ def action_show(action_id: str, as_json: bool) -> None:
 
 @action_group.command("add")
 @click.argument("action_type")
-@click.option(
-    "--args",
-    "args_json",
-    default=None,
-    help='JSON object of action seed args, e.g. \'{"taxonomy":"country"}\'',
-)
-@click.option(
-    "--parent",
-    "parent_id",
-    type=int,
-    default=None,
-    help="Parent action id (default: active action)",
-)
-@click.option(
-    "--description",
-    default=None,
-    help="Optional action description",
-)
-@click.option(
-    "--activate",
-    is_flag=True,
-    default=False,
-    help="Make the new action active after creating it",
-)
+@apply_click_add_options
 def action_add(
     action_type: str,
     args_json: str | None,
     parent_id: int | None,
-    description: str | None,
     activate: bool,
 ) -> None:
     """Add an action under the active investigation.
@@ -501,7 +478,6 @@ def action_add(
             action_type,
             parent_id=parent_id,
             args=args,
-            description=description,
             activate=activate,
         )
     except InvestigationError as e:

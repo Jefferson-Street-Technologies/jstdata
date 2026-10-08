@@ -17,6 +17,7 @@ from .model import (
     Action,
     Investigation,
     InvestigationError,
+    ResearchContext,
     ROOT_ACTION_ID,
     Workspace,
 )
@@ -132,12 +133,13 @@ def add_action(
     parent_id: Optional[int] = None,
     args: Optional[dict[str, Any]] = None,
     description: Optional[str] = None,
+    context: Optional[ResearchContext] = None,
     activate: bool = False,
     app_dir: Optional[Path] = None,
     persist: bool = True,
     validate_type: bool = True,
 ) -> Action:
-    """Add a child action. Default parent is the current active action."""
+    """Add a child action/view. Default parent is the current active action."""
     if validate_type:
         validate_action_type(action_type)
     if parent_id is None:
@@ -151,6 +153,7 @@ def add_action(
         parent_id=parent_id,
         args=args,
         description=description,
+        context=context,
     )
     if persist:
         persist_investigation(inv, app_dir=app_dir)

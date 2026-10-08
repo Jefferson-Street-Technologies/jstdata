@@ -192,7 +192,7 @@ class WorkspaceScreen(BaseScreen):
     def on_mount(self) -> None:
         super().on_mount()
         self._apply_search_chrome()
-        self.run_prefetch()
+        # No catalog/query on open — prefetch lazily when the user searches.
         self.query_one("#results-list", ListView).focus()
 
     def _apply_search_chrome(self) -> None:
@@ -345,6 +345,8 @@ class WorkspaceScreen(BaseScreen):
         return list(entities), list(metrics), list(series)
 
     def action_focus_filter(self) -> None:
+        if not self.catalog:
+            self.run_prefetch()
         self.query_one("#search-input", Input).focus()
 
     def action_leave_filter(self) -> None:
@@ -373,7 +375,8 @@ class WorkspaceScreen(BaseScreen):
         if not query:
             self._show_rows(self.catalog)
             return
-        if self.large_search_space:
+        # Empty catalog (idle mount): server-search until prefetch fills local.
+        if self.large_search_space or not self.catalog:
             if len(query) < 2:
                 self._show_rows(self._filter_catalog(query))
                 return

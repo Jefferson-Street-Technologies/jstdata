@@ -15,13 +15,15 @@ For **how to operate** the product as an agent (policy, modes, recipes), run
    history uses `GET /series/{id}/observations`, not `/query` date windows.
    Workspaces live in investigation YAML and are the live objects action screens
    mutate.
-2. **Action** — a self-describing interactive TUI that edits the active
-   workspace. Actions are order-agnostic: any action must accept an empty or
-   arbitrary workspace. Cataloged under `jstdata/actions/`; register via
-   `ActionSpec`.
+2. **Action / View** — a self-describing interactive TUI. Staging actions
+   (`console`, `discover`, `rank`) grow the active workspace. Read/drill views
+   (`table`, `metric`, `entity`, `metrics`) take an **Input Context** (workspace
+   plus optional per-node `context` overrides) and must accept empty or arbitrary
+   material. Cataloged under `jstdata/actions/`; register via `ActionSpec`.
 3. **Host** — `InvestigationHost` runs one process over an investigation’s
-   action tree. It owns the active workspace + labels cache (hydrated from the
-   API; never persisted in the investigation). Universal UI:
+   action tree. It owns the active workspace, resolved Input Context, + labels
+   cache (hydrated from the API; never persisted in the investigation).
+   Universal UI:
    - `:` command mode (`:workspace`, `:search`, `:add`, `:rm`, …)
    - left workspace drawer / bottom search drawer
    - `n` / `p` (or ↑/↓) next / previous sibling action
@@ -30,9 +32,9 @@ For **how to operate** the product as an agent (policy, modes, recipes), run
    - `q` quit
    - `?` action-specific keybindings (from the catalog entry)
 4. **Investigation** — named YAML under `~/.jstdata/investigations/` that stores
-   **workspaces + action tree** (type, args, parent_id). Managed with
-   `jst investigation` (`create` / `load` / `ls`). Action mutations use
-   `jst action` (`add` / `rm`). Active investigation / workspace / action ids
+   **workspaces + action tree** (type, args, parent_id, optional `context`).
+   Managed with `jst investigation` (`create` / `load` / `ls`). Action mutations
+   use `jst action` (`add` / `rm`). Active investigation / workspace / action ids
    live in `~/.jstdata/.active.yaml`. A bundled tutorial investigation is
    bootstrapped when none exist.
 
@@ -40,29 +42,32 @@ Composition is the **action tree**:
 
 ```bash
 jst investigation create gdp-rank
-jst action add console --args '{"taxonomy":"country"}'
-jst action add rank --args '{"taxonomy":"country"}' --activate
+jst action add table --args '{"sort_by":"value"}' --activate
+jst action add rank --args '{"taxonomy":"country"}'
 jst investigation load gdp-rank
 ```
 
 Catalog + `ActionSpec` live in `jstdata/actions/`. The host runtime is
 `jstdata/investigation/host.py`. Actions register via import-time
-`register(ActionSpec)`. Built-in actions today: `console`, `discover`, `rank`.
+`register(ActionSpec)`. Built-ins: views `table` / `metric` / `entity` /
+`metrics`; staging/explore `console` / `discover` / `rank`.
 
 ## Why actions matter
 
 An action is the unit of product surface area. New research UIs should almost
-always be **new actions**, not forks of the console.
+always be **new actions**, not forks of console or table.
 
-Because actions share a workspace and the host’s chrome:
+Because actions share a workspace (and views share resolved Input Context) plus
+the host’s chrome:
 
 - Users can grow an investigation tree without leaving the process.
-- Workspace staging and search stay consistent.
+- Workspace staging and search stay consistent; drills open child views with
+  tighter `context` without mutating the global bag.
 - Agents/humans can discover actions via `jst action ls` /
   `jst action show <id> [--json]` without reading TUI code.
 
 Do **not** encode action ordering in metadata. Compatibility is “works with any
-workspace,” including empty.
+workspace / Input Context,” including empty.
 
 ## How to create an action
 
@@ -107,11 +112,12 @@ workspace,” including empty.
    ```
 
 4. **Import the module** from `jstdata/actions/__init__.py` so it registers
-   (same pattern as `console` / `discover` / `rank`).
-5. **Implement the Textual `Screen`** so it mutates `workspace` only. When adding
-   a resource, also call `app.remember_label(id, label)` so host UI can show
-   names. Rely on host `:` / drawers for shared workspace/search UI; only declare
-   action-local keys on `bindings` and implement matching `action_*` methods.
+   (same pattern as `table` / `console` / `rank`).
+5. **Implement the Textual `Screen`**. Staging actions mutate `workspace`; views
+   read `input_context` (and may call `app.open_child_view` with
+   `focus_replace_context`). When adding a resource, also call
+   `app.remember_label(id, label)`. Rely on host `:` / drawers for shared
+   workspace/search UI; only declare action-local keys on `bindings`.
 
 Seed args go on `arguments`. They configure the TUI via
 `jst action add <id> --args '{...}'`; they do not replace interactive use.
@@ -126,8 +132,8 @@ Seed args go on `arguments`. They configure the TUI via
 | Open investigation | `jst investigation load <id>` |
 | Resume active | `jst run` |
 | List investigations | `jst investigation ls` |
-| Add action | `jst action add console --args '{"taxonomy":"country"}'` |
-| Add and activate | `jst action add discover --activate` |
+| Add view | `jst action add table --args '{"sort_by":"value"}'` |
+| Add and activate | `jst action add metrics --args '{"mode":"intersect"}' --activate` |
 | Remove action | `jst action rm <action-id> --force` |
 | Resolve resources | `jst api metric search …` / `jst api entity search …` |
 | Query / observations | `jst api query …` / `jst api series observations …` |

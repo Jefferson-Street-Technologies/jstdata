@@ -253,14 +253,127 @@ class Workspace:
 
 
 @dataclass
+class ResearchContext:
+    """Analytical material a View is about (Input Context / overrides).
+
+    The investigation workspace remains the global bag. A View may carry a
+    ``context`` override that focus/replaces selected dimensions without
+    mutating the global workspace.
+    """
+
+    metric: list[str] = field(default_factory=list)
+    entity: list[str] = field(default_factory=list)
+    series: list[str] = field(default_factory=list)
+    taxonomy: Optional[str] = None
+
+    def is_empty(self) -> bool:
+        return not (self.metric or self.entity or self.series or self.taxonomy)
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {}
+        if self.metric:
+            data["metric"] = list(self.metric)
+        if self.entity:
+            data["entity"] = list(self.entity)
+        if self.series:
+            data["series"] = list(self.series)
+        if self.taxonomy is not None:
+            data["taxonomy"] = self.taxonomy
+        return data
+
+    @classmethod
+    def from_dict(cls, data: Optional[Mapping[str, Any]]) -> Optional[ResearchContext]:
+        if data is None:
+            return None
+        if not isinstance(data, Mapping):
+            raise InvestigationError("context must be a mapping.")
+        metric = data.get("metric") or []
+        entity = data.get("entity") or []
+        series = data.get("series") or []
+        if not isinstance(metric, list) or not all(isinstance(x, str) for x in metric):
+            raise InvestigationError("context.metric must be a list of strings.")
+        if not isinstance(entity, list) or not all(isinstance(x, str) for x in entity):
+            raise InvestigationError("context.entity must be a list of strings.")
+        if not isinstance(series, list) or not all(isinstance(x, str) for x in series):
+            raise InvestigationError("context.series must be a list of strings.")
+        taxonomy = data.get("taxonomy")
+        if taxonomy is not None and not isinstance(taxonomy, str):
+            raise InvestigationError("context.taxonomy must be a string or null.")
+        ctx = cls(
+            metric=list(metric),
+            entity=list(entity),
+            series=list(series),
+            taxonomy=taxonomy,
+        )
+        return None if ctx.is_empty() else ctx
+
+    @classmethod
+    def from_workspace(cls, workspace: Workspace) -> ResearchContext:
+        """Global context snapshot from a workspace bag."""
+        return cls(
+            metric=list(workspace.metric),
+            entity=list(workspace.entity),
+            series=list(workspace.series),
+            taxonomy=workspace.taxonomy,
+        )
+
+
+def resolve_input_context(
+    workspace: Workspace,
+    overrides: Optional[ResearchContext] = None,
+) -> ResearchContext:
+    """Merge global workspace with View-local overrides (focus/replace).
+
+    Non-empty override lists replace that dimension; empty means inherit.
+    ``taxonomy`` replaces when the override object sets it (including when the
+    override is present with taxonomy=None only if explicitly stored — v1:
+    inherit unless override.taxonomy is a non-None string, or override has
+    entity/metric focus without taxonomy and we still inherit taxonomy).
+    """
+    base = ResearchContext.from_workspace(workspace)
+    if overrides is None:
+        return base
+    return ResearchContext(
+        metric=list(overrides.metric) if overrides.metric else list(base.metric),
+        entity=list(overrides.entity) if overrides.entity else list(base.entity),
+        series=list(overrides.series) if overrides.series else list(base.series),
+        taxonomy=(
+            overrides.taxonomy if overrides.taxonomy is not None else base.taxonomy
+        ),
+    )
+
+
+def focus_replace_context(
+    parent: Optional[ResearchContext],
+    *,
+    metric: Optional[list[str]] = None,
+    entity: Optional[list[str]] = None,
+    series: Optional[list[str]] = None,
+) -> ResearchContext:
+    """Child overrides: replace named dimensions, keep parent's other overrides."""
+    base = parent or ResearchContext()
+    return ResearchContext(
+        metric=list(metric) if metric is not None else list(base.metric),
+        entity=list(entity) if entity is not None else list(base.entity),
+        series=list(series) if series is not None else list(base.series),
+        taxonomy=base.taxonomy,
+    )
+
+
+@dataclass
 class Action:
-    """One use of a reusable action type within an investigation tree."""
+    """One View (or legacy action) node in the investigation tree.
+
+    ``context`` holds optional Input Context overrides (focus/replace) relative
+    to the active workspace. Absent/null means inherit the full global bag.
+    """
 
     id: int
     type: str
     parent_id: Optional[int] = None
     description: Optional[str] = None
     args: dict[str, Any] = field(default_factory=dict)
+    context: Optional[ResearchContext] = None
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -272,6 +385,8 @@ class Action:
             data["parent_id"] = self.parent_id
         if self.description is not None:
             data["description"] = self.description
+        if self.context is not None and not self.context.is_empty():
+            data["context"] = self.context.to_dict()
         return data
 
     @classmethod
@@ -302,12 +417,17 @@ class Action:
         description = data.get("description")
         if description is not None and not isinstance(description, str):
             raise InvestigationError(f"Action {aid} description must be a string.")
+        try:
+            context = ResearchContext.from_dict(data.get("context"))
+        except InvestigationError as exc:
+            raise InvestigationError(f"Action {aid}: {exc}") from exc
         return cls(
             id=aid,
             type=action_type,
             parent_id=parent_id,
             description=description,
             args=dict(args),
+            context=context,
         )
 
 
@@ -448,9 +568,10 @@ class Investigation:
         parent_id: int,
         args: Optional[dict[str, Any]] = None,
         description: Optional[str] = None,
+        context: Optional[ResearchContext] = None,
         action_id: Optional[int] = None,
     ) -> Action:
-        """Append a child action under ``parent_id``."""
+        """Append a child action/view under ``parent_id``."""
         if parent_id not in self.actions:
             raise InvestigationError(f"Unknown parent action {parent_id}.")
         aid = self.next_action_id() if action_id is None else int(action_id)
@@ -464,6 +585,7 @@ class Investigation:
             parent_id=parent_id,
             description=description,
             args=dict(args or {}),
+            context=context,
         )
         self.actions[aid] = action
         self.validate()

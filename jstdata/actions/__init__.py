@@ -24,7 +24,11 @@ from .help import HelpScreen
 from .screen import BaseScreen
 from . import console as _console  # noqa: F401
 from . import discover as _discover  # noqa: F401
+from . import entity_view as _entity_view  # noqa: F401
+from . import metric_view as _metric_view  # noqa: F401
+from . import metrics_view as _metrics_view  # noqa: F401
 from . import rank as _rank  # noqa: F401
+from . import table as _table  # noqa: F401
 
 __all__ = [
     "ActionArgument",

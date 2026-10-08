@@ -7,6 +7,13 @@ import shlex
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from ..add_options import (
+    ADD_FLAG_DOCS,
+    ADD_FLAGS,
+    ADD_USAGE,
+    ADD_VALUE_FLAGS,
+)
+
 
 class CommandError(ValueError):
     """User-facing command parse / validation error."""
@@ -37,7 +44,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "add",
         "Add an action under the active (or --parent) node",
-        usage="add <type> [--args JSON] [--parent N] [--no-activate]",
+        usage=ADD_USAGE,
     ),
     CommandSpec(
         "rm",
@@ -49,22 +56,8 @@ COMMANDS: tuple[CommandSpec, ...] = (
 _COMMAND_BY_NAME = {c.name: c for c in COMMANDS}
 SEARCH_TYPES = frozenset({"metric", "entity", "series", "taxonomy", "all"})
 
-_ADD_FLAGS = (
-    "--args",
-    "--parent",
-    "--description",
-    "--activate",
-    "--no-activate",
-)
 _RM_FLAGS = ("--force",)
 
-_ADD_FLAG_DOCS = {
-    "--args": "Seed args as a JSON object (see action fields below)",
-    "--parent": "Parent action id (default: active)",
-    "--description": "Optional note stored on the action node",
-    "--activate": "Switch to the new action after adding (default)",
-    "--no-activate": "Keep the current action active",
-}
 _RM_FLAG_DOCS = {
     "--force": "Confirm cascade delete / removing the active action",
 }
@@ -110,7 +103,7 @@ def completion_doc(candidate: str) -> str:
             return _action_description(tokens[1])
         flag = tokens[-1]
         if flag.startswith("-"):
-            return _ADD_FLAG_DOCS.get(flag, "")
+            return ADD_FLAG_DOCS.get(flag, "")
 
     if cmd == "rm":
         flag = tokens[-1]
@@ -246,10 +239,9 @@ def complete_command_line(raw: str) -> list[str]:
             matches = _prefix_matches(_action_type_ids(), partial)
             return [_rebuild(head, m) for m in matches]
         used = set(head[2:])
-        value_flags = {"--args", "--parent", "--description"}
-        if head[-1] in value_flags:
+        if head[-1] in ADD_VALUE_FLAGS:
             return []
-        available = [f for f in _ADD_FLAGS if f not in used]
+        available = [f for f in ADD_FLAGS if f not in used]
         if "--activate" in used:
             available = [f for f in available if f != "--no-activate"]
         if "--no-activate" in used:
@@ -323,10 +315,7 @@ def _parse_search(rest: list[str]) -> ParsedCommand:
 
 def _parse_add(rest: list[str]) -> ParsedCommand:
     if not rest:
-        raise CommandError(
-            "Usage: add <type> [--args JSON] [--parent N] [--no-activate] "
-            "[--description TEXT]"
-        )
+        raise CommandError(f"Usage: {ADD_USAGE}")
     action_type = rest[0]
     options: dict[str, Any] = {"activate": True}
     i = 1
@@ -342,7 +331,7 @@ def _parse_add(rest: list[str]) -> ParsedCommand:
             continue
         if tok == "--force":
             raise CommandError("--force is not valid for add")
-        if tok in ("--args", "--parent", "--description"):
+        if tok in ADD_VALUE_FLAGS:
             if i + 1 >= len(rest):
                 raise CommandError(f"{tok} requires a value")
             value = rest[i + 1]
@@ -359,8 +348,6 @@ def _parse_add(rest: list[str]) -> ParsedCommand:
                     options["parent"] = int(value)
                 except ValueError as exc:
                     raise CommandError("--parent must be an integer") from exc
-            else:
-                options["description"] = value
             i += 2
             continue
         raise CommandError(f"Unexpected token {tok!r} in add")

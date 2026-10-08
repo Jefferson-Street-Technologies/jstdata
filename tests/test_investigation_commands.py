@@ -209,17 +209,20 @@ def test_filter_taxonomies_client_side():
 
 def test_parse_add_defaults_activate():
     parsed = parse_command_line(
-        """add console --args '{"taxonomy":"country"}' --description browse"""
+        """add console --args '{"taxonomy":"country"}'"""
     )
     assert parsed.name == "add"
     assert parsed.args == ["console"]
     assert parsed.options["activate"] is True
     assert parsed.options["args"] == {"taxonomy": "country"}
-    assert parsed.options["description"] == "browse"
+    assert "description" not in parsed.options
 
     parsed = parse_command_line("add discover --no-activate --parent 0")
     assert parsed.options["activate"] is False
     assert parsed.options["parent"] == 0
+
+    with pytest.raises(CommandError, match="Unexpected"):
+        parse_command_line("add console --description nope")
 
 
 def test_parse_rm():

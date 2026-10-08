@@ -100,10 +100,17 @@ _DATA_MODEL = """\
   `sec-central-index-key`). Use it to scope search, query, and ranking.
 - **Series** — one concrete time series: a metric observed for an entity (at a frequency).
 - **Investigation** — the durable research artifact: title, workspaces, and an action tree.
-- **Workspace** — staged resource ids + query filters inside an investigation (no
-  observations).
-- **Action** — one use of a reusable analytical UI (`console`, `discover`, `rank`, …)
-  in the investigation tree.
+- **Workspace** — the **global** bag of staged resource ids + query filters inside an
+  investigation (no observations). Mutated by `:search` / `:workspace` and staging
+  actions; never mutated by view drills.
+- **Action / View** — one use of a reusable analytical UI in the investigation tree.
+  Read/drill views (`table`, `metric`, `entity`, `metrics`) take an **Input Context**
+  resolved from the workspace plus optional per-node `context` overrides. Staging /
+  explore actions (`console`, `discover`, `rank`) still grow the global workspace.
+- **Input Context** — what a view is *about*: workspace resources with optional
+  focus/replace overrides stored on the action node as YAML `context` (metric /
+  entity / series / taxonomy). Empty override dimensions inherit from the workspace.
+  Child drills use focus/replace; they do **not** rewrite the global workspace.
 
 Ids are opaque slugs. Display names are not ids.
 """
@@ -178,7 +185,7 @@ jst api metric show <gdp-metric-id> --format json
    active workspace (edit investigation YAML, or guide the human to `:search` /
    `:workspace` in the TUI).
 
-4. Rank via API or by adding a `rank` action:
+4. Compare or rank via API, or hand off a view / rank action:
 
 ```bash
 jst api query \\
@@ -188,7 +195,11 @@ jst api query \\
   --sort-by value \\
   --format json
 
+# Population leaderboard (stages entities back into the workspace)
 jst action add rank --args '{"taxonomy":"country"}' --activate
+
+# Or a latest-value matrix over the staged workspace (human drills with Enter)
+jst action add table --args '{"sort_by":"value"}' --activate
 ```
 
 Human handoff:
@@ -201,7 +212,10 @@ jst investigation load <investigation-id>
 
 1. Resolve ids via `jst api … search`.
 2. `jst investigation create <id>` (or mutate an existing one with `jst action add`).
-3. Hand them: `jst investigation load <id>`.
+3. Prefer a **view** for read/drill (`table`, `metric`, `entity`, `metrics`) and
+   keep `console` / `discover` / `rank` when the human still needs to stage or
+   explore the global workspace.
+4. Hand them: `jst investigation load <id>`.
 
 Do not substitute extra research for completing the requested handoff.
 """
@@ -209,24 +223,36 @@ Do not substitute extra research for completing the requested handoff.
 _COMPOSITION = """\
 ## Investigations and actions
 
-Research is an **investigation**: a tree of **actions** over **workspaces**.
+Research is an **investigation**: a tree of **actions / views** over **workspaces**.
 
 ```bash
 jst investigation create housing-slowdown
 jst investigation load housing-slowdown
 jst investigation ls
 jst run
-jst action add console --args '{"taxonomy":"country"}'
-jst action add discover --activate
+jst action add table --args '{"sort_by":"value"}' --activate
+jst action add metrics --args '{"mode":"intersect"}'
+jst action add rank --args '{"taxonomy":"country"}'
 jst action rm 2 --force
 ```
 
 - **Actions** are reusable TUI screens (`jst action ls` / `jst action show <id>`).
 - Seed args go in `--args` JSON on `action add` (or `:add` in the TUI).
+- Optional per-node **Input Context** overrides live under YAML `context` on the
+  action (focus/replace relative to the active workspace). Views resolve this as
+  Input Context; drills open child views with tighter context and do not mutate
+  the global workspace.
 - New actions are children of the active action unless `--parent` is set.
 - Humans use `:` in the TUI (`:workspace`, `:search metric gdp`, `:add`, `:rm`).
   Tree keys: `n`/`p` siblings, `N`/`P` depth (arrows too). Workspace drawer:
-  `h`/`l` cycles workspaces.
+  `h`/`l` cycles workspaces. Views are typically idle until `r` (load).
+- **When to use which:**
+  - `table` — latest-value matrix over Input Context; Tab row/column; Enter drills.
+  - `metric` / `entity` — inspect one resource and its associates; Enter cross-drills.
+  - `metrics` — metrics associated with an entity set (`mode` union|intersect).
+  - `console` / `:search` — catalog search that stages into the global workspace.
+  - `discover` — candidate metrics with preview chart; Space stages metrics.
+  - `rank` — single-metric population leaderboard; stages entities back.
 - Agents prefer CLI mutation + `jst api …` for resolution; do not drive the TUI.
 
 Active context lives in `~/.jstdata/.active.yaml` (investigation, workspace id, action id).
@@ -398,14 +424,17 @@ def render_workspace_section() -> str:
     lines = [
         "## Workspaces",
         "",
-        "A **workspace** is the bag of resource ids and filters an investigation action",
-        "operates on. It mirrors `jst api query` / `JSTDataClient.query` intent: no",
-        "observations, only what is needed to run analysis or drive a TUI action.",
+        "A **workspace** is the global bag of resource ids and filters. Views also",
+        "see an **Input Context**: workspace plus optional action `context` overrides",
+        "(focus/replace). The workspace mirrors `jst api query` / `JSTDataClient.query`",
+        "intent: no observations, only what is needed to run analysis or drive a TUI.",
         "",
         "`discover` defaults to workspace metrics when any are staged",
         "(`workspace_metrics=false` in `--args` for the full entity-anchored search);",
         "`rank` defaults to workspace entities when any are staged",
         "(`workspace_entities=false` to rank the full taxonomy/all population).",
+        "`metrics` takes `mode` `union`|`intersect` over the Input Context entity set.",
+        "`table` takes optional `sort_by` `id`|`value` for the latest-value matrix.",
         "",
         "### Workspace resource fields",
         "",
@@ -433,9 +462,12 @@ def render_actions_section() -> str:
     lines = [
         "## Actions",
         "",
-        "Reusable analytical UIs instantiated inside investigations. Do not operate",
-        "these UIs yourself; use `jst action show <id>` if you need details while helping a",
-        "human. Seed them with `jst action add <id> --args '{...}'`.",
+        "Reusable analytical UIs instantiated inside investigations. Prefer **views**",
+        "(`table`, `metric`, `entity`, `metrics`) for read/drill over Input Context;",
+        "keep `console` / `discover` / `rank` when the human still needs to stage or",
+        "explore the global workspace. Do not operate these UIs yourself; use",
+        "`jst action show <id>` if you need details while helping a human. Seed them",
+        "with `jst action add <id> --args '{...}'`.",
         "",
         "| Id | Name | Description | Arguments | Example |",
         "|----|------|-------------|-----------|---------|",

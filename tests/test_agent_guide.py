@@ -34,6 +34,9 @@ def test_agent_guide_cli():
     assert "## Workspaces" in out
     assert "### Workspace resource fields" in out
     assert "`metric`" in out
+    assert "Input Context" in out
+    assert "`table`" in out
+    assert "`metrics`" in out
     assert "## CLI commands" in out
     assert "## Actions" in out
     assert "`jst agent-guide`" in out

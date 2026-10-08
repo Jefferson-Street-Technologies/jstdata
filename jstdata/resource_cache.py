@@ -9,6 +9,8 @@ entire workspace is refreshed in one batched ``/resource`` round-trip.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional
@@ -84,12 +86,25 @@ class ResourceLabelCache:
             self._data = {}
 
     def save(self) -> None:
+        """Atomically write the cache. Uses a unique temp name to avoid races."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(self._data, f, indent=2, sort_keys=True)
-            f.write("\n")
-        tmp.replace(self.path)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f"{self.path.name}.",
+            suffix=".tmp",
+            dir=str(self.path.parent),
+        )
+        tmp = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(self._data, f, indent=2, sort_keys=True)
+                f.write("\n")
+            tmp.replace(self.path)
+        except Exception:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
 
     def get(self, resource_type: str, resource_id: str) -> Optional[dict[str, Any]]:
         self.load()
@@ -162,7 +177,12 @@ class ResourceLabelCache:
                 if rid not in fetched:
                     labels.setdefault(rid, rid)
                     records.append((rtype, rid, rid))
-            self.put_many(records, pulled_at=clock)
+            try:
+                self.put_many(records, pulled_at=clock)
+            except OSError:
+                # In-memory labels are already filled; a cache write race or
+                # permissions issue must not block the TUI.
+                pass
             return
 
         for resource_type, rid in typed:

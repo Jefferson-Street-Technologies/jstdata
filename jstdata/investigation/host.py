@@ -28,12 +28,15 @@ from .commands import CommandError, ParsedCommand, parse_command_line
 from .model import (
     Investigation,
     InvestigationError,
+    ResearchContext,
     ROOT_ACTION_ID,
     Workspace,
+    resolve_input_context,
 )
 from .search_drawer import SearchDrawer
 from .store import investigation_path, load_investigation
 from .workspace_drawer import WorkspaceDrawer
+from ..actions.drill import DrillDownModal
 
 from . import home as _home  # noqa: F401
 import jstdata.actions  # noqa: F401
@@ -173,6 +176,7 @@ class InvestigationHost(App):
         self.investigation: Investigation | None = None
         self.active: ActiveContext | None = None
         self.workspace = Workspace()
+        self.input_context = ResearchContext()
         self.labels: dict[str, str] = {}
         self._order: list[int] = []
         self._ws_order: list[int] = []
@@ -185,6 +189,7 @@ class InvestigationHost(App):
         self._command_history: list[str] = []
         self._pending_d = False
         self._d_timer: Timer | None = None
+        self._pending_command: ParsedCommand | None = None
 
     def _active_file(self) -> Path:
         return active_path(app_dir=self.app_dir)
@@ -272,7 +277,27 @@ class InvestigationHost(App):
         self.workspace = ws
         self._ws_fingerprint = ws.resource_fingerprint()
         self.labels = {}
-        hydrate_labels(self.client, self.workspace, self.labels)
+        # Hydrate off the UI thread — /resource can stall and freeze Textual.
+        self.run_worker(
+            self._hydrate_labels_worker,
+            exclusive=True,
+            group="hydrate-labels",
+            thread=True,
+        )
+        self.refresh_workspace_drawer()
+
+    def _hydrate_labels_worker(self) -> None:
+        labels: dict[str, str] = {}
+        try:
+            hydrate_labels(self.client, self.workspace, labels)
+        except OSError as exc:
+            msg = f"Label cache unavailable: {exc}"
+            self.call_from_thread(lambda: self.notify(msg, severity="warning"))
+            return
+        self.call_from_thread(self._apply_hydrated_labels, labels)
+
+    def _apply_hydrated_labels(self, labels: dict[str, str]) -> None:
+        self.labels.update(labels)
         self.refresh_workspace_drawer()
 
     def _enter_invalid(self, message: str) -> None:
@@ -290,6 +315,13 @@ class InvestigationHost(App):
 
     def _show_current_action(self, *, reset: bool = False) -> None:
         if self._invalid or not self.investigation or not self.active:
+            return
+        if isinstance(
+            self.screen, (CommandPalette, ConfirmForceModal, DrillDownModal)
+        ):
+            # Command dispatch should already be deferred past dismiss; avoid
+            # recursive call_after_refresh loops if a modal is still up.
+            self.set_timer(0.05, self._show_current_action)
             return
         screen = self._make_action_screen()
         self._pop_transient_overlays()
@@ -313,7 +345,9 @@ class InvestigationHost(App):
                 f"Unknown action type {action.type!r} (action {action.id})."
             ) from exc
 
+        self.input_context = resolve_input_context(ws, action.context)
         kwargs = dict(action.args)
+        kwargs["input_context"] = self.input_context
         if action.type == "home":
             kwargs.setdefault("title", self.investigation.title)
             body = action.description or ""
@@ -323,10 +357,41 @@ class InvestigationHost(App):
 
         return spec.create_screen(self.client, self.workspace, **kwargs)
 
+    def open_child_view(
+        self,
+        action_type: str,
+        *,
+        context: Optional[ResearchContext] = None,
+        args: Optional[dict] = None,
+        description: Optional[str] = None,
+    ) -> None:
+        """Persist a child View under the active action and activate it."""
+        if self._invalid or not self.investigation or not self.active:
+            self.notify("No investigation loaded", severity="error")
+            return
+        try:
+            action = add_action(
+                self.investigation,
+                action_type,
+                parent_id=self.active.action,
+                args=args or {},
+                description=description,
+                context=context,
+                activate=True,
+                app_dir=self.app_dir,
+            )
+        except InvestigationError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        self._order = self.investigation.bfs_order()
+        self.active = load_active(app_dir=self.app_dir)
+        self.notify(f"Opened {action.type} {action.id}")
+        self._show_current_action(reset=True)
+
     def _pop_transient_overlays(self) -> None:
         """Dismiss command palette / confirm; leave drawers alone when possible."""
         while len(self.screen_stack) > 2 and isinstance(
-            self.screen, (CommandPalette, ConfirmForceModal)
+            self.screen, (CommandPalette, ConfirmForceModal, DrillDownModal)
         ):
             self.pop_screen()
 
@@ -435,7 +500,10 @@ class InvestigationHost(App):
             return False
         if isinstance(self.focused, Input):
             return False
-        if isinstance(self.screen, (WorkspaceDrawer, SearchDrawer, CommandPalette)):
+        if isinstance(
+            self.screen,
+            (WorkspaceDrawer, SearchDrawer, CommandPalette, DrillDownModal),
+        ):
             return False
         return True
 
@@ -589,7 +657,8 @@ class InvestigationHost(App):
                 "child_action",
                 "parent_action",
             } and isinstance(
-                self.screen, (WorkspaceDrawer, SearchDrawer, CommandPalette)
+                self.screen,
+                (WorkspaceDrawer, SearchDrawer, CommandPalette, DrillDownModal),
             ):
                 return False
         return True
@@ -612,7 +681,16 @@ class InvestigationHost(App):
         except CommandError as exc:
             self.notify(str(exc), severity="error")
             return
-        self._dispatch_command(parsed)
+        # Run after the palette finishes dismissing — screen switches inside
+        # the dismiss callback can wedge Textual's message pump.
+        self._pending_command = parsed
+        self.call_later(self._run_pending_command)
+
+    def _run_pending_command(self) -> None:
+        parsed = self._pending_command
+        self._pending_command = None
+        if parsed is not None:
+            self._dispatch_command(parsed)
 
     def _dispatch_command(self, parsed: ParsedCommand) -> None:
         if parsed.name == "workspace":
@@ -644,27 +722,36 @@ class InvestigationHost(App):
             self.notify("No investigation loaded", severity="error")
             return
         action_type = parsed.args[0]
+        self._suppress_poll = True
         try:
-            action = add_action(
-                self.investigation,
-                action_type,
-                parent_id=parsed.options.get("parent"),
-                args=parsed.options.get("args") or {},
-                description=parsed.options.get("description"),
-                activate=bool(parsed.options.get("activate", True)),
-                app_dir=self.app_dir,
+            try:
+                action = add_action(
+                    self.investigation,
+                    action_type,
+                    parent_id=parsed.options.get("parent"),
+                    args=parsed.options.get("args") or {},
+                    activate=bool(parsed.options.get("activate", True)),
+                    app_dir=self.app_dir,
+                )
+            except InvestigationError as exc:
+                self.notify(str(exc), severity="error")
+                return
+            self._order = self.investigation.bfs_order()
+            self.active = load_active(app_dir=self.app_dir)
+            try:
+                self._inv_mtime = self._inv_file().stat().st_mtime
+                self._active_mtime = self._active_file().stat().st_mtime
+                self._own_active_mtime = self._active_mtime
+            except OSError:
+                pass
+            self.notify(
+                f"Added action {action.id} ({action.type})"
+                + (" — activated" if parsed.options.get("activate", True) else "")
             )
-        except InvestigationError as exc:
-            self.notify(str(exc), severity="error")
-            return
-        self._order = self.investigation.bfs_order()
-        self.active = load_active(app_dir=self.app_dir)
-        self.notify(
-            f"Added action {action.id} ({action.type})"
-            + (" — activated" if parsed.options.get("activate", True) else "")
-        )
-        if parsed.options.get("activate", True):
-            self._show_current_action(reset=True)
+            if parsed.options.get("activate", True):
+                self._show_current_action(reset=True)
+        finally:
+            self._suppress_poll = False
 
     def _cmd_rm(self, parsed: ParsedCommand, *, force: bool) -> None:
         if not self.investigation:
@@ -700,6 +787,7 @@ class InvestigationHost(App):
             "metrics-filter",
             "search-input",
             "rank-filter",
+            "assoc-filter",
         ) and hasattr(screen, "action_leave_filter"):
             screen.action_leave_filter()
             return

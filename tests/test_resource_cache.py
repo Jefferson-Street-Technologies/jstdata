@@ -99,3 +99,29 @@ def test_missing_cache_entry_triggers_full_refresh(tmp_path: Path):
 
     client.get_resources.assert_called_once()
     assert set(client.get_resources.call_args[0][0]) == {"france", "germany"}
+
+
+def test_save_uses_unique_temp_and_leaves_no_tmp(tmp_path: Path):
+    path = tmp_path / "cache" / "resources.json"
+    cache = ResourceLabelCache(path=path)
+    cache.put_many([("entity", "france", "France")])
+    assert path.is_file()
+    leftovers = list(path.parent.glob("*.tmp"))
+    assert leftovers == []
+
+
+def test_hydrate_survives_cache_write_failure(tmp_path: Path, monkeypatch):
+    cache = ResourceLabelCache(path=tmp_path / "resources.json")
+    client = MagicMock()
+    client.get_resources.return_value = [
+        Resource(id="france", label="France"),
+    ]
+    workspace = Workspace(entity=["france"])
+    labels: dict[str, str] = {}
+
+    def boom(*_a, **_k):
+        raise OSError(2, "No such file or directory")
+
+    monkeypatch.setattr(cache, "put_many", boom)
+    cache.hydrate_workspace(client, workspace, labels)
+    assert labels["france"] == "France"
