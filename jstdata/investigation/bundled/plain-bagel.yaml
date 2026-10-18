@@ -1,0 +1,58 @@
+id: plain-bagel
+title: Plain Bagel — Hyperscaler Debt
+workspaces:
+- id: 0
+  label: Hyperscalers
+  description: >-
+    Alphabet, Microsoft, Meta, and Amazon with debt / cash / capex metrics.
+    Built to demo Input Context views, cheap /preview coverage, and
+    observation → release provenance.
+  metric:
+  - long-term-debt
+  - debt-current
+  - cash
+  - payments-to-acquire-property-plant-and-equipment
+  entity:
+  - cik:1652044
+  - cik:789019
+  - cik:1326801
+  - cik:1018724
+actions:
+- id: 0
+  type: home
+  description: >-
+    Plain Bagel demo — hyperscaler debt.
+
+    Workspace holds four CIKs (Alphabet, Microsoft, Meta, Amazon) and debt /
+    cash / capex metrics.
+
+    Demo loop:
+      1. Open the Table child (N or :add already done) — coverage via /preview,
+         no values yet.
+      2. Press r to load latest values (/query).
+      3. Enter on a cell → drill Entity, Metric, or Release.
+      4. On Release, press r to see filing label / date / source.
+      5. On Metric, press r for description, variants, and taxonomies.
+
+    Tree: n/p siblings · N into child · P up to parent · : for commands.
+  args: {}
+- id: 1
+  type: table
+  parent_id: 0
+  description: Latest-value debt / cash / capex matrix (sort by value)
+  args:
+    sort_by: value
+- id: 2
+  type: metric
+  parent_id: 1
+  description: Long-term debt — description, variants, taxonomies
+  context:
+    metric:
+    - long-term-debt
+- id: 3
+  type: entity
+  parent_id: 1
+  description: Alphabet — associated metrics and relationships
+  context:
+    entity:
+    - cik:1652044

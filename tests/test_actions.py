@@ -52,7 +52,15 @@ def test_metric_and_entity_views_registered():
     assert metric.name == "Metric"
     assert entity.name == "Entity"
     ids = {s.id for s in list_actions()}
-    assert {"metric", "entity", "table"} <= ids
+    assert {"metric", "entity", "table", "release"} <= ids
+
+
+def test_release_view_registered():
+    import jstdata.actions  # noqa: F401
+
+    release = get_action("release")
+    assert release.name == "Release"
+    assert any(b["key"] == "r" for b in release.to_dict()["bindings"])
 
 
 def test_metrics_view_registered_with_mode_arg():
@@ -97,19 +105,38 @@ def test_table_drill_options_follow_focus_mode():
     screen._parent_overrides = None
     screen._metric_ids = ["assets", "cash"]
     screen._col_index = 1
-    screen._rows = [TableRow(entity_id="cik:1", entity_label="Alphabet")]
+    screen._rows = [
+        TableRow(
+            entity_id="cik:1",
+            entity_label="Alphabet",
+            values={"cash": 1.0},
+            release_by_metric={"cash": "0001652044-25-000012"},
+        )
+    ]
     screen._loaded = True
 
     screen._focus_mode = "column"
+    # Avoid mounting Textual widgets — stub the row highlight.
+    screen._highlighted_row = lambda: None  # type: ignore[method-assign]
     col_opts = screen._drill_options()
-    assert len(col_opts) == 1
-    assert col_opts[0].action_type == "metric"
+    assert [o.action_type for o in col_opts] == ["metric"]
     assert col_opts[0].context.metric == ["cash"]
 
-    # Row mode needs a ListView highlight — test the entity builder directly.
+    screen._highlighted_row = lambda: screen._rows[0]  # type: ignore[method-assign]
+    col_opts = screen._drill_options()
+    assert [o.action_type for o in col_opts] == ["metric", "release"]
+    assert col_opts[1].context.release == ["0001652044-25-000012"]
+    assert col_opts[1].context.entity == ["cik:1"]
+
     ent = screen._entity_drill_option(screen._rows[0])
     assert ent.action_type == "entity"
     assert ent.context.entity == ["cik:1"]
+
+    rel = screen._release_drill_option(
+        screen._rows[0], "cash", "0001652044-25-000012"
+    )
+    assert rel.action_type == "release"
+    assert rel.context.release == ["0001652044-25-000012"]
 
 
 def test_table_short_headers():

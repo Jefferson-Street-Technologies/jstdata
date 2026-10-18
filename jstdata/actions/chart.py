@@ -169,24 +169,33 @@ def pick_entity(
     return entities[0]
 
 
-def last_observation_value(ts: TimeSeries) -> Optional[float]:
-    """Chronologically last observation value on a series (rank key)."""
+def last_observation(ts: TimeSeries):
+    """Chronologically last observation on a series, or None."""
     if not ts.observations:
         return None
-    latest = max(
+    return max(
         ts.observations,
         key=lambda o: _as_naive(o.observation_timestamp),
     )
-    return latest.value
+
+
+def last_observation_value(ts: TimeSeries) -> Optional[float]:
+    """Chronologically last observation value on a series (rank key)."""
+    latest = last_observation(ts)
+    return None if latest is None else latest.value
+
+
+def last_observation_release_id(ts: TimeSeries) -> Optional[str]:
+    latest = last_observation(ts)
+    if latest is None:
+        return None
+    return latest.release_id or None
 
 
 def last_observation_timestamp(ts: TimeSeries) -> Optional[datetime]:
-    if not ts.observations:
+    latest = last_observation(ts)
+    if latest is None:
         return None
-    latest = max(
-        ts.observations,
-        key=lambda o: _as_naive(o.observation_timestamp),
-    )
     return _as_naive(latest.observation_timestamp)
 
 

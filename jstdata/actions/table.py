@@ -22,9 +22,14 @@ from ..investigation.model import (
     Workspace,
     focus_replace_context,
 )
-from ..models import TimeSeries
+from ..models import PreviewRow, TimeSeries
 from .base import ActionArgument, ActionBinding, ActionSpec, label_for, register
-from .chart import format_compact, last_observation_value, pick_entity
+from .chart import (
+    format_compact,
+    last_observation_release_id,
+    last_observation_value,
+    pick_entity,
+)
 from .drill import DrillDownModal, DrillOption
 from .screen import BaseScreen
 
@@ -40,6 +45,7 @@ class TableRow:
     entity_label: str
     values: dict[str, Optional[float]] = field(default_factory=dict)
     series_by_metric: dict[str, str] = field(default_factory=dict)
+    release_by_metric: dict[str, str] = field(default_factory=dict)
 
 
 class EntityTableRow(ListItem):
@@ -216,6 +222,10 @@ class TableScreen(BaseScreen):
         self._parent_overrides: Optional[ResearchContext] = None
         self._focus_mode: FocusMode = "row"
         self._col_index: int = 0
+        # (metric_id, entity_id) → PreviewRow from cheap /preview (cached).
+        self._preview: dict[tuple[str, str], PreviewRow] = {}
+        self._preview_loaded = False
+        self._preview_error: Optional[str] = None
 
     def _resolved_input_context(self) -> ResearchContext:
         # Do not name this ``_context`` — Textual's MessagePump uses that.
@@ -260,13 +270,26 @@ class TableScreen(BaseScreen):
             self._parent_overrides = action.context
         self._render_idle_chrome()
         self.query_one("#table-list", ListView).focus()
+        # Cheap coverage only — never auto-run /query.
+        self.load_preview()
 
     def footer_action_keys(self) -> list[str]:
-        keys = ["[bold]r[/bold] load"]
+        keys = ["[bold]r[/bold] load values"]
         if self._loaded:
             keys.append("[bold]tab[/bold] row/col")
             keys.append("[bold]enter[/bold] drill")
         return keys
+
+    def _coverage_summary(self, ctx: ResearchContext) -> str:
+        if self._preview_error:
+            return f"preview error: {self._preview_error}"
+        if not self._preview_loaded:
+            return "coverage pending…"
+        if not ctx.metric or not ctx.entity:
+            return "coverage n/a (need metric + entity)"
+        total = len(ctx.metric) * len(ctx.entity)
+        hit = len(self._preview)
+        return f"coverage {hit}/{total} pairs have series"
 
     def _render_idle_chrome(self) -> None:
         ctx = self._resolved_input_context()
@@ -283,14 +306,47 @@ class TableScreen(BaseScreen):
             " · ".join(bits) if bits else "Input Context empty"
         )
         if not self._loaded:
+            cover = self._coverage_summary(ctx)
             self.query_one("#table-status", Static).update(
-                "Idle — press [bold]r[/bold] to load",
+                f"Idle — press [bold]r[/bold] to load values · {cover}",
             )
             self.query_one("#focus-strip", Static).update("")
             self._clear_header_row()
 
     def action_load(self) -> None:
         self.load_table()
+
+    @work(exclusive=True, group="table-preview")
+    async def load_preview(self) -> None:
+        """Hydrate metric×entity coverage via /preview (no /query)."""
+        ctx = self._resolved_input_context()
+        if not ctx.metric or not ctx.entity:
+            self._preview = {}
+            self._preview_loaded = True
+            self._preview_error = None
+            if not self._loaded:
+                self._render_idle_chrome()
+            return
+        try:
+            rows = await asyncio.to_thread(
+                self.client.preview,
+                metric=list(ctx.metric),
+                entity=list(ctx.entity),
+                limit=min(50, max(1, len(ctx.metric) * len(ctx.entity))),
+                offset=0,
+            )
+        except Exception as exc:
+            self._preview = {}
+            self._preview_loaded = True
+            self._preview_error = str(exc)
+            if not self._loaded:
+                self._render_idle_chrome()
+            return
+        self._preview = {(r.metric_id, r.entity_id): r for r in rows}
+        self._preview_loaded = True
+        self._preview_error = None
+        if not self._loaded:
+            self._render_idle_chrome()
 
     @work(exclusive=True, group="table")
     async def load_table(self) -> None:
@@ -299,7 +355,7 @@ class TableScreen(BaseScreen):
         if ctx.is_empty() and not ctx.taxonomy:
             status.update("Nothing to query — add metrics/entities via :search")
             return
-        status.update("Loading…")
+        status.update("Loading values…")
         kwargs: dict = {"tail": 1}
         if ctx.metric:
             kwargs["metric"] = list(ctx.metric)
@@ -322,6 +378,10 @@ class TableScreen(BaseScreen):
         self._focus_mode = "row"
         self._rebuild_list()
         self._refresh_focus_chrome()
+        cover = self._coverage_summary(ctx)
+        status.update(
+            f"{len(self._rows)} rows · {len(self._metric_ids)} metrics · {cover}"
+        )
         self.refresh_footer()
 
     def _build_rows(
@@ -350,6 +410,9 @@ class TableScreen(BaseScreen):
             if mid:
                 row.values[mid] = last_observation_value(ts)
                 row.series_by_metric[mid] = ts.series.id
+                rid = last_observation_release_id(ts)
+                if rid:
+                    row.release_by_metric[mid] = rid
             if hasattr(self.app, "remember_label"):
                 self.app.remember_label(eid, row.entity_label)
 
@@ -488,17 +551,50 @@ class TableScreen(BaseScreen):
             description=f"Metric {mlabel}",
         )
 
+    def _release_drill_option(
+        self, row: TableRow, metric_id: str, release_id: str
+    ) -> DrillOption:
+        labels = self._labels()
+        mlabel = labels.get(metric_id) or metric_id
+        value = row.values.get(metric_id)
+        detail = f"{row.entity_label or row.entity_id} · {mlabel}"
+        if value is not None:
+            detail = f"{detail} · {format_compact(value)}"
+        return DrillOption(
+            title=f"Release · {release_id}",
+            detail=detail,
+            action_type="release",
+            context=focus_replace_context(
+                self._parent_overrides,
+                entity=[row.entity_id],
+                metric=[metric_id],
+                release=[release_id],
+            ),
+            description=f"Release {release_id}",
+        )
+
     def _drill_options(self) -> list[DrillOption]:
-        """Options depend on focus mode — row → entity, column → metric."""
-        if self._focus_mode == "column":
-            mid = self._active_metric_id()
-            if mid is None:
-                return []
-            return [self._metric_drill_option(mid)]
+        """Entity / metric / release options for the focused cell."""
         row = self._highlighted_row()
+        mid = self._active_metric_id()
+        options: list[DrillOption] = []
+        if self._focus_mode == "column":
+            if mid is not None:
+                options.append(self._metric_drill_option(mid))
+            if row is not None and mid is not None:
+                rid = row.release_by_metric.get(mid)
+                if rid:
+                    options.append(self._release_drill_option(row, mid, rid))
+            return options
         if row is None:
             return []
-        return [self._entity_drill_option(row)]
+        options.append(self._entity_drill_option(row))
+        if mid is not None:
+            options.append(self._metric_drill_option(mid))
+            rid = row.release_by_metric.get(mid)
+            if rid:
+                options.append(self._release_drill_option(row, mid, rid))
+        return options
 
     def action_confirm(self) -> None:
         if not self._loaded:
@@ -515,9 +611,9 @@ class TableScreen(BaseScreen):
             self._open_drill_option(options[0])
             return
         heading = (
-            f"DRILL · column"
+            "DRILL · column"
             if self._focus_mode == "column"
-            else f"DRILL · row"
+            else "DRILL · row"
         )
         self.app.push_screen(
             DrillDownModal(options, heading=heading),
@@ -617,8 +713,9 @@ TABLE = register(
         id="table",
         name="Table",
         description=(
-            "Latest-value comparison over Input Context. Idle until load; "
-            "Tab toggles row/column focus; Enter drills into entity or metric."
+            "Latest-value comparison over Input Context. Cheap /preview "
+            "coverage on open; /query only on r. Enter drills to entity, "
+            "metric, or release."
         ),
         create_screen=create_table_screen,
         arguments=(
@@ -630,14 +727,18 @@ TABLE = register(
             ),
         ),
         bindings=(
-            ActionBinding("r", "load", "Load /query for Input Context"),
+            ActionBinding("r", "load", "Load /query values for Input Context"),
             ActionBinding("tab", "cycle_focus", "Toggle row vs column focus"),
             ActionBinding(
                 "h / l · ←/→ · j/k",
                 "columns",
                 "Move metric column (column mode; j/k also move columns)",
             ),
-            ActionBinding("enter", "confirm", "Drill into focused entity or metric"),
+            ActionBinding(
+                "enter",
+                "confirm",
+                "Drill into entity, metric, or release for the focused cell",
+            ),
         ),
         example="jst action add table --args '{\"sort_by\":\"value\"}'",
     )

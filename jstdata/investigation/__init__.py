@@ -14,7 +14,13 @@ from .api import (
     set_active,
     validate_action_type,
 )
-from .bootstrap import ensure_bootstrap, load_bundled_tutorial
+from .bootstrap import (
+    PLAIN_BAGEL_ID,
+    ensure_bootstrap,
+    ensure_plain_bagel,
+    load_bundled_plain_bagel,
+    load_bundled_tutorial,
+)
 from .host import InvestigationHost, run_investigation_host
 from .model import (
     DEFAULT_WORKSPACE_ID,
@@ -47,12 +53,14 @@ __all__ = [
     "InvestigationHost",
     "ROOT_ACTION_ID",
     "ResearchContext",
+    "PLAIN_BAGEL_ID",
     "TUTORIAL_ID",
     "Workspace",
     "active_path",
     "add_action",
     "create_investigation",
     "ensure_bootstrap",
+    "ensure_plain_bagel",
     "focus_replace_context",
     "get_active",
     "get_investigation",
@@ -60,6 +68,7 @@ __all__ = [
     "investigation_path",
     "list_investigations",
     "load_active",
+    "load_bundled_plain_bagel",
     "load_bundled_tutorial",
     "load_investigation",
     "open_investigation",

@@ -147,6 +147,51 @@ def metric_series(id, limit, offset, format):
     results = client.get_metric_series(id, limit=limit, offset=offset)
     format_and_print(results, format)
 
+@metric.command("taxonomies")
+@click.argument("id")
+@common_params
+def metric_taxonomies(id, limit, offset, format):
+    """List taxonomic coverage for a metric."""
+    results = client.get_metric_taxonomies(id, limit=limit, offset=offset)
+    format_and_print(results, format)
+
+# --- Release Commands ---
+
+@api.group()
+def release():
+    """Commands for releases / filings (observation provenance)."""
+
+@release.command("ls")
+@common_params
+def list_releases(limit, offset, format):
+    """List releases."""
+    results = client.list_releases(limit=limit, offset=offset)
+    format_and_print(results, format)
+
+@release.command("show")
+@click.argument("id")
+@click.option("--format", default="pretty")
+def show_release(id, format):
+    """Show a release / filing by id."""
+    results = client.get_release(id)
+    format_and_print(results, format)
+
+# --- Preview Command ---
+
+@api.command("preview")
+@click.option("--metric", multiple=True, required=True, help="Metric ID(s). Repeatable.")
+@click.option("--entity", multiple=True, required=True, help="Entity ID(s). Repeatable.")
+@common_params
+def preview_coverage(metric, entity, limit, offset, format):
+    """Cheap metric×entity coverage (pairs with series only). Cache results."""
+    results = client.preview(
+        metric=list(metric),
+        entity=list(entity),
+        limit=limit,
+        offset=offset,
+    )
+    format_and_print(results, format)
+
 # --- Entity Commands ---
 
 @api.group()
@@ -283,6 +328,12 @@ def search_series(query, limit, offset, format):
 @click.option("--start-time", type=int, help="Start time (unix timestamp)")
 @click.option("--end-time", type=int, help="End time (unix timestamp)")
 @click.option(
+    "--release-id",
+    "release_id",
+    multiple=True,
+    help="Filter to observations from these release ids. Repeatable.",
+)
+@click.option(
     "--order-by",
     type=click.Choice(["asc", "desc"]),
     default="asc",
@@ -290,7 +341,16 @@ def search_series(query, limit, offset, format):
 )
 @common_params
 def series_observations(
-    id, start_date, end_date, start_time, end_time, order_by, limit, offset, format
+    id,
+    start_date,
+    end_date,
+    start_time,
+    end_time,
+    release_id,
+    order_by,
+    limit,
+    offset,
+    format,
 ):
     """Paginated history for one series."""
     results = client.get_series_observations(
@@ -299,6 +359,7 @@ def series_observations(
         end_date=end_date,
         start_time=start_time,
         end_time=end_time,
+        release_id=list(release_id) or None,
         order_by=order_by,
         limit=limit,
         offset=offset,
@@ -315,6 +376,12 @@ def series_observations(
 @click.option(
     "--taxonomy",
     help="Restrict to series whose entities have an identity relation to this taxonomy",
+)
+@click.option(
+    "--release-id",
+    "release_id",
+    multiple=True,
+    help="Filter observations to these release ids. Repeatable.",
 )
 @click.option("--head", type=int, help="Earliest N observations per series")
 @click.option("--tail", type=int, help="Latest N observations per series (default 20)")
@@ -344,6 +411,7 @@ def query(
     series,
     frequency,
     taxonomy,
+    release_id,
     head,
     tail,
     as_of,
@@ -375,6 +443,7 @@ def query(
         series=s_ids or None,
         frequency=frequency,
         taxonomy=taxonomy,
+        release_id=list(release_id) or None,
         head=head,
         tail=tail,
         as_of=as_of,

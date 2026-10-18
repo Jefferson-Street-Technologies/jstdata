@@ -50,7 +50,8 @@ jst investigation load gdp-rank
 Catalog + `ActionSpec` live in `jstdata/actions/`. The host runtime is
 `jstdata/investigation/host.py`. Actions register via import-time
 `register(ActionSpec)`. Built-ins: views `table` / `metric` / `entity` /
-`metrics`; staging/explore `console` / `discover` / `rank`.
+`metrics` / `release`; staging/explore `console` / `discover` / `rank`.
+Bundled demo: `plain-bagel` (hyperscaler debt + release provenance).
 
 ## Why actions matter
 

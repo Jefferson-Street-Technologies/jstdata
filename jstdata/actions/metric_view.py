@@ -20,11 +20,12 @@ from ..investigation.model import (
     Workspace,
     focus_replace_context,
 )
-from ..models import Entity
+from ..models import Entity, Metric, MetricTaxonomy
 from .base import ActionBinding, ActionSpec, label_for, register
 from .screen import BaseScreen
 
 ASSOCIATES_PAGE = 20
+TAXONOMIES_PAGE = 12
 SEARCH_DEBOUNCE_S = 0.3
 
 
@@ -69,6 +70,7 @@ class MetricScreen(BaseScreen):
         color: #e0e0e0;
         padding: 1 1 0 1;
         height: auto;
+        max-height: 14;
     }
     #metric-status {
         color: #888;
@@ -124,6 +126,7 @@ class MetricScreen(BaseScreen):
         self._filter_query = ""
         self._search_task: asyncio.Task | None = None
         self._metric_meta_loaded = False
+        self._taxonomies: list[MetricTaxonomy] = []
 
     def _resolved_input_context(self) -> ResearchContext:
         if self._input_context is not None:
@@ -181,13 +184,49 @@ class MetricScreen(BaseScreen):
         self._render_fields(self._metric_id, self._label, note=note)
         self.query_one("#entities-list", ListView).focus()
 
-    def _render_fields(self, metric_id: str, label: str, *, note: str = "") -> None:
-        text = (
-            f"[bold]id[/bold]     {metric_id}\n"
-            f"[bold]label[/bold]  {label or '—'}"
-            f"{note}"
-        )
-        self.query_one("#metric-fields", Static).update(text)
+    def _render_fields(
+        self,
+        metric_id: str,
+        label: str,
+        *,
+        note: str = "",
+        metric: Optional[Metric] = None,
+        taxonomies: Optional[list[MetricTaxonomy]] = None,
+    ) -> None:
+        lines = [
+            f"[bold]id[/bold]     {metric_id}",
+            f"[bold]label[/bold]  {label or '—'}",
+        ]
+        if metric is not None and metric.description:
+            desc = metric.description.strip()
+            if len(desc) > 280:
+                desc = desc[:277] + "…"
+            lines.append(f"[bold]desc[/bold]   {desc}")
+        if metric is not None and metric.variants:
+            lines.append("[bold]variants[/bold]")
+            for variant in metric.variants[:6]:
+                freq = variant.frequency or "?"
+                sa = variant.seasonal_adjustment or "—"
+                lines.append(
+                    f"  · {freq} · {variant.source or '—'} · "
+                    f"{variant.units or '—'} · sa {sa} · "
+                    f"{variant.series_count} series"
+                )
+            if len(metric.variants) > 6:
+                lines.append(f"  · +{len(metric.variants) - 6} more")
+        tax = taxonomies if taxonomies is not None else self._taxonomies
+        if tax:
+            lines.append("[bold]taxonomies[/bold]")
+            for row in tax[:5]:
+                lines.append(
+                    f"  · {row.name or row.id} · {row.relationship} · "
+                    f"{row.entity_count} entities"
+                )
+            if len(tax) > 5:
+                lines.append(f"  · +{len(tax) - 5} more")
+        if note:
+            lines.append(note.lstrip("\n"))
+        self.query_one("#metric-fields", Static).update("\n".join(lines))
 
     def footer_action_keys(self) -> list[str]:
         keys = ["[bold]r[/bold] load"]
@@ -303,7 +342,7 @@ class MetricScreen(BaseScreen):
         query = self._filter_query.strip() or None
         try:
             if reset_meta or not self._metric_meta_loaded:
-                metric, entities = await asyncio.gather(
+                metric, entities, taxonomies = await asyncio.gather(
                     asyncio.to_thread(self.client.get_metric, metric_id),
                     asyncio.to_thread(
                         self.client.search_entities,
@@ -312,21 +351,34 @@ class MetricScreen(BaseScreen):
                         limit=ASSOCIATES_PAGE,
                         offset=0,
                     ),
+                    asyncio.to_thread(
+                        self.client.get_metric_taxonomies,
+                        metric_id,
+                        TAXONOMIES_PAGE,
+                        0,
+                    ),
                 )
                 if metric_id != self._metric_id:
                     return
                 label = metric.name or metric.id
                 self._label = label
+                self._taxonomies = list(taxonomies)
                 if hasattr(self.app, "remember_label"):
                     self.app.remember_label(metric_id, label)
                 note = ""
                 ctx = self._resolved_input_context()
                 if len(ctx.metric) > 1:
                     note = (
-                        f"\n(+{len(ctx.metric) - 1} more metrics in Input Context; "
+                        f"(+{len(ctx.metric) - 1} more metrics in Input Context; "
                         "showing first)"
                     )
-                self._render_fields(metric_id, label, note=note)
+                self._render_fields(
+                    metric_id,
+                    label,
+                    note=note,
+                    metric=metric,
+                    taxonomies=self._taxonomies,
+                )
                 self._metric_meta_loaded = True
             else:
                 entities = await asyncio.to_thread(
@@ -365,8 +417,8 @@ METRIC_VIEW = register(
         id="metric",
         name="Metric",
         description=(
-            "Inspect a focused metric (id, label, covered entities). "
-            "Idle until load (r); / searches entities."
+            "Inspect a focused metric (description, variants, taxonomies, "
+            "covered entities). Idle until load (r); / searches entities."
         ),
         create_screen=create_metric_screen,
         arguments=(),

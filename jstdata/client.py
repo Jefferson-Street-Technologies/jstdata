@@ -13,7 +13,10 @@ from .models import (
     Entity,
     EntityRelationship,
     Metric,
+    MetricTaxonomy,
     Observation,
+    PreviewRow,
+    Release,
     Series,
     TimeSeries,
     Resource,
@@ -69,45 +72,50 @@ class JSTDataClientConfig:
 
     def __post_init__(self):
         APP_DIR.mkdir(exist_ok=True)
-        
+
         # 1. Start with defaults
         default_url = "https://api.jeffersonst.io"
-        
+
         # 2. Layer on config file if it exists
         file_api_key = None
         file_base_url = None
         if CONFIG_FILE.exists():
             try:
-                with open(CONFIG_FILE, "r") as f:
-                    cfg = json.load(f)
-                    file_api_key = cfg.get("api_key")
-                    file_base_url = cfg.get("base_url")
-            except (json.JSONDecodeError, IOError):
+                cfg = _read_config_file(CONFIG_FILE)
+                file_api_key = cfg.get("api_key")
+                file_base_url = cfg.get("base_url")
+            except (json.JSONDecodeError, OSError, ValueError):
                 pass
 
         # Precedence: Env > Arg > File > Default
         # self.api_key and self.base_url contain 'Arg' if passed, else None.
-        
+
         self.api_key = os.environ.get("JSTDATA_API_KEY") or self.api_key or file_api_key
-        self.base_url = os.environ.get("JSTDATA_BASE_URL") or self.base_url or file_base_url or default_url
+        self.base_url = (
+            os.environ.get("JSTDATA_BASE_URL")
+            or self.base_url
+            or file_base_url
+            or default_url
+        )
 
     def write(self, **kwargs) -> None:
         """Write configuration to the config file."""
         # Read current to preserve keys we aren't updating
-        current = {}
+        current: Dict[str, Any] = {}
         if CONFIG_FILE.exists():
             try:
-                with open(CONFIG_FILE, "r") as f:
-                    current = json.load(f)
-            except:
+                current = _read_config_file(CONFIG_FILE)
+            except Exception:
                 pass
 
         current["api_key"] = kwargs.get("api_key") or current.get("api_key") or self.api_key
-        current["base_url"] = kwargs.get("base_url") or current.get("base_url") or self.base_url
+        current["base_url"] = (
+            kwargs.get("base_url") or current.get("base_url") or self.base_url
+        )
 
         with open(CONFIG_FILE, "w") as f:
             json.dump(current, f, indent=2)
-        
+
         # Restrict permissions to owner read/write
         CONFIG_FILE.chmod(0o600)
 
@@ -115,8 +123,49 @@ class JSTDataClientConfig:
         """Read the current configuration from file."""
         if not CONFIG_FILE.exists():
             return {}
-        with open(CONFIG_FILE, "r") as f:
-            return json.load(f)
+        return _read_config_file(CONFIG_FILE)
+
+
+def _strip_json_line_comments(text: str) -> str:
+    """Remove ``//`` comments that appear outside of JSON strings."""
+    out: list[str] = []
+    in_string = False
+    escape = False
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if in_string:
+            out.append(ch)
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            i += 1
+            continue
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "/" and i + 1 < len(text) and text[i + 1] == "/":
+            # Skip through end of line.
+            while i < len(text) and text[i] not in "\r\n":
+                i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _read_config_file(path: Path) -> Dict[str, Any]:
+    """Load config JSON, tolerating ``//`` line comments outside strings."""
+    text = path.read_text(encoding="utf-8")
+    data = json.loads(_strip_json_line_comments(text))
+    if not isinstance(data, dict):
+        raise ValueError("config root must be an object")
+    return data
 
 
 @dataclass
@@ -260,6 +309,60 @@ class JSTDataClient:
         """Get all series associated with a metric."""
         data = self.make_request(f"metric/{metric_id}/series", {"limit": limit, "offset": offset})
         return [Series.from_dict(s) for s in data["records"]]
+
+    def get_metric_taxonomies(
+        self, metric_id: str, limit: int = 100, offset: int = 0
+    ) -> List[MetricTaxonomy]:
+        """Taxonomic coverage for a metric (``GET /metric/{id}/taxonomies``)."""
+        data = self.make_request(
+            f"metric/{metric_id}/taxonomies",
+            {"limit": limit, "offset": offset},
+        )
+        return [MetricTaxonomy.from_dict(t) for t in data["records"]]
+
+    # --- Releases ---
+
+    def list_releases(
+        self, limit: int = 100, offset: int = 0, sort_order: str = "asc"
+    ) -> List[Release]:
+        """List releases / filings."""
+        data = self.make_request(
+            "release",
+            {"limit": limit, "offset": offset, "sort_order": sort_order},
+        )
+        return [Release.from_dict(r) for r in data["records"]]
+
+    def get_release(self, release_id: str) -> Release:
+        """Get a single release / filing by id."""
+        data = self.make_request(f"release/{release_id}")
+        return Release.from_dict(data)
+
+    # --- Preview ---
+
+    def preview(
+        self,
+        metric: Optional[Union[str, List[str]]] = None,
+        entity: Optional[Union[str, List[str]]] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[PreviewRow]:
+        """Cheap metric×entity coverage (``GET /preview``).
+
+        Only pairs that have at least one series are returned. Clients should
+        cache responses — this is billed per returned row.
+        """
+        metrics = _as_id_list(metric)
+        entities = _as_id_list(entity)
+        if not metrics or not entities:
+            raise InvalidInputError("preview requires at least one metric and one entity.")
+        params: Dict[str, Any] = {
+            "metric": metrics,
+            "entity": entities,
+            "limit": limit,
+            "offset": offset,
+        }
+        data = self.make_request("preview", params)
+        return [PreviewRow.from_dict(r) for r in data.get("records", [])]
 
     # --- Series ---
 
@@ -432,6 +535,7 @@ class JSTDataClient:
         series: Optional[Union[str, List[str]]] = None,
         frequency: Optional[str] = None,
         taxonomy: Optional[str] = None,
+        release_id: Optional[Union[str, List[str]]] = None,
         head: Optional[int] = None,
         tail: Optional[int] = None,
         as_of: Optional[Union[str, datetime]] = None,
@@ -450,7 +554,8 @@ class JSTDataClient:
         ``sort_by`` is ``id`` (default catalog order) or ``value`` (rank by
         the chronologically last observation in each series' window,
         descending). ``taxonomy`` restricts to series whose entities have an
-        identity relation to that taxonomy.
+        identity relation to that taxonomy. ``release_id`` filters to one or
+        more provenance releases.
         """
         if head is not None and tail is not None:
             raise InvalidInputError("Provide exactly one of 'head' or 'tail'.")
@@ -465,6 +570,7 @@ class JSTDataClient:
             "series": series,
             "frequency": frequency,
             "taxonomy": taxonomy,
+            "release_id": _as_id_list(release_id),
             "head": head,
             "tail": tail,
             "sort_by": sort_by,
@@ -486,6 +592,7 @@ class JSTDataClient:
         end_date: Optional[str] = None,
         start_time: Optional[int] = None,
         end_time: Optional[int] = None,
+        release_id: Optional[Union[str, List[str]]] = None,
         order_by: Optional[str] = None,
         limit: Optional[int] = None,
         offset: Optional[int] = None,
@@ -496,6 +603,7 @@ class JSTDataClient:
             "end_date": end_date,
             "start_time": start_time,
             "end_time": end_time,
+            "release_id": _as_id_list(release_id),
             "order_by": order_by,
             "limit": limit,
             "offset": offset,
@@ -541,6 +649,7 @@ class JSTDataClient:
                         "source": ts.series.source,
                         "observation_timestamp": obs.observation_timestamp,
                         "release_timestamp": obs.release_timestamp,
+                        "release_id": obs.release_id,
                         "value": obs.value,
                     }
                 )

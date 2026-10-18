@@ -130,6 +130,13 @@ def test_resolve_input_context_focus_replace():
     assert resolved.entity == ["france"]
     assert resolved.taxonomy == "country"
 
+    # Release is view-local; focus_replace can set it for provenance drills.
+    rel = focus_replace_context(
+        parent, entity=["france"], release=["0001652044-25-000012"]
+    )
+    assert rel.release == ["0001652044-25-000012"]
+    assert rel.metric == ["gdp"]
+
 
 def test_action_context_yaml_round_trip(tmp_path: Path):
     inv = Investigation.new("ctx-demo")
@@ -205,6 +212,14 @@ def test_ensure_bootstrap_and_active(tmp_path: Path):
     tutorial, ctx = ensure_bootstrap(app_dir=tmp_path)
     assert tutorial.id == TUTORIAL_ID
     assert (tmp_path / "investigations" / "tutorial.yaml").is_file()
+    assert (tmp_path / "investigations" / "plain-bagel.yaml").is_file()
+    from jstdata.investigation import load_bundled_plain_bagel, PLAIN_BAGEL_ID
+
+    demo = load_investigation(PLAIN_BAGEL_ID, root=tmp_path / "investigations")
+    bundled = load_bundled_plain_bagel()
+    assert demo.id == bundled.id
+    assert any(a.type == "table" for a in demo.actions.values())
+    assert "long-term-debt" in demo.workspaces[0].metric
     assert (tmp_path / ".active.yaml").is_file()
     assert ctx.investigation == TUTORIAL_ID
     assert ctx.workspace == 0

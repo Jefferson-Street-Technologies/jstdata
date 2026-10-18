@@ -264,10 +264,17 @@ class ResearchContext:
     metric: list[str] = field(default_factory=list)
     entity: list[str] = field(default_factory=list)
     series: list[str] = field(default_factory=list)
+    release: list[str] = field(default_factory=list)
     taxonomy: Optional[str] = None
 
     def is_empty(self) -> bool:
-        return not (self.metric or self.entity or self.series or self.taxonomy)
+        return not (
+            self.metric
+            or self.entity
+            or self.series
+            or self.release
+            or self.taxonomy
+        )
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {}
@@ -277,6 +284,8 @@ class ResearchContext:
             data["entity"] = list(self.entity)
         if self.series:
             data["series"] = list(self.series)
+        if self.release:
+            data["release"] = list(self.release)
         if self.taxonomy is not None:
             data["taxonomy"] = self.taxonomy
         return data
@@ -290,12 +299,15 @@ class ResearchContext:
         metric = data.get("metric") or []
         entity = data.get("entity") or []
         series = data.get("series") or []
+        release = data.get("release") or []
         if not isinstance(metric, list) or not all(isinstance(x, str) for x in metric):
             raise InvestigationError("context.metric must be a list of strings.")
         if not isinstance(entity, list) or not all(isinstance(x, str) for x in entity):
             raise InvestigationError("context.entity must be a list of strings.")
         if not isinstance(series, list) or not all(isinstance(x, str) for x in series):
             raise InvestigationError("context.series must be a list of strings.")
+        if not isinstance(release, list) or not all(isinstance(x, str) for x in release):
+            raise InvestigationError("context.release must be a list of strings.")
         taxonomy = data.get("taxonomy")
         if taxonomy is not None and not isinstance(taxonomy, str):
             raise InvestigationError("context.taxonomy must be a string or null.")
@@ -303,6 +315,7 @@ class ResearchContext:
             metric=list(metric),
             entity=list(entity),
             series=list(series),
+            release=list(release),
             taxonomy=taxonomy,
         )
         return None if ctx.is_empty() else ctx
@@ -337,6 +350,8 @@ def resolve_input_context(
         metric=list(overrides.metric) if overrides.metric else list(base.metric),
         entity=list(overrides.entity) if overrides.entity else list(base.entity),
         series=list(overrides.series) if overrides.series else list(base.series),
+        # Releases are view-local only (not on the workspace bag).
+        release=list(overrides.release) if overrides.release else list(base.release),
         taxonomy=(
             overrides.taxonomy if overrides.taxonomy is not None else base.taxonomy
         ),
@@ -349,6 +364,7 @@ def focus_replace_context(
     metric: Optional[list[str]] = None,
     entity: Optional[list[str]] = None,
     series: Optional[list[str]] = None,
+    release: Optional[list[str]] = None,
 ) -> ResearchContext:
     """Child overrides: replace named dimensions, keep parent's other overrides."""
     base = parent or ResearchContext()
@@ -356,6 +372,7 @@ def focus_replace_context(
         metric=list(metric) if metric is not None else list(base.metric),
         entity=list(entity) if entity is not None else list(base.entity),
         series=list(series) if series is not None else list(base.series),
+        release=list(release) if release is not None else list(base.release),
         taxonomy=base.taxonomy,
     )
 

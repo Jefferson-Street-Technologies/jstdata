@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 
@@ -19,6 +19,27 @@ class RelationshipType(str, Enum):
     HAS_SECURITY = "has_security"
 
 
+def _parse_datetime(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace(" ", "T"))
+        except ValueError:
+            return datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+    return datetime.min
+
+
+def _parse_date(value: Any) -> date:
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, str):
+        return date.fromisoformat(value[:10])
+    raise ValueError(f"Cannot parse date from {value!r}")
+
+
 @dataclass(frozen=True)
 class Entity:
     id: str
@@ -30,13 +51,62 @@ class Entity:
 
 
 @dataclass(frozen=True)
+class MetricVariant:
+    frequency: Optional[str]
+    source: str
+    seasonal_adjustment: Optional[str]
+    units: str
+    series_count: int
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "MetricVariant":
+        return cls(
+            frequency=data.get("frequency"),
+            source=data.get("source", ""),
+            seasonal_adjustment=data.get("seasonal_adjustment"),
+            units=data.get("units", ""),
+            series_count=int(data.get("series_count") or 0),
+        )
+
+
+@dataclass(frozen=True)
 class Metric:
     id: str
     name: str
+    description: str = ""
+    variants: List[MetricVariant] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Metric":
-        return cls(id=data["id"], name=data.get("name", data.get("label", "")))
+        variants_raw = data.get("variants") or []
+        variants = [
+            MetricVariant.from_dict(v)
+            for v in variants_raw
+            if isinstance(v, dict)
+        ]
+        return cls(
+            id=data["id"],
+            name=data.get("name", data.get("label", "")),
+            description=data.get("description") or "",
+            variants=variants,
+        )
+
+
+@dataclass(frozen=True)
+class MetricTaxonomy:
+    id: str
+    name: str
+    relationship: str
+    entity_count: int
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "MetricTaxonomy":
+        return cls(
+            id=data["id"],
+            name=data.get("name", ""),
+            relationship=data.get("relationship", ""),
+            entity_count=int(data.get("entity_count") or 0),
+        )
 
 
 @dataclass(frozen=True)
@@ -52,6 +122,44 @@ class Taxonomy:
 class Resource:
     id: str
     label: str
+
+
+@dataclass(frozen=True)
+class Release:
+    id: str
+    label: str
+    release_date: date
+    source: str
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Release":
+        return cls(
+            id=data["id"],
+            label=data.get("label", ""),
+            release_date=_parse_date(data["release_date"]),
+            source=data.get("source", ""),
+        )
+
+
+@dataclass(frozen=True)
+class PreviewRow:
+    metric_id: str
+    entity_id: str
+    series_count: int
+    observation_count: int
+    earliest: datetime
+    latest: datetime
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "PreviewRow":
+        return cls(
+            metric_id=data["metric_id"],
+            entity_id=data["entity_id"],
+            series_count=int(data.get("series_count") or 0),
+            observation_count=int(data.get("observation_count") or 0),
+            earliest=_parse_datetime(data.get("earliest")),
+            latest=_parse_datetime(data.get("latest")),
+        )
 
 @dataclass(frozen=True)
 class Series:
@@ -119,22 +227,16 @@ class Observation:
     observation_timestamp: datetime
     release_timestamp: datetime
     value: float
+    release_id: str = ""
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Observation":
-        obs_ts = data["observation_timestamp"]
-        rel_ts = data["release_timestamp"]
-
-        if isinstance(obs_ts, str):
-            obs_ts = datetime.fromisoformat(obs_ts.replace(" ", "T"))
-        if isinstance(rel_ts, str):
-            rel_ts = datetime.fromisoformat(rel_ts.replace(" ", "T"))
-
         return cls(
             series_id=data["series_id"],
-            observation_timestamp=obs_ts,
-            release_timestamp=rel_ts,
-            value=data["value"]
+            observation_timestamp=_parse_datetime(data["observation_timestamp"]),
+            release_timestamp=_parse_datetime(data["release_timestamp"]),
+            value=data["value"],
+            release_id=data.get("release_id") or "",
         )
 
 @dataclass(frozen=True)

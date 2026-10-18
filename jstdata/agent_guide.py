@@ -247,12 +247,17 @@ jst action rm 2 --force
   Tree keys: `n`/`p` siblings, `N`/`P` depth (arrows too). Workspace drawer:
   `h`/`l` cycles workspaces. Views are typically idle until `r` (load).
 - **When to use which:**
-  - `table` — latest-value matrix over Input Context; Tab row/column; Enter drills.
-  - `metric` / `entity` — inspect one resource and its associates; Enter cross-drills.
+  - `table` — latest-value matrix; cheap `/preview` coverage on open; `r` runs
+    `/query`; Enter drills to entity, metric, or **release** (provenance).
+  - `metric` / `entity` — inspect one resource (metric includes description /
+    variants / taxonomies); Enter cross-drills.
+  - `release` — filing / release behind an observation (`context.release`).
   - `metrics` — metrics associated with an entity set (`mode` union|intersect).
   - `console` / `:search` — catalog search that stages into the global workspace.
   - `discover` — candidate metrics with preview chart; Space stages metrics.
   - `rank` — single-metric population leaderboard; stages entities back.
+- Demo investigation: `jst investigation load plain-bagel` (hyperscaler debt +
+  provenance loop).
 - Agents prefer CLI mutation + `jst api …` for resolution; do not drive the TUI.
 
 Active context lives in `~/.jstdata/.active.yaml` (investigation, workspace id, action id).

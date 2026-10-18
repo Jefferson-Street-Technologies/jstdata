@@ -19,6 +19,8 @@ from .store import (
 )
 
 BUNDLED_TUTORIAL = "tutorial.yaml"
+BUNDLED_PLAIN_BAGEL = "plain-bagel.yaml"
+PLAIN_BAGEL_ID = "plain-bagel"
 
 
 def _investigations_root(app_dir: Optional[Path]) -> Optional[Path]:
@@ -40,6 +42,34 @@ def load_bundled_tutorial() -> Investigation:
     return Investigation.from_dict(data)
 
 
+def bundled_plain_bagel_text() -> str:
+    return (
+        files("jstdata.investigation.bundled")
+        .joinpath(BUNDLED_PLAIN_BAGEL)
+        .read_text(encoding="utf-8")
+    )
+
+
+def load_bundled_plain_bagel() -> Investigation:
+    data = yaml.safe_load(bundled_plain_bagel_text())
+    return Investigation.from_dict(data)
+
+
+def ensure_plain_bagel(
+    *,
+    app_dir: Optional[Path] = None,
+    force: bool = False,
+) -> Investigation:
+    """Install the Plain Bagel demo investigation if missing (or force-refresh)."""
+    inv_root = _investigations_root(app_dir)
+    ensure_investigations_dir(root=inv_root)
+    if force or not investigation_exists(PLAIN_BAGEL_ID, root=inv_root):
+        inv = load_bundled_plain_bagel()
+        save_investigation(inv, root=inv_root)
+        return inv
+    return load_investigation(PLAIN_BAGEL_ID, root=inv_root)
+
+
 def ensure_bootstrap(
     *,
     app_dir: Optional[Path] = None,
@@ -51,6 +81,7 @@ def ensure_bootstrap(
     is missing but the tutorial exists, recreates active pointing at tutorial.
 
     ``force_tutorial`` rewrites the tutorial from the bundled template (tests).
+    Also ensures the Plain Bagel provenance demo investigation is present.
     """
     inv_root = _investigations_root(app_dir)
     if app_dir is not None:
@@ -62,6 +93,9 @@ def ensure_bootstrap(
         save_investigation(tutorial, root=inv_root)
     else:
         tutorial = load_investigation(TUTORIAL_ID, root=inv_root)
+
+    # Demo for View/Context + release provenance — install if absent.
+    ensure_plain_bagel(app_dir=app_dir, force=False)
 
     ctx = try_load_active(app_dir=app_dir)
     if ctx is None:
