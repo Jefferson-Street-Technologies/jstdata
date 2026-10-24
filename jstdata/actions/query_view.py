@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections import OrderedDict
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional
 
@@ -140,6 +143,105 @@ CHART_DATE_FORM = "Y-m-d"
 CHART_LINE_COLOR = (134, 239, 172)  # #86efac, matches the query chrome
 
 
+@dataclass(frozen=True)
+class PlotGroup:
+    """Series that share a metric and units — overlay on one chart.
+
+    Frequency may differ (France annual vs US quarterly for the same metric);
+    the y-axis is what has to match.
+    """
+
+    metric_id: str
+    frequency: str
+    units: str
+    records: tuple[dict[str, Any], ...]
+
+
+def plot_group_key(record: dict[str, Any]) -> tuple[str, str]:
+    metric = str(record.get("metric_id") or "").strip()
+    units = str(record.get("units") or "").strip().casefold()
+    if not metric:
+        sid = str(record.get("id") or id(record))
+        return (f"series:{sid}", units)
+    return (metric, units)
+
+
+def _shared_frequency(records: Sequence[dict[str, Any]]) -> str:
+    freqs: list[str] = []
+    for rec in records:
+        freq = str(rec.get("frequency") or "").strip()
+        if freq and freq not in freqs:
+            freqs.append(freq)
+    if not freqs:
+        return ""
+    if len(freqs) == 1:
+        return freqs[0]
+    return " / ".join(freqs)
+
+
+def group_plot_records(records: Sequence[dict[str, Any]]) -> list[PlotGroup]:
+    """One group per (metric, units) pair, in first-seen order."""
+    buckets: OrderedDict[tuple[str, str], list[dict[str, Any]]] = OrderedDict()
+    for rec in records:
+        buckets.setdefault(plot_group_key(rec), []).append(rec)
+    groups: list[PlotGroup] = []
+    for items in buckets.values():
+        rec = items[0]
+        groups.append(
+            PlotGroup(
+                metric_id=str(rec.get("metric_id") or "").strip(),
+                frequency=_shared_frequency(items),
+                units=str(rec.get("units") or "").strip(),
+                records=tuple(items),
+            )
+        )
+    return groups
+
+
+def plot_group_title(group: PlotGroup) -> str:
+    rec = group.records[0]
+    label = str(rec.get("label") or "")
+    if " for " in label:
+        return label.split(" for ", 1)[0].strip()
+    if rec.get("metric_id"):
+        return str(rec["metric_id"]).replace("-", " ").title()
+    return label or "Series"
+
+
+def plot_group_label(group: PlotGroup) -> str:
+    bits = [plot_group_title(group)]
+    if group.frequency:
+        bits.append(group.frequency)
+    if group.units:
+        bits.append(group.units)
+    return " · ".join(bits)
+
+
+def series_line_label(record: dict[str, Any]) -> str:
+    entities = record.get("entities") or []
+    if entities:
+        name = entities[0].get("label") or entities[0].get("id")
+        if name:
+            return str(name)
+    return str(record.get("label") or record.get("id") or "Series")
+
+
+def line_labels(records: Sequence[dict[str, Any]]) -> list[str]:
+    labels = [series_line_label(r) for r in records]
+    if len(set(labels)) == len(labels):
+        return labels
+    out: list[str] = []
+    seen: dict[str, int] = {}
+    for rec, label in zip(records, labels):
+        extra = rec.get("source") or rec.get("id") or ""
+        if labels.count(label) > 1 and extra:
+            label = f"{label} · {extra}"
+        n = seen.get(label, 0) + 1
+        seen[label] = n
+        out.append(label if n == 1 else f"{label} ({n})")
+    return out
+
+
 def history_points(record: dict[str, Any]) -> tuple[list[str], list[float]]:
     """Chronological date strings and values for plotext; gaps are dropped."""
     points: list[tuple[datetime, float]] = []
@@ -165,24 +267,44 @@ def history_points(record: dict[str, Any]) -> tuple[list[str], list[float]]:
     return times, values
 
 
-def plot_history(plt: Any, record: Optional[dict[str, Any]]) -> bool:
-    """Draw one series onto a plotext figure.
+def plot_history(
+    plt: Any,
+    records: Optional[dict[str, Any] | Sequence[dict[str, Any]]] = None,
+) -> bool:
+    """Draw one or more series onto a plotext figure.
 
-    Returns True when a line (or scatter) was drawn.
+    Overlay series that share an axis (same units). Returns True when at
+    least one line (or scatter) was drawn.
     """
+    if records is None:
+        recs: list[dict[str, Any]] = []
+    elif isinstance(records, dict):
+        recs = [records]
+    else:
+        recs = list(records)
     plt.clear_data()
     plt.title("")
     plt.xlabel("")
     plt.ylabel("")
-    times, values = history_points(record or {})
-    if not times:
+    drawn = 0
+    units = ""
+    for rec, name in zip(recs, line_labels(recs)):
+        times, values = history_points(rec)
+        if not times:
+            continue
+        if not units:
+            units = str(rec.get("units") or "").strip()
+        plt.date_form(CHART_DATE_FORM)
+        draw = plt.scatter if len(values) == 1 else plt.plot
+        kwargs: dict[str, Any] = {"marker": "braille", "label": name}
+        if len(recs) == 1:
+            kwargs["color"] = CHART_LINE_COLOR
+        draw(times, values, **kwargs)
+        drawn += 1
+    if not drawn:
         plt.title("No observations")
         return False
-    units = str(record.get("units") or "").strip() if record else ""
-    plt.date_form(CHART_DATE_FORM)
     plt.ylabel(units)
-    draw = plt.scatter if len(values) == 1 else plt.plot
-    draw(times, values, marker="braille", color=CHART_LINE_COLOR)
     return True
 
 
@@ -241,6 +363,20 @@ class SeriesNavRow(ListItem):
         yield Label(f"{name:<22}{value:>10}", classes="series-nav-row")
 
 
+class PlotGroupRow(ListItem):
+    def __init__(self, group: PlotGroup) -> None:
+        super().__init__()
+        self.group = group
+
+    def compose(self) -> ComposeResult:
+        n = len(self.group.records)
+        title = plot_group_title(self.group)
+        meta = self.group.frequency or ""
+        if n > 1:
+            meta = f"{meta} ×{n}".strip()
+        yield Label(f"{title:<18}{meta:>14}", classes="series-nav-row")
+
+
 class ObservationDetail(ModalScreen[None]):
     DEFAULT_CSS = """
     ObservationDetail {
@@ -278,13 +414,18 @@ class ObservationDetail(ModalScreen[None]):
 
 
 class HistoryPlot(PlotextPlot):
-    """Plotext line chart for one query series."""
+    """Plotext line chart for one comparable query group."""
 
     can_focus = False
 
-    def plot_record(self, record: Optional[dict[str, Any]]) -> None:
-        plot_history(self.plt, record)
+    def plot_records(
+        self, records: Optional[Sequence[dict[str, Any]]] = None
+    ) -> None:
+        plot_history(self.plt, records)
         self.refresh()
+
+    def plot_record(self, record: Optional[dict[str, Any]]) -> None:
+        self.plot_records(None if record is None else [record])
 
 
 class QueryScreen(BaseScreen):
@@ -327,7 +468,7 @@ class QueryScreen(BaseScreen):
     .stat-meta { color: #888; height: 1; }
     #query-main { height: 1fr; }
     #query-series {
-        width: 32;
+        width: 36;
         height: 1fr;
         background: #0f0f0f;
         display: none;
@@ -353,7 +494,7 @@ class QueryScreen(BaseScreen):
         background: #1a3a2a;
         border-left: solid #4ade80;
     }
-    ObservationRow, SeriesNavRow {
+    ObservationRow, SeriesNavRow, PlotGroupRow {
         height: 1;
         min-height: 1;
         max-height: 1;
@@ -375,9 +516,11 @@ class QueryScreen(BaseScreen):
         self.workspace = workspace
         self.query_id = int(query_id) if query_id is not None else None
         self._records: list[dict[str, Any]] = []
+        self._groups: list[PlotGroup] = []
         self._loaded = False
         self._mode = "table"
         self._series_i = 0
+        self._group_i = 0
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="query-body"):
@@ -489,60 +632,62 @@ class QueryScreen(BaseScreen):
             status.update(f"Query failed: {exc}")
             return
         self._records = [series_to_record(ts) for ts in results]
+        self._groups = group_plot_records(self._records)
         self._loaded = True
         self._series_i = 0
-        self._mode = "chart" if len(self._records) == 1 else "table"
+        self._group_i = 0
+        self._mode = "chart" if len(self._groups) <= 1 else "table"
         n = len(self._records)
         status.update(f"{n} series returned" if n else "No series returned")
-        self._fill_series_nav()
+        self._fill_nav()
         self._show_selected()
         self.refresh_footer()
 
-    def _fill_series_nav(self) -> None:
+    def _fill_nav(self) -> None:
         nav = self.query_one("#query-series", ListView)
         nav.clear()
-        multi = len(self._records) > 1
-        nav.display = multi
-        if not multi:
+        if self._mode == "chart":
+            show = len(self._groups) > 1
+            nav.display = show
+            if not show:
+                return
+            for group in self._groups:
+                nav.append(PlotGroupRow(group))
+            nav.index = min(self._group_i, len(self._groups) - 1)
+            return
+        show = len(self._records) > 1
+        nav.display = show
+        if not show:
             return
         for record in self._records:
             nav.append(SeriesNavRow(record))
-        if self._records:
-            nav.index = min(self._series_i, len(self._records) - 1)
+        nav.index = min(self._series_i, len(self._records) - 1)
 
     def _selected_record(self) -> Optional[dict[str, Any]]:
         if not self._records:
             return None
         return self._records[min(self._series_i, len(self._records) - 1)]
 
+    def _selected_group(self) -> Optional[PlotGroup]:
+        if not self._groups:
+            return None
+        return self._groups[min(self._group_i, len(self._groups) - 1)]
+
     def _show_selected(self) -> None:
         record = self._selected_record()
+        group = self._selected_group()
         stats = self.query_one("#query-stats")
         if record is None:
             stats.display = False
             self.query_one("#query-obs", ListView).clear()
-            self.query_one("#query-chart", HistoryPlot).plot_record(None)
+            self.query_one("#query-chart", HistoryPlot).plot_records(None)
             self.query_one("#query-raw-body", Static).update("{}")
             self._apply_mode()
             return
-        stats.display = True
         last = record.get("last") or {}
         freq = record.get("frequency") or "—"
         units = record.get("units") or ""
         n = int(record.get("n_observations") or 0)
-        self.query_one("#query-title", Label).update(record_title(record))
-        self.query_one("#stat-latest-value", Label).update(
-            format_value(last.get("value"))
-        )
-        self.query_one("#stat-latest-meta", Label).update(
-            f"{format_period(last.get('observation_timestamp'), freq)}  ·  {units}".strip(" ·")
-        )
-        self.query_one("#stat-n-value", Label).update(str(n))
-        self.query_one("#stat-n-meta", Label).update(str(freq))
-        self.query_one("#stat-release-value", Label).update(
-            format_release(last.get("release_timestamp"), short=True)
-        )
-
         obs_list = self.query_one("#query-obs", ListView)
         obs_list.clear()
         rows = list(reversed(record.get("observations") or []))
@@ -551,8 +696,63 @@ class QueryScreen(BaseScreen):
         self.query_one("#query-raw-body", Static).update(
             json.dumps(record, indent=2, default=str)
         )
-        self.query_one("#query-chart", HistoryPlot).plot_record(record)
+        self.query_one("#query-chart", HistoryPlot).plot_records(
+            group.records if group else [record]
+        )
+        stats.display = True
+        if self._mode == "chart" and group is not None:
+            self._show_group_chrome(group)
+        else:
+            self.query_one("#query-title", Label).update(record_title(record))
+            self.query_one("#stat-latest-value", Label).update(
+                format_value(last.get("value"))
+            )
+            self.query_one("#stat-latest-meta", Label).update(
+                f"{format_period(last.get('observation_timestamp'), freq)}  ·  {units}".strip(
+                    " ·"
+                )
+            )
+            self.query_one("#stat-n-value", Label).update(str(n))
+            self.query_one("#stat-n-meta", Label).update(str(freq))
+            self.query_one("#stat-release-value", Label).update(
+                format_release(last.get("release_timestamp"), short=True)
+            )
         self._apply_mode()
+
+    def _show_group_chrome(self, group: PlotGroup) -> None:
+        n = len(group.records)
+        self.query_one("#query-title", Label).update(plot_group_title(group))
+        if n == 1:
+            record = group.records[0]
+            last = record.get("last") or {}
+            freq = record.get("frequency") or "—"
+            units = record.get("units") or ""
+            self.query_one("#stat-latest-value", Label).update(
+                format_value(last.get("value"))
+            )
+            self.query_one("#stat-latest-meta", Label).update(
+                f"{format_period(last.get('observation_timestamp'), freq)}  ·  {units}".strip(
+                    " ·"
+                )
+            )
+            self.query_one("#stat-n-value", Label).update(
+                str(int(record.get("n_observations") or 0))
+            )
+            self.query_one("#stat-n-meta", Label).update(str(freq))
+            self.query_one("#stat-release-value", Label).update(
+                format_release(last.get("release_timestamp"), short=True)
+            )
+            return
+        names = line_labels(group.records)
+        preview = ", ".join(names[:3])
+        if len(names) > 3:
+            preview += f" +{len(names) - 3}"
+        total = sum(int(r.get("n_observations") or 0) for r in group.records)
+        self.query_one("#stat-latest-value", Label).update(f"{n} series")
+        self.query_one("#stat-latest-meta", Label).update(preview)
+        self.query_one("#stat-n-value", Label).update(str(total))
+        self.query_one("#stat-n-meta", Label).update(group.frequency or "—")
+        self.query_one("#stat-release-value", Label).update(group.units or "—")
 
     def _apply_mode(self) -> None:
         table = self._mode == "table"
@@ -562,32 +762,50 @@ class QueryScreen(BaseScreen):
         self.query_one("#query-obs").display = table
         self.query_one("#query-chart").display = chart
         self.query_one("#query-raw").display = raw
-        kicker = {
-            "table": "OBSERVATIONS     Latest first",
-            "chart": "HISTORICAL OBSERVATIONS     Chart",
-            "raw": "RAW JSON",
-        }[self._mode]
+        if chart:
+            group = self._selected_group()
+            kicker = "CHART"
+            if group is not None:
+                extra = plot_group_label(group)
+                n = len(group.records)
+                if n > 1:
+                    extra += f"  ·  {n} series"
+                kicker = f"CHART     {extra}"
+        else:
+            kicker = {
+                "table": "OBSERVATIONS     Latest first",
+                "raw": "RAW JSON",
+            }[self._mode]
         self.query_one("#query-pane-kicker", Label).update(kicker)
         if table:
             self.query_one("#query-obs", ListView).focus()
+        elif chart and len(self._groups) > 1:
+            self.query_one("#query-series", ListView).focus()
         elif len(self._records) > 1:
             self.query_one("#query-series", ListView).focus()
 
     def action_mode_table(self) -> None:
         self._mode = "table"
-        self._apply_mode()
+        self._fill_nav()
+        self._show_selected()
 
     def action_mode_chart(self) -> None:
         self._mode = "chart"
-        self._apply_mode()
+        self._fill_nav()
+        self._show_selected()
 
     def action_mode_raw(self) -> None:
         self._mode = "raw"
-        self._apply_mode()
+        self._fill_nav()
+        self._show_selected()
 
     def action_inspect(self) -> None:
         if self._mode != "table":
-            record = self._selected_record()
+            if self._mode == "chart":
+                group = self._selected_group()
+                record = group.records[0] if group else None
+            else:
+                record = self._selected_record()
             if record and record.get("last"):
                 self.app.push_screen(ObservationDetail(record, record["last"]))
             return
@@ -645,6 +863,13 @@ class QueryScreen(BaseScreen):
 
     @on(ListView.Highlighted, "#query-series")
     def on_series_highlighted(self, event: ListView.Highlighted) -> None:
+        if isinstance(event.item, PlotGroupRow):
+            try:
+                self._group_i = self._groups.index(event.item.group)
+            except ValueError:
+                return
+            self._show_selected()
+            return
         if isinstance(event.item, SeriesNavRow):
             try:
                 self._series_i = self._records.index(event.item.record)
@@ -682,7 +907,7 @@ QUERY_VIEW = register(
         bindings=(
             ActionBinding("r", "load", "Execute GET /query"),
             ActionBinding("t / c / v", "mode", "Table, chart, or raw JSON"),
-            ActionBinding("j / k", "cursor", "Move series or observations"),
+            ActionBinding("j / k", "cursor", "Move series, chart groups, or observations"),
             ActionBinding("enter", "inspect", "Inspect the highlighted observation"),
             ActionBinding("space", "collect", "Collect metric/entity/series into workspace"),
         ),

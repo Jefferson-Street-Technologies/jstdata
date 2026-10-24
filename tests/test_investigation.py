@@ -852,6 +852,67 @@ def test_query_formats_periods_and_values():
     assert "cartesian" in spec
 
 
+def test_query_groups_overlay_same_metric_units():
+    from textual_plotext import PlotextPlot
+
+    from jstdata.actions.query_view import (
+        group_plot_records,
+        plot_group_label,
+        plot_history,
+    )
+
+    def rec(sid, metric, freq, units, entity, values):
+        obs = [
+            {
+                "observation_timestamp": f"{2020 + i}-01-01T00:00:00",
+                "release_timestamp": f"{2020 + i}-06-01T00:00:00",
+                "value": val,
+                "release_id": f"r{i}",
+            }
+            for i, val in enumerate(values)
+        ]
+        return {
+            "id": sid,
+            "label": f"Household debt to GDP for {entity}",
+            "metric_id": metric,
+            "entities": [{"id": entity.lower(), "label": entity}],
+            "frequency": freq,
+            "units": units,
+            "source": "FSI",
+            "n_observations": len(obs),
+            "last": obs[-1],
+            "observations": obs,
+        }
+
+    france = rec("s-fr", "hhd", "Annual", "Ratio", "France", [70.1, 71.5])
+    united = rec(
+        "s-us", "hhd", "Quarterly", "Ratio", "United States", [58.0, 59.2]
+    )
+    other = rec("s-cpi", "cpi", "Quarterly", "Index", "France", [100.0, 102.0])
+    groups = group_plot_records([france, united, other])
+    keys = [
+        (g.metric_id, g.units, len(g.records)) for g in groups
+    ]
+    assert ("hhd", "Ratio", 2) in keys
+    assert ("cpi", "Index", 1) in keys
+    overlay = next(g for g in groups if len(g.records) == 2)
+    assert "Household debt to GDP" in plot_group_label(overlay)
+    assert "Ratio" in plot_group_label(overlay)
+    plt = PlotextPlot().plt
+    assert plot_history(plt, overlay.records) is True
+    plt.plotsize(60, 14)
+    chart = plt.uncolorize(plt.build())
+    assert "France" in chart
+    assert "United States" in chart
+    lonely = group_plot_records(
+        [
+            rec("a", "", "Annual", "X", "France", [1.0]),
+            rec("b", "", "Annual", "X", "Spain", [2.0]),
+        ]
+    )
+    assert len(lonely) == 2
+
+
 def test_series_to_record_is_json_not_frame():
     from datetime import datetime
 
