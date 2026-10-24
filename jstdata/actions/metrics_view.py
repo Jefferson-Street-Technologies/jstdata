@@ -23,7 +23,14 @@ from ..investigation.model import (
     focus_replace_context,
 )
 from ..models import Metric
-from .base import ActionArgument, ActionBinding, ActionSpec, label_for, register
+from .base import (
+    ActionArgument,
+    ActionBinding,
+    ActionSpec,
+    label_for,
+    register,
+    stage_ids,
+)
 from .pagination import page_fetch_limit, take_page
 from .screen import BaseScreen
 
@@ -53,6 +60,7 @@ class MetricsScreen(BaseScreen):
         Binding("j", "cursor_down", "Cursor Down", show=False),
         Binding("k", "cursor_up", "Cursor Up", show=False),
         Binding("m", "toggle_mode", "Toggle union/intersect", key_display="m"),
+        Binding("space", "collect", "Collect into workspace", show=False),
     ]
 
     DEFAULT_CSS = """
@@ -250,6 +258,7 @@ class MetricsScreen(BaseScreen):
             keys.append("[bold]/[/bold] search")
             keys.append("[bold]j[/bold]/[bold]k[/bold] move")
             keys.append("[bold]enter[/bold] metric")
+            keys.append("[bold]space[/bold] collect")
         return keys
 
     def action_toggle_mode(self) -> None:
@@ -332,6 +341,27 @@ class MetricsScreen(BaseScreen):
         if isinstance(child, MetricRow):
             return child.metric
         return None
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "collect" and isinstance(self.focused, Input):
+            return False
+        return True
+
+    def action_collect(self) -> None:
+        metric = self._highlighted_metric()
+        if metric is None:
+            self.notify("No metric highlighted", severity="warning")
+            return
+        added = stage_ids(
+            self.workspace,
+            self.app,
+            metric=metric.id,
+            labels={metric.id: metric.name or metric.id},
+        )
+        if not added:
+            self.notify(f"{metric.id} already in workspace", severity="warning")
+            return
+        self.notify(f"Collected metric {metric.name or metric.id}")
 
     def action_confirm(self) -> None:
         if isinstance(self.focused, Input):
@@ -489,6 +519,11 @@ METRICS_VIEW = register(
             ActionBinding("/", "focus_filter", "Search within associated metrics"),
             ActionBinding("j / k", "cursor", "Move in metrics list (loads more at end)"),
             ActionBinding("enter", "confirm", "Open metric view for highlighted row"),
+            ActionBinding(
+                "space",
+                "collect",
+                "Collect highlighted metric into the workspace",
+            ),
         ),
         example=':add metrics --args \'{"mode":"intersect"}\'',
     )

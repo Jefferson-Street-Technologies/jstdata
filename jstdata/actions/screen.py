@@ -19,6 +19,7 @@ class BaseScreen(Screen):
     # Investigation-wide keys — defined once, shown on every action screen.
     FOOTER_CHROME: tuple[str, ...] = (
         "[bold]:[/bold] commands",
+        "[bold]g[/bold] home",
         "[bold]n[/bold]/[bold]p[/bold] siblings",
         "[bold]N[/bold]/[bold]P[/bold] depth",
         "[bold]dd[/bold] delete",

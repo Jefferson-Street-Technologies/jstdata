@@ -21,7 +21,7 @@ from ..investigation.model import (
     focus_replace_context,
 )
 from ..models import EntityRelationship, Metric
-from .base import ActionBinding, ActionSpec, label_for, register
+from .base import ActionBinding, ActionSpec, label_for, register, stage_ids
 from .screen import BaseScreen
 
 RELATIONS_PAGE = 20
@@ -74,6 +74,7 @@ class EntityScreen(BaseScreen):
             show=False,
             priority=True,
         ),
+        Binding("space", "collect", "Collect into workspace", show=False),
     ]
 
     DEFAULT_CSS = """
@@ -239,6 +240,7 @@ class EntityScreen(BaseScreen):
             keys.append("[bold]j[/bold]/[bold]k[/bold] move")
             if self._pane == "metrics":
                 keys.append("[bold]enter[/bold] metric")
+        keys.append("[bold]space[/bold] collect")
         return keys
 
     def _active_list(self) -> ListView:
@@ -305,6 +307,39 @@ class EntityScreen(BaseScreen):
         if isinstance(child, MetricAssocRow):
             return child.metric
         return None
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "collect" and isinstance(self.focused, Input):
+            return False
+        return True
+
+    def action_collect(self) -> None:
+        metric = self._highlighted_metric() if self._pane == "metrics" else None
+        if metric is not None:
+            added = stage_ids(
+                self.workspace,
+                self.app,
+                metric=metric.id,
+                labels={metric.id: metric.name or metric.id},
+            )
+            if not added:
+                self.notify(f"{metric.id} already in workspace", severity="warning")
+                return
+            self.notify(f"Collected metric {metric.name or metric.id}")
+            return
+        if not self._entity_id:
+            self.notify("Nothing to collect", severity="warning")
+            return
+        added = stage_ids(
+            self.workspace,
+            self.app,
+            entity=self._entity_id,
+            labels={self._entity_id: self._label or self._entity_id},
+        )
+        if not added:
+            self.notify(f"{self._entity_id} already in workspace", severity="warning")
+            return
+        self.notify(f"Collected entity {self._label or self._entity_id}")
 
     def action_confirm(self) -> None:
         if isinstance(self.focused, Input):
@@ -467,6 +502,11 @@ ENTITY_VIEW = register(
                 "enter",
                 "confirm",
                 "Open metric view for highlighted metric (metrics pane)",
+            ),
+            ActionBinding(
+                "space",
+                "collect",
+                "Collect highlighted metric (or this entity) into the workspace",
             ),
         ),
         example="jst action add entity",

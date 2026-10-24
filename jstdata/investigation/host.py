@@ -19,6 +19,7 @@ from ..actions.help import HelpScreen
 from .active import ActiveContext, active_path, load_active, save_active
 from .api import (
     add_action,
+    add_query,
     remove_action,
     persist_investigation,
 )
@@ -148,6 +149,7 @@ class InvestigationHost(App):
         Binding("escape", "back", "Back"),
         Binding("question_mark", "show_help", "Action help", key_display="?"),
         Binding(":", "command_palette", "Command", key_display=":"),
+        Binding("g", "go_home", "Home", key_display="g"),
         # Tree: siblings laterally, depth via N/P (and arrows).
         Binding("n", "next_sibling", "Next sibling"),
         Binding("p", "prev_sibling", "Prev sibling"),
@@ -639,6 +641,8 @@ class InvestigationHost(App):
         self.notify(f"Workspace {label}", timeout=2)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "go_home" and isinstance(self.focused, Input):
+            return False
         tree_actions = {
             "command_palette",
             "next_sibling",
@@ -662,6 +666,112 @@ class InvestigationHost(App):
             ):
                 return False
         return True
+
+    def action_go_home(self) -> None:
+        """Reorient: dismiss overlays and activate the root home action."""
+        if self._invalid or not self.investigation or not self.active:
+            return
+        while len(self.screen_stack) > 2:
+            self.pop_screen()
+        if self.active.action == ROOT_ACTION_ID:
+            self._show_current_action(reset=True)
+            self.notify("Home", timeout=1)
+            return
+        self._activate_action(ROOT_ACTION_ID)
+
+    def launch_home_item(self, item) -> None:
+        """Dispatch a HomeItem from the home launcher."""
+        kind = getattr(item, "kind", None)
+        if kind == "search":
+            self.ensure_action("console", description="Search catalog")
+        elif kind == "workspace":
+            self._open_workspace_drawer()
+        elif kind == "table":
+            self.ensure_action("table", description="Latest-value table")
+        elif kind == "query_new":
+            self.query_from_workspace()
+        elif kind == "query":
+            self.open_query_view(int(item.payload))
+        else:
+            self.notify(f"Unknown primitive {kind!r}", severity="warning")
+
+    def ensure_action(
+        self,
+        action_type: str,
+        *,
+        args: Optional[dict] = None,
+        description: Optional[str] = None,
+        match: str = "type",
+    ):
+        """Activate an existing root child of this type, or add one."""
+        if self._invalid or not self.investigation or not self.active:
+            self.notify("No investigation loaded", severity="error")
+            return None
+        args = dict(args or {})
+        for child in self.investigation.children(ROOT_ACTION_ID):
+            if child.type != action_type:
+                continue
+            if match == "args" and dict(child.args) != args:
+                continue
+            self._activate_action(child.id)
+            return child
+        try:
+            action = add_action(
+                self.investigation,
+                action_type,
+                parent_id=ROOT_ACTION_ID,
+                args=args,
+                description=description,
+                activate=True,
+                app_dir=self.app_dir,
+            )
+        except InvestigationError as exc:
+            self.notify(str(exc), severity="error")
+            return None
+        self._order = self.investigation.bfs_order()
+        self.active = load_active(app_dir=self.app_dir)
+        self.notify(f"Opened {action.type} {action.id}")
+        self._show_current_action(reset=True)
+        return action
+
+    def open_query_view(self, query_id: int) -> None:
+        if not self.investigation:
+            self.notify("No investigation loaded", severity="error")
+            return
+        try:
+            query = self.investigation.get_query(query_id)
+        except InvestigationError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        self.ensure_action(
+            "query",
+            args={"query_id": query_id},
+            description=query.name or f"Query {query_id}",
+            match="args",
+        )
+
+    def query_from_workspace(self) -> None:
+        """Snapshot the workspace bag into a saved query and open it."""
+        if self._invalid or not self.investigation:
+            self.notify("No investigation loaded", severity="error")
+            return
+        if self.workspace.is_empty():
+            self.notify(
+                "Workspace is empty — Search and collect ids first",
+                severity="warning",
+            )
+            return
+        try:
+            query = add_query(
+                self.investigation,
+                from_workspace=True,
+                app_dir=self.app_dir,
+            )
+        except InvestigationError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        self.notify(f"Saved query {query.id}")
+        self.open_query_view(query.id)
 
     def action_command_palette(self) -> None:
         if self._invalid:
@@ -697,6 +807,12 @@ class InvestigationHost(App):
             self._open_workspace_drawer()
         elif parsed.name == "search":
             self._open_search_drawer(parsed.args[0], parsed.args[1])
+        elif parsed.name == "query":
+            qid = parsed.options.get("query_id")
+            if qid is None:
+                self.query_from_workspace()
+            else:
+                self.open_query_view(int(qid))
         elif parsed.name == "add":
             self._cmd_add(parsed)
         elif parsed.name == "rm":

@@ -23,7 +23,14 @@ from ..investigation.model import (
     focus_replace_context,
 )
 from ..models import PreviewRow, TimeSeries
-from .base import ActionArgument, ActionBinding, ActionSpec, label_for, register
+from .base import (
+    ActionArgument,
+    ActionBinding,
+    ActionSpec,
+    label_for,
+    register,
+    stage_ids,
+)
 from .chart import (
     format_compact,
     last_observation_release_id,
@@ -102,6 +109,7 @@ class TableScreen(BaseScreen):
         Binding("l", "cursor_right", "Next metric", show=False),
         Binding("left", "cursor_left", "Prev metric", show=False),
         Binding("right", "cursor_right", "Next metric", show=False),
+        Binding("space", "collect", "Collect into workspace", show=False),
     ]
 
     DEFAULT_CSS = """
@@ -278,6 +286,7 @@ class TableScreen(BaseScreen):
         if self._loaded:
             keys.append("[bold]tab[/bold] row/col")
             keys.append("[bold]enter[/bold] drill")
+            keys.append("[bold]space[/bold] collect")
         return keys
 
     def _coverage_summary(self, ctx: ResearchContext) -> str:
@@ -596,6 +605,37 @@ class TableScreen(BaseScreen):
                 options.append(self._release_drill_option(row, mid, rid))
         return options
 
+    def action_collect(self) -> None:
+        row = self._highlighted_row()
+        mid = self._active_metric_id()
+        labels: dict[str, str] = {}
+        entity_id = None
+        metric_id = None
+        if row is not None:
+            entity_id = row.entity_id
+            labels[entity_id] = row.entity_label or entity_id
+        if mid is not None:
+            metric_id = mid
+            labels[mid] = label_for(self._labels(), mid)
+        if self._focus_mode == "column":
+            if metric_id is None:
+                self.notify("No metric column to collect", severity="warning")
+                return
+        elif entity_id is None:
+            self.notify("No row to collect", severity="warning")
+            return
+        added = stage_ids(
+            self.workspace,
+            self.app,
+            metric=metric_id,
+            entity=entity_id,
+            labels=labels,
+        )
+        if not added:
+            self.notify("Already in workspace", severity="warning")
+            return
+        self.notify("Collected " + ", ".join(added))
+
     def action_confirm(self) -> None:
         if not self._loaded:
             self.notify("Press r to load before drilling down", severity="warning")
@@ -738,6 +778,11 @@ TABLE = register(
                 "enter",
                 "confirm",
                 "Drill into entity, metric, or release for the focused cell",
+            ),
+            ActionBinding(
+                "space",
+                "collect",
+                "Collect focused entity and metric into the workspace",
             ),
         ),
         example="jst action add table --args '{\"sort_by\":\"value\"}'",

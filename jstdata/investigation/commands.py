@@ -42,6 +42,11 @@ COMMANDS: tuple[CommandSpec, ...] = (
         usage="search <metric|entity|series|taxonomy|all> <query>",
     ),
     CommandSpec(
+        "query",
+        "Save the workspace as a query, or open a saved query",
+        usage="query [id]",
+    ),
+    CommandSpec(
         "add",
         "Add an action under the active (or --parent) node",
         usage=ADD_USAGE,
@@ -228,6 +233,9 @@ def complete_command_line(raw: str) -> list[str]:
     if cmd == "workspace":
         return []
 
+    if cmd == "query":
+        return []
+
     if cmd == "search":
         if len(head) == 1:
             matches = _prefix_matches(sorted(SEARCH_TYPES), partial)
@@ -269,7 +277,7 @@ def parse_command_line(raw: str) -> ParsedCommand:
     if text.startswith(":"):
         text = text[1:].strip()
     if not text:
-        raise CommandError("Empty command. Try: workspace, search, add, rm")
+        raise CommandError("Empty command. Try: workspace, search, query, add, rm")
     try:
         tokens = shlex.split(text)
     except ValueError as exc:
@@ -287,6 +295,8 @@ def parse_command_line(raw: str) -> ParsedCommand:
         return ParsedCommand(name=name)
     if name == "search":
         return _parse_search(rest)
+    if name == "query":
+        return _parse_query(rest)
     if name == "add":
         return _parse_add(rest)
     if name == "rm":
@@ -311,6 +321,18 @@ def _parse_search(rest: list[str]) -> ParsedCommand:
             "Usage: search <metric|entity|series|taxonomy|all> <query>"
         )
     return ParsedCommand(name="search", args=[rtype, query])
+
+
+def _parse_query(rest: list[str]) -> ParsedCommand:
+    if not rest:
+        return ParsedCommand(name="query")
+    if len(rest) > 1:
+        raise CommandError("Usage: query [id]")
+    try:
+        query_id = int(rest[0])
+    except ValueError as exc:
+        raise CommandError("Query id must be an integer") from exc
+    return ParsedCommand(name="query", args=[str(query_id)], options={"query_id": query_id})
 
 
 def _parse_add(rest: list[str]) -> ParsedCommand:

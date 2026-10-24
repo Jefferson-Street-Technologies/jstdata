@@ -295,7 +295,7 @@ def test_ensure_bootstrap_and_active(tmp_path: Path):
 
     bundled = load_bundled_tutorial()
     assert bundled.actions[0].type == "home"
-    assert "Jefferson Street" in (bundled.actions[0].description or "")
+    assert "Search" in (bundled.actions[0].description or "")
     assert bundled.workspace.label == "Scratch"
 
 
@@ -490,10 +490,93 @@ def test_cli_ls_add_rm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 def test_home_step_registered():
     import jstdata.investigation  # noqa: F401
+    import jstdata.actions  # noqa: F401
 
     spec = get_action("home")
     assert spec.id == "home"
     assert spec.name == "Home"
+    query = get_action("query")
+    assert query.id == "query"
+
+
+def test_home_primitives_include_core_and_saved_queries():
+    from jstdata.investigation.home import build_home_items
+
+    inv = Investigation.new("demo")
+    inv.workspace.add_metric("gdp")
+    inv.workspace.add_entity("france")
+    inv.add_query(from_workspace=True, name="FR GDP")
+    kinds = [item.kind for item in build_home_items(inv)]
+    assert kinds[:4] == ["search", "workspace", "table", "query_new"]
+    assert "query" in kinds
+    saved = [item for item in build_home_items(inv) if item.kind == "query"]
+    assert saved[0].payload == 1
+    assert "FR GDP" in saved[0].detail
+
+
+def test_stage_ids_collects_into_workspace():
+    from jstdata.actions.base import stage_ids
+
+    class FakeApp:
+        def __init__(self):
+            self.labels = {}
+            self.persisted = False
+
+        def remember_label(self, rid, label):
+            self.labels[rid] = label
+
+        def persist_active_workspace(self):
+            self.persisted = True
+
+    ws = Workspace()
+    app = FakeApp()
+    added = stage_ids(ws, app, metric="gdp", entity="france", labels={"gdp": "GDP"})
+    assert added == ["gdp", "france"]
+    assert ws.metric == ["gdp"]
+    assert ws.entity == ["france"]
+    assert app.labels["gdp"] == "GDP"
+    assert app.persisted is True
+    assert stage_ids(ws, app, metric="gdp") == []
+
+
+def test_series_to_record_is_json_not_frame():
+    from datetime import datetime
+
+    from jstdata.actions.query_view import series_to_record
+    from jstdata.models import Entity, Observation, Series, TimeSeries
+
+    ts = TimeSeries(
+        series=Series(
+            id="s1",
+            label="GDP France",
+            frequency="Annual",
+            source="OECD",
+            units="USD",
+            seasonal_adjustment="NSA",
+            last_updated=datetime(2024, 1, 1),
+            metric_id="gdp",
+            entities=[Entity(id="france", label="France")],
+        ),
+        observations=[
+            Observation(
+                series_id="s1",
+                observation_timestamp=datetime(2023, 1, 1),
+                release_timestamp=datetime(2024, 1, 1),
+                value=1.2,
+                release_id="r1",
+            )
+        ],
+    )
+    record = series_to_record(ts)
+    assert record["id"] == "s1"
+    assert record["metric_id"] == "gdp"
+    assert record["entities"] == [{"id": "france", "label": "France"}]
+    assert record["n_observations"] == 1
+    assert record["last"]["value"] == 1.2
+    assert "observations" in record
+    import json
+
+    json.dumps(record)
 
 
 def test_cli_create_rejects_duplicate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

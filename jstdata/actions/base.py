@@ -121,6 +121,43 @@ def label_for(labels: dict[str, str], resource_id: str) -> str:
     return labels.get(resource_id, resource_id)
 
 
+def stage_ids(
+    workspace: Workspace,
+    app: Any,
+    *,
+    metric: Optional[str] = None,
+    entity: Optional[str] = None,
+    series: Optional[str] = None,
+    labels: Optional[dict[str, str]] = None,
+) -> list[str]:
+    """Collect resource ids into the investigation workspace.
+
+    Returns newly added ids (already-present ids are skipped). Persists via
+    the host when anything changed.
+    """
+    added: list[str] = []
+    names = labels or {}
+    if metric and workspace.add_metric(metric):
+        added.append(metric)
+    if entity and workspace.add_entity(entity):
+        added.append(entity)
+    if series and workspace.add_series(series):
+        added.append(series)
+    if not added:
+        return []
+    remember = getattr(app, "remember_label", None)
+    if callable(remember):
+        for rid in added:
+            remember(rid, names.get(rid) or rid)
+    persist = getattr(app, "persist_active_workspace", None)
+    if callable(persist):
+        persist()
+    refresh = getattr(app, "refresh_workspace_drawer", None)
+    if callable(refresh):
+        refresh()
+    return added
+
+
 _REGISTRY: Dict[str, ActionSpec] = {}
 
 

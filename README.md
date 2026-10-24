@@ -92,9 +92,10 @@ jst action show console
 jst action show rank --json
 ```
 
-Inside the TUI: `:` command mode (`:workspace`, `:search metric gdp`, `:add`,
-`:rm`) · `n`/`p` (↑/↓) siblings · `N`/`P` (→/←) depth · `:workspace` drawer ·
-`?` help · `q` quit.
+Inside the TUI: `g` returns home (Search / Workspace / Table / Query). `:`
+command mode (`:workspace`, `:search metric gdp`, `:query`, `:add`, `:rm`) ·
+`n`/`p` (↑/↓) siblings · `N`/`P` (→/←) depth · space collects into the
+workspace · `?` help · `q` quit.
 
 Active context lives in `~/.jstdata/.active.yaml`.
 

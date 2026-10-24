@@ -144,7 +144,7 @@ Seed args go on `arguments`. They configure the TUI via
 | Resolve resources | `jst api metric search …` / `jst api entity search …` |
 | Query / observations | `jst api query …` / `jst api series observations …` |
 | Agent bootstrap | `jst agent-guide` |
-| Inside the TUI | `:` commands · `n`/`p` siblings · `N`/`P` depth · `:workspace` · `?` · `q` |
+| Inside the TUI | `g` home · `:` commands · `n`/`p` siblings · `N`/`P` depth · `:workspace` · space collect · `?` · `q` |
 
 ## Catalog / search notes (for action authors)
 

@@ -239,6 +239,7 @@ jst query add --metric gdp --entity france --entity usa --name "FR vs US"
 jst query inspect 1
 jst query run 1 --format json
 jst action add table --args '{"sort_by":"value"}' --activate
+jst action add query --args '{"query_id":1}' --activate
 jst action add metrics --args '{"mode":"intersect"}'
 jst action add rank --args '{"taxonomy":"country"}'
 jst action rm 2 --force
@@ -252,8 +253,10 @@ jst action rm 2 --force
   the global workspace.
 - New actions are children of the active action unless `--parent` is set.
 - Humans use `:` in the TUI (`:workspace`, `:search metric gdp`, `:add`, `:rm`).
-  Tree keys: `n`/`p` siblings, `N`/`P` depth (arrows too). `:workspace` opens
-  the bag drawer. Views are typically idle until `r` (load).
+  Tree keys: `g` home, `n`/`p` siblings, `N`/`P` depth (arrows too). `:workspace`
+  opens the bag drawer. Views are typically idle until `r` (load). Space
+  collects the focused resource into the workspace. Home lists Search /
+  Workspace / Table / Query.
 - **When to use which:**
   - `table` — latest-value matrix; cheap `/preview` coverage on open; `r` runs
     `/query`; Enter drills to entity, metric, or **release** (provenance).

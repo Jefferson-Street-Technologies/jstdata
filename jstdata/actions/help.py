@@ -77,8 +77,8 @@ class HelpScreen(ModalScreen):
         with Vertical(id="help-container"):
             yield Label(f"{self.action_name.upper()} // KEYBINDINGS", id="help-title")
             yield Label(
-                "Investigation keys: : commands (Tab completes) · n/p siblings · "
-                "N/P depth · ↑↓←→ same · dd delete subtree · "
+                "Investigation keys: : commands (Tab completes) · g home · "
+                "n/p siblings · N/P depth · ↑↓←→ same · dd delete subtree · "
                 ":workspace drawer · q quit.",
                 id="help-note",
             )

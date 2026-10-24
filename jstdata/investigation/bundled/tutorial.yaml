@@ -11,11 +11,7 @@ actions:
 - id: 0
   type: home
   description: >-
-    Jefferson Street is an IDE for financial research in the terminal.
-    You and an agent share an investigation — a tree of analytical actions
-    over a staged workspace and saved queries. Use : for commands
-    (workspace, search, add, rm). n/p (or ↑/↓) move among sibling actions;
-    N/P (or →/←) go into a child or back to the parent. Open :workspace
-    to inspect the bag. Edit this YAML (or ~/.jstdata/.active.yaml) and
-    the TUI will pick up the change.
+    Home lists the primitives: Search, Workspace, Table, Query.
+    Enter opens one. g always returns here. Space on a view collects
+    into the workspace. Query runs cartesian metric × entity as JSON.
   args: {}
