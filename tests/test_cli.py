@@ -35,7 +35,10 @@ def test_cli_help(runner):
     assert "Jefferson Street CLI - A Research OS for Financial Data." in result.output
     assert "api" in result.output
     assert "action" in result.output
-    assert "investigation" in result.output
+    assert "new" in result.output
+    assert "open" in result.output
+    assert "query" in result.output
+    assert "Commands" in result.output
 
 
 def test_metric_ls(runner, mock_url):
@@ -269,7 +272,7 @@ def test_actions_plural_removed(runner):
     assert result.exit_code != 0
 
 
-def test_run_launches_active(runner, monkeypatch, tmp_path):
+def test_bare_jst_resumes_active(runner, monkeypatch, tmp_path):
     launched: list[str] = []
 
     def fake_run(client, *, app_dir=None):
@@ -285,15 +288,19 @@ def test_run_launches_active(runner, monkeypatch, tmp_path):
     monkeypatch.setattr("jstdata.client.APP_DIR", tmp_path)
     monkeypatch.setattr(inv_pkg, "run_investigation_host", fake_run)
 
-    def require_tmp(*, app_dir=None):
-        return api_mod.require_active_investigation(app_dir=tmp_path)
+    def resume_tmp(*, app_dir=None):
+        return api_mod.resume_or_create_investigation(app_dir=tmp_path)
 
-    monkeypatch.setattr(inv_pkg, "require_active_investigation", require_tmp)
+    def get_active_tmp(*, app_dir=None):
+        return api_mod.get_active(app_dir=tmp_path)
+
+    monkeypatch.setattr(inv_pkg, "resume_or_create_investigation", resume_tmp)
+    monkeypatch.setattr(inv_pkg, "get_active", get_active_tmp)
 
     api_mod.ensure_bootstrap(app_dir=tmp_path)
     api_mod.create_investigation("alpha", title="Alpha", app_dir=tmp_path)
 
-    result = runner.invoke(cli, ["run"])
+    result = runner.invoke(cli, [])
     assert result.exit_code == 0, result.output
     assert "alpha" in result.output
     assert launched == ["run"]

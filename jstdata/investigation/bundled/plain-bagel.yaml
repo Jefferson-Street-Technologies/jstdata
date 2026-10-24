@@ -1,7 +1,7 @@
 id: plain-bagel
 title: Plain Bagel — Hyperscaler Debt
-workspaces:
-- id: 0
+workspace:
+  id: 0
   label: Hyperscalers
   description: >-
     Alphabet, Microsoft, Meta, and Amazon with debt / cash / capex metrics.
@@ -17,6 +17,24 @@ workspaces:
   - cik:789019
   - cik:1326801
   - cik:1018724
+queries:
+- id: 1
+  name: Latest hyperscaler debt
+  notes: >-
+    Cartesian metric × entity against GET /query. Four metrics × four
+    CIKs; tail=1 for latest value only.
+  metric:
+  - long-term-debt
+  - debt-current
+  - cash
+  - payments-to-acquire-property-plant-and-equipment
+  entity:
+  - cik:1652044
+  - cik:789019
+  - cik:1326801
+  - cik:1018724
+  tail: 1
+  sort_by: value
 actions:
 - id: 0
   type: home
@@ -24,7 +42,7 @@ actions:
     Plain Bagel demo — hyperscaler debt.
 
     Workspace holds four CIKs (Alphabet, Microsoft, Meta, Amazon) and debt /
-    cash / capex metrics.
+    cash / capex metrics. Query 1 is the cartesian latest-value pull.
 
     Demo loop:
       1. Open the Table child (N or :add already done) — coverage via /preview,
@@ -35,6 +53,7 @@ actions:
       5. On Metric, press r for description, variants, and taxonomies.
 
     Tree: n/p siblings · N into child · P up to parent · : for commands.
+    CLI: jst query show 1 · jst query inspect 1 · jst query run 1
   args: {}
 - id: 1
   type: table

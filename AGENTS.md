@@ -13,8 +13,9 @@ For **how to operate** the product as an agent (policy, modes, recipes), run
    `entity` / `series` + `head`/`tail`/`as_of`/`sort_by`/`taxonomy`). Mirrors
    `JSTDataClient.query` / `jst api query` parameters. No observations. Deep
    history uses `GET /series/{id}/observations`, not `/query` date windows.
-   Workspaces live in investigation YAML and are the live objects action screens
-   mutate.
+   The investigation has **one** workspace (the live object action screens
+   mutate). Saved **queries** are separate YAML objects: cartesian
+   metric × entity (plus optional series) sent to `GET /query`.
 2. **Action / View** — a self-describing interactive TUI. Staging actions
    (`console`, `discover`, `rank`) grow the active workspace. Read/drill views
    (`table`, `metric`, `entity`, `metrics`) take an **Input Context** (workspace
@@ -28,23 +29,26 @@ For **how to operate** the product as an agent (policy, modes, recipes), run
    - left workspace drawer / bottom search drawer
    - `n` / `p` (or ↑/↓) next / previous sibling action
    - `N` / `P` (or →/←) into first child / up to parent
-   - In `:workspace` drawer: `j`/`k` rows, `h`/`l` cycle workspaces
+   - In `:workspace` drawer: `j`/`k` rows, backspace to remove
    - `q` quit
    - `?` action-specific keybindings (from the catalog entry)
 4. **Investigation** — named YAML under `~/.jstdata/investigations/` that stores
-   **workspaces + action tree** (type, args, parent_id, optional `context`).
-   Managed with `jst investigation` (`create` / `load` / `ls`). Action mutations
+   **one workspace + queries + action tree** (type, args, parent_id, optional
+   `context`). Managed with `jst new` / `jst ls` / `jst open`; bare `jst`
+   resumes the active investigation (creates Untitled if none). Saved queries
+   use `jst query` (`ls` / `show` / `inspect` / `run` / `add`). Action mutations
    use `jst action` (`add` / `rm`). Active investigation / workspace / action ids
-   live in `~/.jstdata/.active.yaml`. A bundled tutorial investigation is
-   bootstrapped when none exist.
+   live in `~/.jstdata/.active.yaml`. Bundled `tutorial` and `plain-bagel` are
+   installed on first use.
 
 Composition is the **action tree**:
 
 ```bash
-jst investigation create gdp-rank
+jst new --id gdp-rank
 jst action add table --args '{"sort_by":"value"}' --activate
 jst action add rank --args '{"taxonomy":"country"}'
-jst investigation load gdp-rank
+jst query add --from-workspace --name "workspace snapshot"
+jst open gdp-rank
 ```
 
 Catalog + `ActionSpec` live in `jstdata/actions/`. The host runtime is
@@ -129,17 +133,18 @@ Seed args go on `arguments`. They configure the TUI via
 |------|---------|
 | List actions | `jst action ls` / `jst action ls --json` |
 | Describe one action | `jst action show <id>` / `jst action show <id> --json` |
-| Create investigation | `jst investigation create <id>` |
-| Open investigation | `jst investigation load <id>` |
-| Resume active | `jst run` |
-| List investigations | `jst investigation ls` |
+| Create investigation | `jst new` (optional `--id` / `--title`) |
+| Open investigation | `jst open <id>` |
+| Resume active | `jst` |
+| List investigations | `jst ls` |
+| Saved queries | `jst query ls` / `show` / `inspect` / `run` / `add` |
 | Add view | `jst action add table --args '{"sort_by":"value"}'` |
 | Add and activate | `jst action add metrics --args '{"mode":"intersect"}' --activate` |
 | Remove action | `jst action rm <action-id> --force` |
 | Resolve resources | `jst api metric search …` / `jst api entity search …` |
 | Query / observations | `jst api query …` / `jst api series observations …` |
 | Agent bootstrap | `jst agent-guide` |
-| Inside the TUI | `:` commands · `n`/`p` siblings · `N`/`P` depth · `:workspace` then `h`/`l` · `?` · `q` |
+| Inside the TUI | `:` commands · `n`/`p` siblings · `N`/`P` depth · `:workspace` · `?` · `q` |
 
 ## Catalog / search notes (for action authors)
 

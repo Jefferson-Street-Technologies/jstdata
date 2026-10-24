@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from ..client import JSTDataClient
 
 from .active import ActiveContext, load_active, save_active, try_load_active
 from .bootstrap import ensure_bootstrap
@@ -17,11 +20,13 @@ from .model import (
     Action,
     Investigation,
     InvestigationError,
+    Query,
     ResearchContext,
     ROOT_ACTION_ID,
     Workspace,
 )
 from .store import (
+    allocate_investigation_id,
     investigation_exists,
     list_investigations,
     load_investigation,
@@ -35,25 +40,33 @@ def _inv_root(app_dir: Optional[Path]) -> Optional[Path]:
 
 
 def create_investigation(
-    investigation_id: str,
+    investigation_id: Optional[str] = None,
     *,
     title: Optional[str] = None,
+    notes: Optional[str] = None,
     app_dir: Optional[Path] = None,
     activate: bool = True,
     open_tui: bool = False,
 ) -> Investigation:
     """Create a new investigation on disk and optionally activate it.
 
-    ``open_tui`` is ignored here — the CLI launches the host after create.
+    ``investigation_id`` is optional; a unique ``inv-<unix>`` slug is allocated
+    when omitted. Title defaults to ``Untitled`` for generated ids, otherwise
+    to the id. ``open_tui`` is ignored here — the CLI launches the host.
     """
     ensure_bootstrap(app_dir=app_dir)
-    validate_investigation_id(investigation_id)
     inv_root = _inv_root(app_dir)
-    if investigation_exists(investigation_id, root=inv_root):
-        raise InvestigationError(
-            f"Investigation {investigation_id!r} already exists."
-        )
-    inv = Investigation.new(investigation_id, title=title)
+    if investigation_id is None:
+        investigation_id = allocate_investigation_id(root=inv_root)
+        if title is None:
+            title = "Untitled"
+    else:
+        validate_investigation_id(investigation_id)
+        if investigation_exists(investigation_id, root=inv_root):
+            raise InvestigationError(
+                f"Investigation {investigation_id!r} already exists."
+            )
+    inv = Investigation.new(investigation_id, title=title, notes=notes)
     save_investigation(inv, root=inv_root)
     if activate:
         set_active(
@@ -81,8 +94,6 @@ def open_investigation(
         workspace = DEFAULT_WORKSPACE_ID
         action = ROOT_ACTION_ID
         if current and current.investigation == investigation_id:
-            if current.workspace in inv.workspaces:
-                workspace = current.workspace
             if current.action in inv.actions:
                 action = current.action
         set_active(
@@ -158,11 +169,12 @@ def add_action(
     if persist:
         persist_investigation(inv, app_dir=app_dir)
     if activate:
-        ws = DEFAULT_WORKSPACE_ID
-        ctx = try_load_active(app_dir=app_dir)
-        if ctx and ctx.investigation == inv.id and ctx.workspace in inv.workspaces:
-            ws = ctx.workspace
-        set_active(inv.id, workspace=ws, action=action.id, app_dir=app_dir)
+        set_active(
+            inv.id,
+            workspace=DEFAULT_WORKSPACE_ID,
+            action=action.id,
+            app_dir=app_dir,
+        )
     return action
 
 
@@ -213,13 +225,94 @@ def remove_action(
     if ctx and ctx.investigation == inv.id and ctx.action in removed:
         set_active(
             inv.id,
-            workspace=ctx.workspace
-            if ctx.workspace in inv.workspaces
-            else DEFAULT_WORKSPACE_ID,
+            workspace=DEFAULT_WORKSPACE_ID,
             action=ROOT_ACTION_ID,
             app_dir=app_dir,
         )
     return removed
+
+
+def add_query(
+    inv: Investigation,
+    *,
+    name: Optional[str] = None,
+    notes: Optional[str] = None,
+    metric: Optional[list[str]] = None,
+    entity: Optional[list[str]] = None,
+    series: Optional[list[str]] = None,
+    frequency: Optional[str] = None,
+    units: Optional[str] = None,
+    source: Optional[str] = None,
+    seasonal_adjustment: Optional[str] = None,
+    taxonomy: Optional[str] = None,
+    head: Optional[int] = None,
+    tail: Optional[int] = None,
+    as_of: Optional[str] = None,
+    sort_by: Optional[str] = None,
+    order_by: Optional[str] = None,
+    from_workspace: bool = False,
+    app_dir: Optional[Path] = None,
+    persist: bool = True,
+) -> Query:
+    """Add a saved query to the investigation (cartesian metric × entity)."""
+    query = inv.add_query(
+        name=name,
+        notes=notes,
+        metric=metric,
+        entity=entity,
+        series=series,
+        frequency=frequency,
+        units=units,
+        source=source,
+        seasonal_adjustment=seasonal_adjustment,
+        taxonomy=taxonomy,
+        head=head,
+        tail=tail,
+        as_of=as_of,
+        sort_by=sort_by,
+        order_by=order_by,
+        from_workspace=from_workspace,
+    )
+    if persist:
+        persist_investigation(inv, app_dir=app_dir)
+    return query
+
+
+def inspect_query(
+    inv: Investigation,
+    query_id: int,
+    *,
+    client: JSTDataClient,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Coverage for a saved query's cartesian product (no observations)."""
+    return inv.get_query(query_id).inspect(client, limit=limit, offset=offset)
+
+
+def run_query(
+    inv: Investigation,
+    query_id: int,
+    *,
+    client: JSTDataClient,
+    **overrides: Any,
+) -> list:
+    """Execute a saved query against ``GET /query``."""
+    return inv.get_query(query_id).execute(client, **overrides)
+
+
+def resume_or_create_investigation(
+    *, app_dir: Optional[Path] = None
+) -> Investigation:
+    """Resume ``.active.yaml``, or create an Untitled investigation if none."""
+    ensure_bootstrap(app_dir=app_dir)
+    ctx = try_load_active(app_dir=app_dir)
+    if ctx is not None:
+        try:
+            return open_investigation(ctx.investigation, app_dir=app_dir)
+        except InvestigationError:
+            pass
+    return create_investigation(app_dir=app_dir)
 
 
 def require_active_investigation(
@@ -264,18 +357,23 @@ __all__ = [
     "ActiveContext",
     "Investigation",
     "InvestigationError",
+    "Query",
     "Workspace",
     "add_action",
+    "add_query",
     "create_investigation",
     "ensure_bootstrap",
     "get_active",
     "get_investigation",
+    "inspect_query",
     "list_investigations",
     "open_investigation",
     "parse_action_args_json",
     "persist_investigation",
     "remove_action",
     "require_active_investigation",
+    "resume_or_create_investigation",
+    "run_query",
     "set_active",
     "validate_action_type",
 ]

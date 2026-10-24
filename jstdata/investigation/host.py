@@ -635,7 +635,7 @@ class InvestigationHost(App):
         assert self.investigation is not None
         self._apply_workspace(self.investigation.get_workspace(new_ws))
         self._show_current_action(reset=True)
-        label = self.investigation.workspaces[new_ws].label or f"workspace {new_ws}"
+        label = self.investigation.workspace.label or "workspace"
         self.notify(f"Workspace {label}", timeout=2)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:

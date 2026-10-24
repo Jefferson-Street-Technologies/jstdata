@@ -121,6 +121,6 @@ HOME = register(
                 "Delete this action and all children (no confirm)",
             ),
         ),
-        example="jst investigation load tutorial",
+        example="jst open tutorial",
     )
 )

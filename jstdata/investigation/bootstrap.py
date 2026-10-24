@@ -8,8 +8,8 @@ from typing import Optional
 import yaml
 from importlib.resources import files
 
-from .active import ActiveContext, save_active, try_load_active
-from .model import DEFAULT_WORKSPACE_ID, Investigation, ROOT_ACTION_ID
+from .active import ActiveContext, try_load_active
+from .model import Investigation
 from .store import (
     TUTORIAL_ID,
     ensure_investigations_dir,
@@ -74,14 +74,12 @@ def ensure_bootstrap(
     *,
     app_dir: Optional[Path] = None,
     force_tutorial: bool = False,
-) -> tuple[Investigation, ActiveContext]:
-    """Ensure tutorial investigation + ``.active.yaml`` exist.
+) -> tuple[Investigation, Optional[ActiveContext]]:
+    """Install bundled investigations; do not invent an active context.
 
-    On first launch (tutorial missing), writes both files. If ``.active.yaml``
-    is missing but the tutorial exists, recreates active pointing at tutorial.
-
-    ``force_tutorial`` rewrites the tutorial from the bundled template (tests).
-    Also ensures the Plain Bagel provenance demo investigation is present.
+    Writes ``tutorial`` and ``plain-bagel`` when missing. ``.active.yaml`` is
+    left alone — ``jst`` / ``jst new`` create a blank investigation if none
+    is active. ``force_tutorial`` rewrites the tutorial from the bundle.
     """
     inv_root = _investigations_root(app_dir)
     if app_dir is not None:
@@ -94,16 +92,5 @@ def ensure_bootstrap(
     else:
         tutorial = load_investigation(TUTORIAL_ID, root=inv_root)
 
-    # Demo for View/Context + release provenance — install if absent.
     ensure_plain_bagel(app_dir=app_dir, force=False)
-
-    ctx = try_load_active(app_dir=app_dir)
-    if ctx is None:
-        ctx = ActiveContext(
-            investigation=TUTORIAL_ID,
-            workspace=DEFAULT_WORKSPACE_ID,
-            action=ROOT_ACTION_ID,
-        )
-        save_active(ctx, app_dir=app_dir)
-
-    return tutorial, ctx
+    return tutorial, try_load_active(app_dir=app_dir)

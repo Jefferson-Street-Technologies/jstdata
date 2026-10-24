@@ -16,6 +16,7 @@ from jstdata.investigation import (
     ActiveContext,
     Investigation,
     InvestigationError,
+    Query,
     ResearchContext,
     TUTORIAL_ID,
     Workspace,
@@ -30,6 +31,7 @@ from jstdata.investigation import (
     open_investigation,
     remove_action,
     resolve_input_context,
+    resume_or_create_investigation,
     save_investigation,
     validate_investigation_id,
 )
@@ -48,7 +50,8 @@ def test_validate_investigation_id():
 def test_investigation_new_and_round_trip(tmp_path: Path):
     inv = Investigation.new("demo", title="Demo Title")
     assert inv.title == "Demo Title"
-    assert DEFAULT_WORKSPACE_ID in inv.workspaces
+    assert inv.workspace.id == DEFAULT_WORKSPACE_ID
+    assert inv.queries == {}
     assert ROOT_ACTION_ID in inv.actions
     assert inv.actions[ROOT_ACTION_ID].type == "home"
     assert inv.actions[ROOT_ACTION_ID].parent_id is None
@@ -58,7 +61,9 @@ def test_investigation_new_and_round_trip(tmp_path: Path):
     assert path.name == "demo.yaml"
     loaded = load_investigation("demo", root=root)
     assert loaded.title == "Demo Title"
-    assert loaded.workspaces[0].id == 0
+    assert loaded.workspace.id == 0
+    assert "workspace" in yaml.safe_load(path.read_text())
+    assert "workspaces" not in yaml.safe_load(path.read_text())
 
 
 def test_bfs_order_and_cascade_delete():
@@ -76,10 +81,73 @@ def test_bfs_order_and_cascade_delete():
 
 
 def test_workspace_order():
-    inv = Investigation.new("multi-ws")
-    inv.workspaces[2] = Workspace(id=2, label="B")
-    inv.workspaces[1] = Workspace(id=1, label="A")
-    assert inv.workspace_order() == [0, 1, 2]
+    inv = Investigation.new("one-ws")
+    assert inv.workspace_order() == [DEFAULT_WORKSPACE_ID]
+    assert inv.get_workspace(99) is inv.workspace
+
+
+def test_legacy_workspaces_list_loads_first():
+    inv = Investigation.from_dict(
+        {
+            "id": "legacy",
+            "title": "legacy",
+            "workspaces": [
+                {"id": 0, "metric": ["gdp"], "entity": ["france"]},
+                {"id": 1, "metric": ["cpi"]},
+            ],
+            "actions": [{"id": 0, "type": "home", "args": {}}],
+        }
+    )
+    assert inv.workspace.metric == ["gdp"]
+    assert inv.workspace.entity == ["france"]
+    dumped = inv.to_dict()
+    assert "workspace" in dumped
+    assert "workspaces" not in dumped
+
+
+def test_query_cartesian_kwargs_and_round_trip(tmp_path: Path):
+    query = Query(
+        id=1,
+        name="FR vs US",
+        metric=["gdp", "cpi"],
+        entity=["france", "usa"],
+        tail=1,
+        sort_by="value",
+        units="USD",
+        source="BEA",
+    )
+    assert query.expected_pairs() == [
+        ("gdp", "france"),
+        ("gdp", "usa"),
+        ("cpi", "france"),
+        ("cpi", "usa"),
+    ]
+    kwargs = query.to_query_kwargs()
+    assert kwargs["metric"] == ["gdp", "cpi"]
+    assert kwargs["entity"] == ["france", "usa"]
+    assert "units" not in kwargs
+    assert "source" not in kwargs
+
+    inv = Investigation.new("qdemo")
+    inv.workspace.add_metric("gdp")
+    inv.workspace.add_entity("france")
+    saved = inv.add_query(from_workspace=True, name="scratch")
+    assert saved.id == 1
+    assert saved.metric == ["gdp"]
+    assert saved.entity == ["france"]
+    extra = inv.add_query(
+        metric=["cpi"], entity=["usa", "gbr"], name="cpi", tail=1
+    )
+    assert extra.id == 2
+    with pytest.raises(InvestigationError, match="metric, entity, or series"):
+        inv.add_query()
+
+    root = tmp_path / "investigations"
+    save_investigation(inv, root=root)
+    loaded = load_investigation("qdemo", root=root)
+    assert loaded.get_query(1).name == "scratch"
+    assert loaded.get_query(2).entity == ["usa", "gbr"]
+    assert loaded.notes is None
 
 
 def test_workspace_resource_helpers():
@@ -196,7 +264,7 @@ def test_tree_validation_rejects_orphan_and_cycle():
         Investigation(
             id="bad",
             title="bad",
-            workspaces={0: Workspace(id=0)},
+            workspace=Workspace(id=0),
             actions={1: Action(id=1, type="home", parent_id=None)},
         ).validate()
 
@@ -211,27 +279,40 @@ def test_tree_validation_rejects_orphan_and_cycle():
 def test_ensure_bootstrap_and_active(tmp_path: Path):
     tutorial, ctx = ensure_bootstrap(app_dir=tmp_path)
     assert tutorial.id == TUTORIAL_ID
+    assert ctx is None
     assert (tmp_path / "investigations" / "tutorial.yaml").is_file()
     assert (tmp_path / "investigations" / "plain-bagel.yaml").is_file()
+    assert not (tmp_path / ".active.yaml").is_file()
     from jstdata.investigation import load_bundled_plain_bagel, PLAIN_BAGEL_ID
 
     demo = load_investigation(PLAIN_BAGEL_ID, root=tmp_path / "investigations")
     bundled = load_bundled_plain_bagel()
     assert demo.id == bundled.id
     assert any(a.type == "table" for a in demo.actions.values())
-    assert "long-term-debt" in demo.workspaces[0].metric
-    assert (tmp_path / ".active.yaml").is_file()
-    assert ctx.investigation == TUTORIAL_ID
-    assert ctx.workspace == 0
-    assert ctx.action == 0
+    assert "long-term-debt" in demo.workspace.metric
+    assert 1 in demo.queries
+    assert demo.queries[1].expected_pairs()
 
     bundled = load_bundled_tutorial()
     assert bundled.actions[0].type == "home"
     assert "Jefferson Street" in (bundled.actions[0].description or "")
+    assert bundled.workspace.label == "Scratch"
+
+
+def test_resume_or_create_untitled(tmp_path: Path):
+    inv = resume_or_create_investigation(app_dir=tmp_path)
+    assert inv.title == "Untitled"
+    assert inv.id.startswith("inv-")
+    assert get_active(app_dir=tmp_path).investigation == inv.id
+    again = resume_or_create_investigation(app_dir=tmp_path)
+    assert again.id == inv.id
 
 
 def test_create_and_open_api(tmp_path: Path):
     ensure_bootstrap(app_dir=tmp_path)
+    untitled = create_investigation(app_dir=tmp_path)
+    assert untitled.title == "Untitled"
+    assert untitled.id.startswith("inv-")
     inv = create_investigation("housing", title="Housing", app_dir=tmp_path)
     assert inv.title == "Housing"
     active = get_active(app_dir=tmp_path)
@@ -326,6 +407,7 @@ def test_cli_ls_add_rm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         with_tmp(api_mod.require_active_investigation),
     )
     monkeypatch.setattr(inv_pkg, "add_action", with_tmp(api_mod.add_action))
+    monkeypatch.setattr(inv_pkg, "add_query", with_tmp(api_mod.add_query))
     monkeypatch.setattr(inv_pkg, "remove_action", with_tmp(api_mod.remove_action))
     monkeypatch.setattr(inv_pkg, "parse_action_args_json", api_mod.parse_action_args_json)
 
@@ -333,7 +415,7 @@ def test_cli_ls_add_rm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     create_investigation("alpha", title="Alpha", app_dir=tmp_path)
 
     runner = CliRunner()
-    result = runner.invoke(cli, ["investigation", "ls"])
+    result = runner.invoke(cli, ["ls"])
     assert result.exit_code == 0, result.output
     assert "* alpha" in result.output
     assert "tutorial" in result.output
@@ -371,6 +453,39 @@ def test_cli_ls_add_rm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     result = runner.invoke(cli, ["action", "add", "not-a-step"])
     assert result.exit_code == 2
     assert "Unknown action" in result.output
+
+    result = runner.invoke(
+        cli,
+        [
+            "query",
+            "add",
+            "--metric",
+            "gdp",
+            "--entity",
+            "france",
+            "--entity",
+            "usa",
+            "--name",
+            "FR vs US",
+            "--tail",
+            "1",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Added query 1" in result.output
+    stored = get_investigation("alpha", app_dir=tmp_path).get_query(1)
+    assert stored.metric == ["gdp"]
+    assert stored.entity == ["france", "usa"]
+    assert stored.expected_pairs() == [("gdp", "france"), ("gdp", "usa")]
+
+    result = runner.invoke(cli, ["query", "ls"])
+    assert result.exit_code == 0, result.output
+    assert "FR vs US" in result.output
+
+    result = runner.invoke(cli, ["query", "show", "1"])
+    assert result.exit_code == 0, result.output
+    assert "gdp" in result.output
+    assert "france" in result.output
 
 
 def test_home_step_registered():
@@ -428,9 +543,13 @@ def test_cli_create_load_without_tui(tmp_path: Path, monkeypatch: pytest.MonkeyP
     from jstdata import investigation as inv_pkg
     from jstdata.investigation import api as api_mod
 
-    def create_in_tmp(investigation_id, *, title=None, app_dir=None, **kwargs):
+    def create_in_tmp(investigation_id=None, *, title=None, notes=None, app_dir=None, **kwargs):
         return api_mod.create_investigation(
-            investigation_id, title=title, app_dir=tmp_path, activate=True
+            investigation_id,
+            title=title,
+            notes=notes,
+            app_dir=tmp_path,
+            activate=True,
         )
 
     def open_in_tmp(investigation_id, *, app_dir=None, **kwargs):
@@ -441,7 +560,7 @@ def test_cli_create_load_without_tui(tmp_path: Path, monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(inv_pkg, "run_investigation_host", fake_run)
 
     runner = CliRunner()
-    result = runner.invoke(cli, ["investigation", "create", "alpha", "--title", "Alpha"])
+    result = runner.invoke(cli, ["new", "--id", "alpha", "--title", "Alpha"])
     assert result.exit_code == 0, result.output
     assert "Created investigation 'alpha'" in result.output
     assert launched == ["run"]
@@ -449,12 +568,12 @@ def test_cli_create_load_without_tui(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert load_active(app_dir=tmp_path).investigation == "alpha"
 
     launched.clear()
-    result = runner.invoke(cli, ["investigation", "load", "alpha"])
+    result = runner.invoke(cli, ["open", "alpha"])
     assert result.exit_code == 0, result.output
-    assert "Loaded investigation 'alpha'" in result.output
+    assert "Opened investigation 'alpha'" in result.output
     assert launched == ["run"]
 
-    result = runner.invoke(cli, ["investigation", "load", "missing"])
+    result = runner.invoke(cli, ["open", "missing"])
     assert result.exit_code == 2
     assert "not found" in result.output.lower() or "Error" in result.output
 
@@ -471,3 +590,25 @@ def test_active_context_round_trip(tmp_path: Path):
 def test_title_defaults_to_id():
     inv = Investigation.new("eu-defense")
     assert inv.title == "eu-defense"
+
+
+def test_query_inspect_cartesian_coverage():
+    class FakePreview:
+        def __init__(self, metric_id, entity_id):
+            self.metric_id = metric_id
+            self.entity_id = entity_id
+            self.series_count = 1
+            self.observation_count = 10
+            self.earliest = None
+            self.latest = None
+
+    class FakeClient:
+        def preview(self, metric, entity, limit=50, offset=0):
+            return [FakePreview("gdp", "france")]
+
+    query = Query(id=1, metric=["gdp"], entity=["france", "usa"])
+    payload = query.inspect(FakeClient())
+    assert payload["cartesian"] is True
+    assert payload["counts"]["expected_pairs"] == 2
+    assert payload["counts"]["resolved"] == 1
+    assert payload["missing"] == [{"metric": "gdp", "entity": "usa"}]

@@ -25,11 +25,16 @@ def resolve_id(value: str, search_func) -> str:
         pass
     return value
 
-@click.group()
-def cli():
+@click.group(invoke_without_command=True)
+@click.pass_context
+def cli(ctx):
     """
     Jefferson Street CLI - A Research OS for Financial Data.
+
+    Bare `jst` resumes the active investigation (creates Untitled if none).
     """
+    if ctx.invoked_subcommand is None:
+        _resume_investigation()
 
 @cli.command()
 @click.option("--api-key", prompt="Enter your Jefferson Street API Key", hide_input=True, help="Your API Key")
@@ -592,49 +597,47 @@ def action_rm(action_id: int, force: bool) -> None:
     )
 
 
-@cli.command("run")
-def run_cmd() -> None:
-    """Open the TUI for the active investigation / workspace / action.
-
-    \b
-    jst run
-    """
+def _resume_investigation() -> None:
+    """Bare `jst`: resume `.active.yaml`, or create Untitled if none."""
     from .investigation import (
         InvestigationError,
-        require_active_investigation,
+        get_active,
+        resume_or_create_investigation,
         run_investigation_host,
     )
 
     try:
-        inv, ctx = require_active_investigation()
+        inv = resume_or_create_investigation()
+        ctx = get_active()
     except InvestigationError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(2)
     click.echo(
-        f"Running {inv.id!r} ({inv.title})  "
-        f"workspace={ctx.workspace}  action={ctx.action}"
+        f"Opening {inv.id!r} ({inv.title})  action={ctx.action}"
     )
     run_investigation_host(client)
 
 
-@cli.group("investigation")
-def investigation_group() -> None:
-    """Create and open persistent investigations."""
-
-
-@investigation_group.command("create")
-@click.argument("investigation_id")
+@cli.command("new")
 @click.option(
-    "--title",
+    "--id",
+    "investigation_id",
     default=None,
-    help="Display title (defaults to the investigation id)",
+    help="Slug (generated as inv-<unix> if omitted)",
 )
-def investigation_create(investigation_id: str, title: str | None) -> None:
+@click.option("--title", default=None, help="Display title (defaults to Untitled)")
+@click.option("--notes", default=None, help="Freeform notes (for agents / later you)")
+def new_cmd(
+    investigation_id: str | None, title: str | None, notes: str | None
+) -> None:
     """Create an investigation, activate it, and open the TUI.
 
+    Id and title are optional.
+
     \b
-    jst investigation create housing-slowdown
-    jst investigation create eu-defense --title "European defense constraints"
+    jst new
+    jst new --title "European defense constraints"
+    jst new --id housing-slowdown --title Housing
     """
     from .investigation import (
         InvestigationError,
@@ -643,7 +646,7 @@ def investigation_create(investigation_id: str, title: str | None) -> None:
     )
 
     try:
-        inv = create_investigation(investigation_id, title=title)
+        inv = create_investigation(investigation_id, title=title, notes=notes)
     except InvestigationError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(2)
@@ -651,14 +654,15 @@ def investigation_create(investigation_id: str, title: str | None) -> None:
     run_investigation_host(client)
 
 
-@investigation_group.command("load")
+@cli.command("open")
 @click.argument("investigation_id")
-def investigation_load(investigation_id: str) -> None:
-    """Load an investigation, activate it, and open the TUI.
+def open_cmd(investigation_id: str) -> None:
+    """Open an investigation, activate it, and launch the TUI.
 
     \b
-    jst investigation load tutorial
-    jst investigation load housing-slowdown
+    jst open tutorial
+    jst open plain-bagel
+    jst open housing-slowdown
     """
     from .investigation import (
         InvestigationError,
@@ -671,16 +675,16 @@ def investigation_load(investigation_id: str) -> None:
     except InvestigationError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(2)
-    click.echo(f"Loaded investigation {inv.id!r} ({inv.title})")
+    click.echo(f"Opened investigation {inv.id!r} ({inv.title})")
     run_investigation_host(client)
 
 
-@investigation_group.command("ls")
-def investigation_ls() -> None:
+@cli.command("ls")
+def ls_cmd() -> None:
     """List investigations on disk (active marked with *).
 
     \b
-    jst investigation ls
+    jst ls
     """
     from .investigation import (
         ensure_bootstrap,
@@ -709,6 +713,217 @@ def investigation_ls() -> None:
         except Exception:
             title = "?"
         click.echo(f"{marker} {inv_id:<28} {title}")
+
+
+@cli.group("query")
+def query_group() -> None:
+    """Saved investigation queries (cartesian metric × entity)."""
+
+
+@query_group.command("ls")
+def query_ls() -> None:
+    """List saved queries on the active investigation.
+
+    \b
+    jst query ls
+    """
+    from .investigation import InvestigationError, require_active_investigation
+
+    try:
+        inv, _ctx = require_active_investigation()
+    except InvestigationError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(2)
+    if not inv.queries:
+        click.echo("No saved queries.")
+        return
+    for qid in sorted(inv.queries):
+        query = inv.queries[qid]
+        label = query.name or ""
+        click.echo(
+            f"{qid:>4}  {label:<32}  "
+            f"metric={len(query.metric)} entity={len(query.entity)} "
+            f"series={len(query.series)}"
+        )
+
+
+@query_group.command("show")
+@click.argument("query_id", type=int)
+def query_show(query_id: int) -> None:
+    """Print a saved query spec (no observations).
+
+    \b
+    jst query show 1
+    """
+    import yaml
+
+    from .investigation import InvestigationError, require_active_investigation
+
+    try:
+        inv, _ctx = require_active_investigation()
+        query = inv.get_query(query_id)
+    except InvestigationError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(2)
+    click.echo(
+        yaml.safe_dump(query.to_dict(), sort_keys=False, allow_unicode=True),
+        nl=False,
+    )
+
+
+@query_group.command("inspect")
+@click.argument("query_id", type=int)
+@click.option("--limit", default=50, help="Max preview rows (default 50)")
+@click.option("--offset", default=0, help="Preview offset")
+@click.option(
+    "--format",
+    default="json",
+    help="Output format. Valid formats are: json, csv, pretty.",
+)
+def query_inspect(query_id: int, limit: int, offset: int, format: str) -> None:
+    """Resolved cartesian coverage (series counts, mismatches) — no observations.
+
+    \b
+    jst query inspect 1
+    jst query inspect 1 --format pretty
+    """
+    from .investigation import (
+        InvestigationError,
+        inspect_query,
+        require_active_investigation,
+    )
+
+    try:
+        inv, _ctx = require_active_investigation()
+        payload = inspect_query(
+            inv, query_id, client=client, limit=limit, offset=offset
+        )
+    except InvestigationError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(2)
+    format_and_print(payload, format)
+
+
+@query_group.command("run")
+@click.argument("query_id", type=int)
+@click.option(
+    "--format",
+    default="pretty",
+    help="Output format. Valid formats are: json, csv, pretty.",
+)
+def query_run(query_id: int, format: str) -> None:
+    """Execute a saved query (cartesian metric × entity).
+
+    \b
+    jst query run 1
+    jst query run 1 --format csv
+    """
+    from .investigation import (
+        InvestigationError,
+        require_active_investigation,
+        run_query,
+    )
+
+    try:
+        inv, _ctx = require_active_investigation()
+        results = run_query(inv, query_id, client=client)
+    except InvestigationError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(2)
+    format_and_print(results, format)
+
+
+@query_group.command("add")
+@click.option("--name", default=None, help="Display name")
+@click.option("--notes", default=None, help="Freeform notes")
+@click.option("--metric", multiple=True, help="Metric ID. Repeatable.")
+@click.option("--entity", multiple=True, help="Entity ID. Repeatable.")
+@click.option("--series", multiple=True, help="Series ID. Repeatable.")
+@click.option(
+    "--frequency",
+    type=click.Choice(["Annual", "Quarterly", "Monthly", "Daily", "Intraday"]),
+)
+@click.option("--units", default=None, help="Persisted; not sent to /query yet")
+@click.option("--source", default=None, help="Persisted; not sent to /query yet")
+@click.option(
+    "--seasonal-adjustment",
+    "seasonal_adjustment",
+    default=None,
+    help="Persisted; not sent to /query yet",
+)
+@click.option("--taxonomy", default=None)
+@click.option("--head", type=int, default=None)
+@click.option("--tail", type=int, default=None)
+@click.option("--as-of", "as_of", default=None)
+@click.option("--sort-by", "sort_by", default=None)
+@click.option("--order-by", "order_by", default=None)
+@click.option(
+    "--from-workspace",
+    "from_workspace",
+    is_flag=True,
+    default=False,
+    help="Snapshot the investigation workspace into the new query",
+)
+def query_add(
+    name: str | None,
+    notes: str | None,
+    metric: tuple[str, ...],
+    entity: tuple[str, ...],
+    series: tuple[str, ...],
+    frequency: str | None,
+    units: str | None,
+    source: str | None,
+    seasonal_adjustment: str | None,
+    taxonomy: str | None,
+    head: int | None,
+    tail: int | None,
+    as_of: str | None,
+    sort_by: str | None,
+    order_by: str | None,
+    from_workspace: bool,
+) -> None:
+    """Add a saved query to the active investigation (cartesian metric × entity).
+
+    \b
+    jst query add --metric gdp --entity france --entity usa --name "FR vs US"
+    jst query add --from-workspace --name scratch
+    """
+    from .investigation import (
+        InvestigationError,
+        add_query,
+        require_active_investigation,
+    )
+
+    try:
+        inv, _ctx = require_active_investigation()
+        query = add_query(
+            inv,
+            name=name,
+            notes=notes,
+            metric=list(metric) or None,
+            entity=list(entity) or None,
+            series=list(series) or None,
+            frequency=frequency,
+            units=units,
+            source=source,
+            seasonal_adjustment=seasonal_adjustment,
+            taxonomy=taxonomy,
+            head=head,
+            tail=tail,
+            as_of=as_of,
+            sort_by=sort_by,
+            order_by=order_by,
+            from_workspace=from_workspace,
+        )
+    except InvestigationError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(2)
+    click.echo(
+        f"Added query {query.id}"
+        + (f" {query.name!r}" if query.name else "")
+        + f" metric={len(query.metric)} entity={len(query.entity)} "
+        f"series={len(query.series)}"
+    )
 
 
 if __name__ == "__main__":

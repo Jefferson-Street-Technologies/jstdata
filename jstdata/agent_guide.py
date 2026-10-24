@@ -28,13 +28,13 @@ _HARD_RULES = """\
 - **Never invent IDs.** Never invent metric, entity, taxonomy, or series ids from
   English names. Resolve via `jst api … search` (or scoped list) first.
 - **Resolve before use.** Resolve ids before `jst api query`, investigation
-  workspaces, or action `--args`.
+  workspaces, saved queries, or action `--args`.
 - **Use `--format json`** on `jst api` resource and search commands unless the user
   needs a table.
-- **Do not launch interactive TUIs** (`jst run` / `jst investigation create` /
-  `load`) unless the user explicitly asks you to operate the UI. Prefer CLI
-  mutation of the active investigation (`jst action add` / `rm`) or hand them a
-  `jst run` / `load` command.
+- **Do not launch interactive TUIs** (`jst` / `jst new` / `jst open`) unless the
+  user explicitly asks you to operate the UI. Prefer CLI mutation of the active
+  investigation (`jst action add` / `rm`, `jst query add` / `run`) or hand them
+  `jst open <id>`.
 - **Do not paginate exhaustively.** During discovery, use `--limit` 20–50. Do not walk
   `offset` through the catalog unless the returned set is clearly insufficient.
 - **Do not enumerate** `jst api metric ls`, `jst api series ls`, or full taxonomy
@@ -61,7 +61,7 @@ When solving a JST research task:
    for comprehensiveness.
 5. **Escalate to deep history only after narrowing** (specific series ids, date bounds).
 6. **Hand off TUIs to the human.** Prepare or mutate an investigation; print
-   `jst investigation load <id>` for them.
+   `jst open <id>` for them.
 7. **Prefer JSON** for anything you will parse or reason over.
 """
 
@@ -86,8 +86,8 @@ needed → answer from structured CLI output. No TUI required.
 
 Example: “Set me up to explore defense spending across Europe.”
 
-Resolve resources → create/load an investigation → `jst action add` actions
-→ hand the user `jst investigation load <id>`.
+Resolve resources → create/open an investigation → `jst action add` actions
+and/or `jst query add` → hand the user `jst open <id>`.
 Do not substitute endless search for completing the handoff.
 """
 
@@ -99,10 +99,15 @@ _DATA_MODEL = """\
 - **Taxonomy** — a named population of entities (e.g. `country`, `us-county`,
   `sec-central-index-key`). Use it to scope search, query, and ranking.
 - **Series** — one concrete time series: a metric observed for an entity (at a frequency).
-- **Investigation** — the durable research artifact: title, workspaces, and an action tree.
-- **Workspace** — the **global** bag of staged resource ids + query filters inside an
+- **Investigation** — the durable research artifact: title, notes, one workspace,
+  saved queries, and an action tree.
+- **Workspace** — the **global** bag of staged resource ids inside an
   investigation (no observations). Mutated by `:search` / `:workspace` and staging
   actions; never mutated by view drills.
+- **Query** — a saved `GET /query` spec. Metric × entity is a **cartesian product**
+  (every metric against every entity), plus optional `series`. Filters such as
+  frequency / head / tail live here. Inspect coverage with `jst query inspect`
+  (no observations); execute with `jst query run`.
 - **Action / View** — one use of a reusable analytical UI in the investigation tree.
   Read/drill views (`table`, `metric`, `entity`, `metrics`) take an **Input Context**
   resolved from the workspace plus optional per-node `context` overrides. Staging /
@@ -205,17 +210,17 @@ jst action add table --args '{"sort_by":"value"}' --activate
 Human handoff:
 
 ```bash
-jst investigation load <investigation-id>
+jst open <investigation-id>
 ```
 
 ### Prepare a human investigation
 
 1. Resolve ids via `jst api … search`.
-2. `jst investigation create <id>` (or mutate an existing one with `jst action add`).
+2. `jst new` (or `jst open <id>` / mutate with `jst action add` / `jst query add`).
 3. Prefer a **view** for read/drill (`table`, `metric`, `entity`, `metrics`) and
    keep `console` / `discover` / `rank` when the human still needs to stage or
-   explore the global workspace.
-4. Hand them: `jst investigation load <id>`.
+   explore the global workspace. Prefer `jst query add` for a cartesian pull.
+4. Hand them: `jst open <id>`.
 
 Do not substitute extra research for completing the requested handoff.
 """
@@ -223,13 +228,16 @@ Do not substitute extra research for completing the requested handoff.
 _COMPOSITION = """\
 ## Investigations and actions
 
-Research is an **investigation**: a tree of **actions / views** over **workspaces**.
+Research is an **investigation**: a tree of **actions / views** over one
+**workspace**, plus saved **queries** (cartesian metric × entity).
 
 ```bash
-jst investigation create housing-slowdown
-jst investigation load housing-slowdown
-jst investigation ls
-jst run
+jst new --id housing-slowdown
+jst open housing-slowdown
+jst ls
+jst query add --metric gdp --entity france --entity usa --name "FR vs US"
+jst query inspect 1
+jst query run 1 --format json
 jst action add table --args '{"sort_by":"value"}' --activate
 jst action add metrics --args '{"mode":"intersect"}'
 jst action add rank --args '{"taxonomy":"country"}'
@@ -244,8 +252,8 @@ jst action rm 2 --force
   the global workspace.
 - New actions are children of the active action unless `--parent` is set.
 - Humans use `:` in the TUI (`:workspace`, `:search metric gdp`, `:add`, `:rm`).
-  Tree keys: `n`/`p` siblings, `N`/`P` depth (arrows too). Workspace drawer:
-  `h`/`l` cycles workspaces. Views are typically idle until `r` (load).
+  Tree keys: `n`/`p` siblings, `N`/`P` depth (arrows too). `:workspace` opens
+  the bag drawer. Views are typically idle until `r` (load).
 - **When to use which:**
   - `table` — latest-value matrix; cheap `/preview` coverage on open; `r` runs
     `/query`; Enter drills to entity, metric, or **release** (provenance).
@@ -256,8 +264,8 @@ jst action rm 2 --force
   - `console` / `:search` — catalog search that stages into the global workspace.
   - `discover` — candidate metrics with preview chart; Space stages metrics.
   - `rank` — single-metric population leaderboard; stages entities back.
-- Demo investigation: `jst investigation load plain-bagel` (hyperscaler debt +
-  provenance loop).
+- Demo investigation: `jst open plain-bagel` (hyperscaler debt + provenance
+  loop; query 1 is the cartesian latest-value pull).
 - Agents prefer CLI mutation + `jst api …` for resolution; do not drive the TUI.
 
 Active context lives in `~/.jstdata/.active.yaml` (investigation, workspace id, action id).
@@ -266,9 +274,12 @@ Active context lives in `~/.jstdata/.active.yaml` (investigation, workspace id, 
 _WORKSPACE_HOWTO = """\
 ### Workspace contents
 
-Workspaces live inside the investigation YAML under `workspaces:`. Each has a numeric
-`id` (default `0`), optional `label` / `description`, and resource selectors that mirror
-`jst api query` intent — no observations.
+Each investigation has a single `workspace:` mapping (numeric `id` default `0`),
+optional `label` / `description`, and resource id lists. Query filters
+(frequency, head/tail, units, …) belong on `queries:`, not the workspace bag.
+
+Legacy files with `workspaces:` (a list) load id `0` / the first entry and ignore
+the rest.
 
 Agents typically edit `~/.jstdata/investigations/<id>.yaml` or ask the human to stage
 via `:search` / `:workspace`. Prefer resolved slug ids only.
@@ -429,10 +440,10 @@ def render_workspace_section() -> str:
     lines = [
         "## Workspaces",
         "",
-        "A **workspace** is the global bag of resource ids and filters. Views also",
-        "see an **Input Context**: workspace plus optional action `context` overrides",
-        "(focus/replace). The workspace mirrors `jst api query` / `JSTDataClient.query`",
-        "intent: no observations, only what is needed to run analysis or drive a TUI.",
+        "A **workspace** is the investigation's single global bag of resource ids.",
+        "Views also see an **Input Context**: workspace plus optional action `context`",
+        "overrides (focus/replace). Saved **queries** are the cartesian `/query` specs;",
+        "the workspace itself is a basket. No observations are stored.",
         "",
         "`discover` defaults to workspace metrics when any are staged",
         "(`workspace_metrics=false` in `--args` for the full entity-anchored search);",

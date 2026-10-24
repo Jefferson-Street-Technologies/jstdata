@@ -117,7 +117,7 @@ class WorkspaceDrawer(ModalScreen[None]):
             yield Label("WORKSPACE", id="ws-drawer-title")
             yield ListView(id="ws-drawer-list")
             yield Label(
-                "[bold]j/k[/bold] rows  ·  [bold]h/l[/bold] workspaces  ·  "
+                "[bold]j/k[/bold] rows  ·  "
                 "[bold]backspace[/bold] remove  ·  [bold]esc[/bold] close",
                 id="ws-drawer-hint",
                 markup=True,

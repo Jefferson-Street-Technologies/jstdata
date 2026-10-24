@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -25,6 +26,17 @@ def validate_investigation_id(investigation_id: str) -> str:
             "(lowercase letters, digits, hyphens)."
         )
     return investigation_id
+
+
+def allocate_investigation_id(*, root: Optional[Path] = None) -> str:
+    """Generate an unused slug (``inv-<unix>``, with a suffix on collision)."""
+    base = f"inv-{int(time.time())}"
+    candidate = base
+    n = 2
+    while investigation_exists(candidate, root=root):
+        candidate = f"{base}-{n}"
+        n += 1
+    return candidate
 
 
 def investigations_dir(*, root: Optional[Path] = None) -> Path:

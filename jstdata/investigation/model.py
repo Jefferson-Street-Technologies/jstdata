@@ -1,4 +1,4 @@
-"""Investigation domain: workspaces, actions, and the durable artifact."""
+"""Investigation domain: workspace, queries, actions, and the durable artifact."""
 
 from __future__ import annotations
 
@@ -227,10 +227,11 @@ class Workspace:
     def from_dict(cls, data: Mapping[str, Any]) -> Workspace:
         if not isinstance(data, Mapping):
             raise InvestigationError("Workspace must be a mapping.")
+        raw_id = data.get("id", DEFAULT_WORKSPACE_ID)
         try:
-            wid = int(data["id"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise InvestigationError("Workspace requires an integer 'id'.") from exc
+            wid = int(raw_id)
+        except (TypeError, ValueError) as exc:
+            raise InvestigationError("Workspace 'id' must be an integer.") from exc
         return cls(
             id=wid,
             label=data.get("label"),
@@ -248,6 +249,201 @@ class Workspace:
             end_date=data.get("end_date"),
             start_time=data.get("start_time"),
             end_time=data.get("end_time"),
+            order_by=data.get("order_by"),
+        )
+
+
+@dataclass
+class Query:
+    """A saved ``/query`` spec. Metric × entity is a cartesian product.
+
+    Optional ``units`` / ``source`` / ``seasonal_adjustment`` are persisted for
+    later filtering; ``execute`` currently forwards the fields ``GET /query``
+    already accepts.
+    """
+
+    id: int
+    name: Optional[str] = None
+    notes: Optional[str] = None
+    metric: list[str] = field(default_factory=list)
+    entity: list[str] = field(default_factory=list)
+    series: list[str] = field(default_factory=list)
+    frequency: Optional[str] = None
+    units: Optional[str] = None
+    source: Optional[str] = None
+    seasonal_adjustment: Optional[str] = None
+    taxonomy: Optional[str] = None
+    head: Optional[int] = None
+    tail: Optional[int] = None
+    as_of: Optional[str] = None
+    sort_by: Optional[str] = None
+    order_by: Optional[str] = None
+
+    def is_empty(self) -> bool:
+        return not (self.metric or self.entity or self.series)
+
+    def to_query_kwargs(self) -> dict[str, Any]:
+        """kwargs for ``JSTDataClient.query`` (cartesian metric × entity)."""
+        kwargs: dict[str, Any] = {}
+        if self.metric:
+            kwargs["metric"] = list(self.metric)
+        if self.entity:
+            kwargs["entity"] = list(self.entity)
+        if self.series:
+            kwargs["series"] = list(self.series)
+        if self.frequency is not None:
+            kwargs["frequency"] = self.frequency
+        if self.taxonomy is not None:
+            kwargs["taxonomy"] = self.taxonomy
+        if self.head is not None:
+            kwargs["head"] = self.head
+        if self.tail is not None:
+            kwargs["tail"] = self.tail
+        if self.as_of is not None:
+            kwargs["as_of"] = self.as_of
+        if self.sort_by is not None:
+            kwargs["sort_by"] = self.sort_by
+        if self.order_by is not None:
+            kwargs["order_by"] = self.order_by
+        return kwargs
+
+    def execute(self, client: JSTDataClient, **overrides: Any) -> List[TimeSeries]:
+        kwargs = self.to_query_kwargs()
+        kwargs.update(overrides)
+        return client.query(**kwargs)
+
+    def execute_df(self, client: JSTDataClient, **overrides: Any) -> pd.DataFrame:
+        kwargs = self.to_query_kwargs()
+        kwargs.update(overrides)
+        return client.query_df(**kwargs)
+
+    def expected_pairs(self) -> list[tuple[str, str]]:
+        """Cartesian metric × entity pairs this query asks the API for."""
+        return [(m, e) for m in self.metric for e in self.entity]
+
+    def inspect(
+        self, client: JSTDataClient, *, limit: int = 50, offset: int = 0
+    ) -> dict[str, Any]:
+        """Coverage for the cartesian product — no observations.
+
+        Uses ``GET /preview`` when both metric and entity lists are set.
+        """
+        expected = [
+            {"metric": m, "entity": e} for m, e in self.expected_pairs()
+        ]
+        resolved: list[dict[str, Any]] = []
+        if self.metric and self.entity:
+            rows = client.preview(
+                metric=list(self.metric),
+                entity=list(self.entity),
+                limit=limit,
+                offset=offset,
+            )
+            for row in rows:
+                earliest = getattr(row, "earliest", None)
+                latest = getattr(row, "latest", None)
+                resolved.append(
+                    {
+                        "metric": row.metric_id,
+                        "entity": row.entity_id,
+                        "series_count": row.series_count,
+                        "observation_count": row.observation_count,
+                        "earliest": (
+                            earliest.isoformat()
+                            if hasattr(earliest, "isoformat")
+                            else earliest
+                        ),
+                        "latest": (
+                            latest.isoformat()
+                            if hasattr(latest, "isoformat")
+                            else latest
+                        ),
+                    }
+                )
+        found = {(item["metric"], item["entity"]) for item in resolved}
+        missing = [
+            pair
+            for pair in expected
+            if (pair["metric"], pair["entity"]) not in found
+        ]
+        return {
+            "query": self.to_dict(),
+            "cartesian": True,
+            "expected_pairs": expected,
+            "resolved": resolved,
+            "missing": missing,
+            "series": list(self.series),
+            "counts": {
+                "expected_pairs": len(expected),
+                "resolved": len(resolved),
+                "missing": len(missing),
+                "series": len(self.series),
+            },
+        }
+
+    @classmethod
+    def from_workspace(
+        cls,
+        workspace: Workspace,
+        *,
+        query_id: int,
+        name: Optional[str] = None,
+        notes: Optional[str] = None,
+    ) -> Query:
+        """Snapshot a workspace basket into a saved query."""
+        return cls(
+            id=query_id,
+            name=name,
+            notes=notes,
+            metric=list(workspace.metric),
+            entity=list(workspace.entity),
+            series=list(workspace.series),
+            frequency=workspace.frequency,
+            taxonomy=workspace.taxonomy,
+            head=workspace.head,
+            tail=workspace.tail,
+            as_of=workspace.as_of,
+            sort_by=workspace.sort_by,
+            order_by=workspace.order_by,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        return {k: v for k, v in data.items() if v is not None and v != []}
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> Query:
+        if not isinstance(data, Mapping):
+            raise InvestigationError("Query must be a mapping.")
+        try:
+            qid = int(data["id"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise InvestigationError("Query requires an integer 'id'.") from exc
+        metric = data.get("metric") or []
+        entity = data.get("entity") or []
+        series = data.get("series") or []
+        if not isinstance(metric, list) or not all(isinstance(x, str) for x in metric):
+            raise InvestigationError(f"Query {qid} metric must be a list of strings.")
+        if not isinstance(entity, list) or not all(isinstance(x, str) for x in entity):
+            raise InvestigationError(f"Query {qid} entity must be a list of strings.")
+        if not isinstance(series, list) or not all(isinstance(x, str) for x in series):
+            raise InvestigationError(f"Query {qid} series must be a list of strings.")
+        return cls(
+            id=qid,
+            name=data.get("name"),
+            notes=data.get("notes"),
+            metric=list(metric),
+            entity=list(entity),
+            series=list(series),
+            frequency=data.get("frequency"),
+            units=data.get("units"),
+            source=data.get("source"),
+            seasonal_adjustment=data.get("seasonal_adjustment"),
+            taxonomy=data.get("taxonomy"),
+            head=data.get("head"),
+            tail=data.get("tail"),
+            as_of=data.get("as_of"),
+            sort_by=data.get("sort_by"),
             order_by=data.get("order_by"),
         )
 
@@ -454,20 +650,13 @@ class Investigation:
 
     id: str
     title: str
-    workspaces: dict[int, Workspace] = field(default_factory=dict)
+    notes: Optional[str] = None
+    workspace: Workspace = field(default_factory=Workspace)
+    queries: dict[int, Query] = field(default_factory=dict)
     actions: dict[int, Action] = field(default_factory=dict)
 
     def validate(self) -> None:
-        """Raise if the investigation tree or workspaces are inconsistent."""
-        if not self.workspaces:
-            raise InvestigationError(
-                f"Investigation {self.id!r} must have at least one workspace."
-            )
-        if DEFAULT_WORKSPACE_ID not in self.workspaces:
-            raise InvestigationError(
-                f"Investigation {self.id!r} must include workspace "
-                f"{DEFAULT_WORKSPACE_ID}."
-            )
+        """Raise if the investigation tree or queries are inconsistent."""
         if ROOT_ACTION_ID not in self.actions:
             raise InvestigationError(
                 f"Investigation {self.id!r} must include root action "
@@ -509,6 +698,12 @@ class Investigation:
                 parent = self.actions[cur].parent_id
                 cur = parent
 
+        for qid, query in self.queries.items():
+            if query.id != qid:
+                raise InvestigationError(
+                    f"Query id mismatch: keyed as {qid}, object id {query.id}."
+                )
+
     def children(self, action_id: int) -> list[Action]:
         """Direct children of ``action_id``, ordered by id ascending."""
         kids = [a for a in self.actions.values() if a.parent_id == action_id]
@@ -541,18 +736,18 @@ class Investigation:
         return order
 
     def workspace_order(self) -> list[int]:
-        """Workspace ids in ascending numeric order."""
-        return sorted(self.workspaces)
+        """Single workspace — kept so host navigation stays a no-op cycle."""
+        return [DEFAULT_WORKSPACE_ID]
 
     def next_action_id(self) -> int:
         if not self.actions:
             return ROOT_ACTION_ID
         return max(self.actions) + 1
 
-    def next_workspace_id(self) -> int:
-        if not self.workspaces:
-            return DEFAULT_WORKSPACE_ID
-        return max(self.workspaces) + 1
+    def next_query_id(self) -> int:
+        if not self.queries:
+            return 1
+        return max(self.queries) + 1
 
     def subtree_ids(self, action_id: int) -> list[int]:
         """``action_id`` and all descendants (BFS)."""
@@ -608,12 +803,71 @@ class Investigation:
         self.validate()
         return action
 
-    def get_workspace(self, workspace_id: int) -> Workspace:
+    def add_query(
+        self,
+        *,
+        name: Optional[str] = None,
+        notes: Optional[str] = None,
+        metric: Optional[list[str]] = None,
+        entity: Optional[list[str]] = None,
+        series: Optional[list[str]] = None,
+        frequency: Optional[str] = None,
+        units: Optional[str] = None,
+        source: Optional[str] = None,
+        seasonal_adjustment: Optional[str] = None,
+        taxonomy: Optional[str] = None,
+        head: Optional[int] = None,
+        tail: Optional[int] = None,
+        as_of: Optional[str] = None,
+        sort_by: Optional[str] = None,
+        order_by: Optional[str] = None,
+        query_id: Optional[int] = None,
+        from_workspace: bool = False,
+    ) -> Query:
+        """Append a saved query. Ids start at 1."""
+        qid = self.next_query_id() if query_id is None else int(query_id)
+        if qid in self.queries:
+            raise InvestigationError(f"Query id {qid} already exists.")
+        if from_workspace:
+            query = Query.from_workspace(
+                self.workspace, query_id=qid, name=name, notes=notes
+            )
+        else:
+            query = Query(
+                id=qid,
+                name=name,
+                notes=notes,
+                metric=list(metric or []),
+                entity=list(entity or []),
+                series=list(series or []),
+                frequency=frequency,
+                units=units,
+                source=source,
+                seasonal_adjustment=seasonal_adjustment,
+                taxonomy=taxonomy,
+                head=head,
+                tail=tail,
+                as_of=as_of,
+                sort_by=sort_by,
+                order_by=order_by,
+            )
+        if query.is_empty():
+            raise InvestigationError(
+                "Query needs at least one metric, entity, or series."
+            )
+        self.queries[qid] = query
+        return query
+
+    def get_workspace(self, workspace_id: Optional[int] = None) -> Workspace:
+        """Return the investigation's single workspace (id is ignored)."""
+        return self.workspace
+
+    def get_query(self, query_id: int) -> Query:
         try:
-            return self.workspaces[workspace_id]
+            return self.queries[query_id]
         except KeyError as exc:
             raise InvestigationError(
-                f"Unknown workspace {workspace_id} in investigation {self.id!r}."
+                f"Unknown query {query_id} in investigation {self.id!r}."
             ) from exc
 
     def get_action(self, action_id: int) -> Action:
@@ -625,14 +879,19 @@ class Investigation:
             ) from exc
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "id": self.id,
             "title": self.title,
-            "workspaces": [
-                self.workspaces[k].to_dict() for k in sorted(self.workspaces)
-            ],
-            "actions": [self.actions[k].to_dict() for k in sorted(self.actions)],
         }
+        if self.notes:
+            data["notes"] = self.notes
+        data["workspace"] = self.workspace.to_dict()
+        if self.queries:
+            data["queries"] = [
+                self.queries[k].to_dict() for k in sorted(self.queries)
+            ]
+        data["actions"] = [self.actions[k].to_dict() for k in sorted(self.actions)]
+        return data
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Investigation:
@@ -646,18 +905,12 @@ class Investigation:
             title = inv_id
         if not isinstance(title, str):
             raise InvestigationError("Investigation 'title' must be a string.")
+        notes = data.get("notes")
+        if notes is not None and not isinstance(notes, str):
+            raise InvestigationError("Investigation 'notes' must be a string.")
 
-        raw_workspaces = data.get("workspaces")
-        if not isinstance(raw_workspaces, list) or not raw_workspaces:
-            raise InvestigationError(
-                f"Investigation {inv_id!r} must list at least one workspace."
-            )
-        workspaces: dict[int, Workspace] = {}
-        for item in raw_workspaces:
-            ws = Workspace.from_dict(item)
-            if ws.id in workspaces:
-                raise InvestigationError(f"Duplicate workspace id {ws.id}.")
-            workspaces[ws.id] = ws
+        workspace = _load_workspace(data, inv_id)
+        queries = _load_queries(data, inv_id)
 
         raw_actions = data.get("actions")
         if not isinstance(raw_actions, list) or not raw_actions:
@@ -671,7 +924,14 @@ class Investigation:
                 raise InvestigationError(f"Duplicate action id {action.id}.")
             actions[action.id] = action
 
-        inv = cls(id=inv_id, title=title, workspaces=workspaces, actions=actions)
+        inv = cls(
+            id=inv_id,
+            title=title,
+            notes=notes,
+            workspace=workspace,
+            queries=queries,
+            actions=actions,
+        )
         inv.validate()
         return inv
 
@@ -681,23 +941,24 @@ class Investigation:
         investigation_id: str,
         *,
         title: Optional[str] = None,
+        notes: Optional[str] = None,
         root_type: str = "home",
         root_description: Optional[str] = None,
         root_args: Optional[dict[str, Any]] = None,
         workspace_label: Optional[str] = None,
         workspace_description: Optional[str] = None,
     ) -> Investigation:
-        """Create a minimal valid investigation (workspace 0 + root action 0)."""
+        """Create a minimal valid investigation (workspace + root action 0)."""
         inv = cls(
             id=investigation_id,
             title=title if title is not None else investigation_id,
-            workspaces={
-                DEFAULT_WORKSPACE_ID: Workspace(
-                    id=DEFAULT_WORKSPACE_ID,
-                    label=workspace_label,
-                    description=workspace_description,
-                )
-            },
+            notes=notes,
+            workspace=Workspace(
+                id=DEFAULT_WORKSPACE_ID,
+                label=workspace_label,
+                description=workspace_description,
+            ),
+            queries={},
             actions={
                 ROOT_ACTION_ID: Action(
                     id=ROOT_ACTION_ID,
@@ -710,3 +971,45 @@ class Investigation:
         )
         inv.validate()
         return inv
+
+
+def _load_workspace(data: Mapping[str, Any], inv_id: str) -> Workspace:
+    """Accept singular ``workspace`` or legacy ``workspaces:`` list (first / id 0)."""
+    if "workspace" in data and data["workspace"] is not None:
+        raw = data["workspace"]
+        if not isinstance(raw, Mapping):
+            raise InvestigationError(
+                f"Investigation {inv_id!r} workspace must be a mapping."
+            )
+        return Workspace.from_dict(raw)
+
+    raw_list = data.get("workspaces")
+    if isinstance(raw_list, list) and raw_list:
+        by_id: dict[int, Workspace] = {}
+        first: Optional[Workspace] = None
+        for item in raw_list:
+            ws = Workspace.from_dict(item)
+            if first is None:
+                first = ws
+            by_id[ws.id] = ws
+        if DEFAULT_WORKSPACE_ID in by_id:
+            return by_id[DEFAULT_WORKSPACE_ID]
+        assert first is not None
+        return first
+
+    return Workspace()
+
+
+def _load_queries(data: Mapping[str, Any], inv_id: str) -> dict[int, Query]:
+    raw = data.get("queries") or []
+    if not isinstance(raw, list):
+        raise InvestigationError(
+            f"Investigation {inv_id!r} queries must be a list."
+        )
+    queries: dict[int, Query] = {}
+    for item in raw:
+        query = Query.from_dict(item)
+        if query.id in queries:
+            raise InvestigationError(f"Duplicate query id {query.id}.")
+        queries[query.id] = query
+    return queries

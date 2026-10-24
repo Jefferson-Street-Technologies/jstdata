@@ -11,7 +11,7 @@ economic data API.
 - **Entity Graph**: Entities are nodes in a relational graph — walk from a company to its SIC, a security ticker, or a geography.
 - **Taxonomies**: Named populations (`country`, `sec-central-index-key`, …) scope search, query, and ranking.
 - **Intent over IDs**: CLI and Python favor fuzzy search over memorizing slugs; always resolve before querying.
-- **Investigations**: Durable research artifacts — workspaces (staged ids + filters) and a tree of actions (analytical TUIs).
+- **Investigations**: Durable research artifacts — one workspace (staged ids), saved queries (cartesian metric × entity), and a tree of actions (analytical TUIs).
 - **Reproducible Discovery**: High-speed discovery in the TUI transitions into immutable Python / CLI snippets.
 
 ---
@@ -56,14 +56,20 @@ jst config set api_key XXX
 ## Investigations
 
 An **investigation** is the durable research unit: YAML under
-`~/.jstdata/investigations/` with **workspaces** (staged metrics / entities /
-series + query filters) and a tree of **actions** (reusable TUI screens).
+`~/.jstdata/investigations/` with one **workspace** (staged metrics / entities /
+series), saved **queries** (cartesian metric × entity against `GET /query`), and
+a tree of **actions** (reusable TUI screens).
 
 ```bash
-jst investigation create housing-slowdown
-jst investigation load housing-slowdown
-jst investigation ls
-jst run   # reopen the active investigation / workspace / action
+jst new --id housing-slowdown
+jst open housing-slowdown
+jst ls
+jst                 # reopen the active investigation (Untitled if none)
+
+# Saved queries (cartesian metric × entity)
+jst query add --metric gdp --entity france --entity usa --name "FR vs US"
+jst query inspect 1
+jst query run 1 --format json
 
 # Add actions (children of the active action unless --parent is set)
 jst action add console --args '{"taxonomy":"country","resource_type":"entity"}'
@@ -87,15 +93,15 @@ jst action show rank --json
 ```
 
 Inside the TUI: `:` command mode (`:workspace`, `:search metric gdp`, `:add`,
-`:rm`) · `n`/`p` (↑/↓) siblings · `N`/`P` (→/←) depth · in workspace drawer
-`h`/`l` cycle workspaces · `?` help · `q` quit.
+`:rm`) · `n`/`p` (↑/↓) siblings · `N`/`P` (→/←) depth · `:workspace` drawer ·
+`?` help · `q` quit.
 
 Active context lives in `~/.jstdata/.active.yaml`.
 
 ### Tutorial
 
-First `jst investigation create` / `load` bootstraps a bundled tutorial
-investigation when none exist.
+First `jst` / `jst new` / `jst open` bootstraps bundled `tutorial` and
+`plain-bagel` investigations when none exist.
 
 ### Agents
 
