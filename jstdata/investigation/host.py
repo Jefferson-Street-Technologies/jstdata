@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from textual import events
+from textual import events, on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
@@ -23,6 +23,7 @@ from .api import (
     remove_action,
     remove_query,
     persist_investigation,
+    update_investigation,
 )
 from .bootstrap import ensure_bootstrap
 from .command_palette import CommandPalette
@@ -137,6 +138,75 @@ class ConfirmForceModal(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class RenameModal(ModalScreen[tuple[str, str] | None]):
+    """One form: investigation title and description."""
+
+    DEFAULT_CSS = """
+    RenameModal {
+        align: center middle;
+        background: rgba(0, 0, 0, 0.35);
+    }
+    #rename-box {
+        width: 64;
+        height: auto;
+        border: tall #4ade80;
+        background: #111111;
+        padding: 1 2;
+    }
+    #rename-kicker { color: #4ade80; text-style: bold; margin-bottom: 1; }
+    #rename-title, #rename-notes {
+        width: 100%;
+        background: #0a0a0a;
+        border: solid #333;
+        margin-bottom: 1;
+    }
+    #rename-hint { color: #888; }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=False),
+    ]
+
+    def __init__(self, title: str, description: str = "") -> None:
+        super().__init__()
+        self._title = title
+        self._description = description
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="rename-box"):
+            yield Label("INVESTIGATION", id="rename-kicker")
+            yield Input(self._title, placeholder="Title", id="rename-title")
+            yield Input(
+                self._description, placeholder="Description", id="rename-notes"
+            )
+            yield Label(
+                "[bold]enter[/bold] save  ·  [bold]esc[/bold] cancel",
+                id="rename-hint",
+                markup=True,
+            )
+
+    def on_mount(self) -> None:
+        self.query_one("#rename-title", Input).focus()
+
+    @on(Input.Submitted)
+    def on_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "rename-title":
+            self.query_one("#rename-notes", Input).focus()
+            return
+        self._save()
+
+    def _save(self) -> None:
+        title = self.query_one("#rename-title", Input).value.strip()
+        if not title:
+            self.query_one("#rename-title", Input).focus()
+            return
+        notes = self.query_one("#rename-notes", Input).value.strip()
+        self.dismiss((title, notes))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class InvestigationHost(App):
     """TUI host bound to one investigation file + ``.active.yaml``."""
 
@@ -230,8 +300,8 @@ class InvestigationHost(App):
                 screen.workspace = self.workspace
                 screen.labels = self.labels
                 screen.rebuild()
-        if isinstance(self.screen, HomeScreen):
-            self.screen.refresh_live()
+            if isinstance(screen, HomeScreen):
+                screen.refresh_live()
 
     @property
     def action_count(self) -> int:
@@ -314,7 +384,8 @@ class InvestigationHost(App):
 
     def _apply_hydrated_labels(self, labels: dict[str, str]) -> None:
         self.labels.update(labels)
-        self.refresh_workspace_drawer()
+        # Compose may still be attaching Home chrome when /resource returns.
+        self.call_later(self.refresh_workspace_drawer)
 
     def _enter_invalid(self, message: str) -> None:
         self._invalid = True
@@ -336,7 +407,8 @@ class InvestigationHost(App):
         if self._invalid or not self.investigation or not self.active:
             return
         if isinstance(
-            self.screen, (CommandPalette, ConfirmForceModal, DrillDownModal)
+            self.screen,
+            (CommandPalette, ConfirmForceModal, DrillDownModal, RenameModal),
         ):
             # Command dispatch should already be deferred past dismiss; avoid
             # recursive call_after_refresh loops if a modal is still up.
@@ -484,7 +556,8 @@ class InvestigationHost(App):
     def _pop_transient_overlays(self) -> None:
         """Dismiss command palette / confirm; leave drawers alone when possible."""
         while len(self.screen_stack) > 2 and isinstance(
-            self.screen, (CommandPalette, ConfirmForceModal, DrillDownModal)
+            self.screen,
+            (CommandPalette, ConfirmForceModal, DrillDownModal, RenameModal),
         ):
             self.pop_screen()
 
@@ -602,6 +675,7 @@ class InvestigationHost(App):
                 DrillDownModal,
                 DestinationScreen,
                 HomeScreen,
+                RenameModal,
             ),
         ):
             return False
@@ -768,6 +842,7 @@ class InvestigationHost(App):
                     DrillDownModal,
                     DestinationScreen,
                     HomeScreen,
+                    RenameModal,
                 ),
             ):
                 return False
@@ -929,6 +1004,64 @@ class InvestigationHost(App):
             self._cmd_add(parsed)
         elif parsed.name == "rm":
             self._cmd_rm(parsed, force=bool(parsed.options.get("force")))
+        elif parsed.name == "rename":
+            self._cmd_rename(parsed)
+
+    def _cmd_rename(self, parsed: ParsedCommand) -> None:
+        if not self.investigation:
+            self.notify("No investigation loaded", severity="error")
+            return
+        title = parsed.options.get("title")
+        description = parsed.options.get("description")
+        if title is None and description is None:
+            self.push_screen(
+                RenameModal(
+                    self.investigation.title,
+                    self.investigation.notes or "",
+                ),
+                self._on_rename_submitted,
+            )
+            return
+        self._apply_rename(title=title, notes=description)
+
+    def _on_rename_submitted(self, result: tuple[str, str] | None) -> None:
+        if not result:
+            return
+        title, notes = result
+        self._apply_rename(title=title, notes=notes)
+
+    def _apply_rename(
+        self, *, title: Optional[str], notes: Optional[str]
+    ) -> None:
+        if not self.investigation:
+            return
+        self._suppress_poll = True
+        try:
+            try:
+                update_investigation(
+                    self.investigation,
+                    title=title,
+                    notes=notes,
+                    app_dir=self.app_dir,
+                )
+            except InvestigationError as exc:
+                self.notify(str(exc), severity="error")
+                return
+            try:
+                self._inv_mtime = self._inv_file().stat().st_mtime
+            except OSError:
+                pass
+        finally:
+            self._suppress_poll = False
+        for screen in self.screen_stack:
+            if isinstance(screen, HomeScreen):
+                screen.refresh_live()
+        bits = []
+        if title is not None:
+            bits.append(f"title {title!r}")
+        if notes is not None:
+            bits.append("description updated" if notes.strip() else "description cleared")
+        self.notify("Renamed: " + ", ".join(bits) if bits else "Saved")
 
     def _open_workspace_drawer(self) -> None:
         # If already open, focus it by pushing a fresh one on top (dismiss old?).

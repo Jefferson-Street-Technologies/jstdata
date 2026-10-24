@@ -95,7 +95,7 @@ jst action show rank --json
 Inside the TUI: `g` returns Home (Recent / Search / Actions / Workspace /
 Queries). `esc` goes back one level. `:` opens the command palette (fuzzy
 destinations and saved queries, plus `:workspace`, `:search metric gdp`,
-`:query`, `:add`, `:rm`) · `n`/`p` (↑/↓) siblings · `N`/`P` (→/←) depth ·
+`:query`, `:rename`, `:add`, `:rm`) · `n`/`p` (↑/↓) siblings · `N`/`P` (→/←) depth ·
 space collects into the workspace · `?` help · `q` quit.
 
 Active context lives in `~/.jstdata/.active.yaml`.

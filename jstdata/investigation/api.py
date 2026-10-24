@@ -117,6 +117,32 @@ def persist_investigation(
     return save_investigation(inv, root=_inv_root(app_dir))
 
 
+def update_investigation(
+    inv: Investigation,
+    *,
+    title: Optional[str] = None,
+    notes: Optional[str] = None,
+    app_dir: Optional[Path] = None,
+    persist: bool = True,
+) -> Investigation:
+    """Set investigation title and/or description (``notes``).
+
+    ``title`` must be non-empty when provided. ``notes=""`` clears the
+    description; ``notes=None`` leaves it unchanged.
+    """
+    if title is not None:
+        title = title.strip()
+        if not title:
+            raise InvestigationError("Investigation title cannot be empty.")
+        inv.title = title
+    if notes is not None:
+        stripped = notes.strip()
+        inv.notes = stripped or None
+    if persist:
+        persist_investigation(inv, app_dir=app_dir)
+    return inv
+
+
 def get_active(*, app_dir: Optional[Path] = None) -> ActiveContext:
     return load_active(app_dir=app_dir)
 

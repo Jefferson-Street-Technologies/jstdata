@@ -9,6 +9,7 @@ from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.events import Resize
 from textual.widgets import Input, Label, ListItem, ListView, Static
 
@@ -87,31 +88,32 @@ class HomeScreen(BaseScreen):
         Binding("pageup", "page_up", "Page up", show=False),
     ]
 
+    FOOTER_CHROME: tuple[str, ...] = (
+        "[bold #e0e0e0]:[/] [#888]commands[/]",
+        "[bold #e0e0e0]?[/] [#888]help[/]",
+        "[bold #e0e0e0]q[/] [#888]quit[/]",
+    )
+
     DEFAULT_CSS = """
     #home-body { height: 1fr; }
     #home-header {
-        height: 3;
+        height: auto;
+        min-height: 3;
         padding: 1 2 0 2;
     }
-    #home-kicker {
-        width: 20;
-        color: #4ade80;
-        text-style: bold;
-        height: 1;
-    }
+    #home-identity { width: 1fr; height: auto; }
     #home-title {
         width: 1fr;
         color: #e0e0e0;
         text-style: bold;
-        text-align: center;
         height: 1;
     }
-    #home-counts {
-        width: 20;
+    #home-subtitle {
+        width: 1fr;
         color: #888;
-        text-align: right;
         height: 1;
     }
+    #home-subtitle.-empty { display: none; }
     #home-main { height: 1fr; }
     #home-nav {
         width: 42%;
@@ -142,9 +144,9 @@ class HomeScreen(BaseScreen):
         height: 9;
         min-height: 9;
         max-height: 9;
-        background: #022c22;
-        border: tall #4ade80;
-        padding: 0 1;
+        background: #03241c;
+        border: none;
+        padding: 0;
         color: #4ade80;
         margin-top: 1;
     }
@@ -168,14 +170,15 @@ class HomeScreen(BaseScreen):
     DestinationCard {
         height: 1fr;
         min-height: 3;
-        padding: 1 2;
-        border-left: tall #222;
-        margin: 0 0 1 0;
-        background: #0f0f0f;
+        padding: 1 1 1 1;
+        border: none;
+        border-left: solid #0a0a0a;
+        margin: 0;
+        background: transparent;
     }
     DestinationCard.-selected {
-        background: #14532d;
-        border-left: tall #4ade80;
+        background: #111a14;
+        border-left: solid #4ade80;
     }
     .dest-num { color: #4ade80; text-style: bold; height: 1; }
     .dest-title { color: #e0e0e0; text-style: bold; height: 1; }
@@ -223,9 +226,9 @@ class HomeScreen(BaseScreen):
     def compose_body(self) -> ComposeResult:
         with Vertical(id="home-body"):
             with Horizontal(id="home-header"):
-                yield Label("JST / HOME", id="home-kicker")
-                yield Label(self.home_title, id="home-title")
-                yield Label("", id="home-counts")
+                with Vertical(id="home-identity"):
+                    yield Label(self.home_title, id="home-title")
+                    yield Label("", id="home-subtitle")
             with Horizontal(id="home-main"):
                 with Vertical(id="home-nav"):
                     yield Input(placeholder="/ search catalog…", id="search-input")
@@ -286,29 +289,47 @@ class HomeScreen(BaseScreen):
         dest = self._dest
         if dest is None:
             return [
-                "[bold]j[/bold]/[bold]k[/bold] move",
-                "[bold]enter[/bold] open",
-                "[bold]1[/bold]–[bold]5[/bold] jump",
+                "[bold #e0e0e0]j[/]/[bold #e0e0e0]k[/] [#888]navigate[/]",
+                "[bold #e0e0e0]↵[/] [#888]open[/]",
+                "[bold #e0e0e0]1[/]–[bold #e0e0e0]5[/] [#888]jump[/]",
             ]
-        keys = ["[bold]j[/bold]/[bold]k[/bold] move", "[bold]enter[/bold] open"]
+        keys = [
+            "[bold #e0e0e0]j[/]/[bold #e0e0e0]k[/] [#888]navigate[/]",
+            "[bold #e0e0e0]↵[/] [#888]open[/]",
+        ]
         if dest == "search":
             keys.extend(
-                ["[bold]/[/bold] type", "[bold]f[/bold] filter", "[bold]space[/bold] collect"]
+                [
+                    "[bold #e0e0e0]/[/] [#888]type[/]",
+                    "[bold #e0e0e0]f[/] [#888]filter[/]",
+                    "[bold #e0e0e0]space[/] [#888]collect[/]",
+                ]
             )
         elif dest == "workspace":
-            keys.extend(["[bold]backspace[/bold] remove", "[bold]c[/bold] query"])
+            keys.extend(
+                [
+                    "[bold #e0e0e0]backspace[/] [#888]remove[/]",
+                    "[bold #e0e0e0]c[/] [#888]query[/]",
+                ]
+            )
         elif dest == "queries":
-            keys.extend(["[bold]n[/bold] from workspace", "[bold]backspace[/bold] delete"])
+            keys.extend(
+                [
+                    "[bold #e0e0e0]n[/] [#888]from workspace[/]",
+                    "[bold #e0e0e0]backspace[/] [#888]delete[/]",
+                ]
+            )
         elif dest == "recent":
-            keys.append("[bold]f[/bold] filter")
-        keys.append("[bold]esc[/bold] back")
+            keys.append("[bold #e0e0e0]f[/] [#888]filter[/]")
+        keys.append("[bold #e0e0e0]esc[/] [#888]back[/]")
         return keys
 
     def footer_status(self) -> list[str]:
-        inv = self._investigation()
-        dest = self._dest
-        tag = dest or "home"
-        return [tag, workspace_counts_line(inv)]
+        return []
+
+    def refresh_footer(self) -> None:
+        parts = [*self.footer_action_keys(), *self.FOOTER_CHROME]
+        self.query_one("#help-hint", Label).update("    ".join(parts))
 
     def _investigation(self) -> Investigation:
         inv = getattr(self.app, "investigation", None)
@@ -327,24 +348,33 @@ class HomeScreen(BaseScreen):
         lst.display = drilled
         inp.display = bool(drilled and self._dest == "search")
 
+    def _chrome_ready(self) -> bool:
+        """False while the screen exists but compose has not attached widgets."""
+        if not self.is_mounted:
+            return False
+        try:
+            self.query_one("#home-title", Label)
+            return True
+        except NoMatches:
+            return False
+
     def _refresh_header(self) -> None:
+        if not self._chrome_ready():
+            return
         inv = self._investigation()
-        self.query_one("#home-counts", Label).update(workspace_counts_line(inv))
         self.query_one("#home-title", Label).update(inv.title or self.home_title)
-        if self._dest:
-            title = next(
-                (d.title.upper() for d in DESTINATIONS if d.id == self._dest),
-                self._dest.upper(),
-            )
-            self.query_one("#home-kicker", Label).update(f"JST / {title}")
-        else:
-            self.query_one("#home-kicker", Label).update("JST / HOME")
+        subtitle = self.query_one("#home-subtitle", Label)
+        notes = (inv.notes or "").strip()
+        subtitle.update(notes)
+        subtitle.set_class(not notes, "-empty")
 
     def _refresh_graph(self) -> None:
+        if not self._chrome_ready():
+            return
         inv = self._investigation()
         graph = self.query_one("#home-graph", Static)
-        width = max((graph.size.width or 32) - 2, 16)
-        height = graph.size.height or 9
+        width = max(graph.size.width or 32, 16)
+        height = max(graph.size.height or 9, 5)
         active = getattr(getattr(self.app, "active", None), "action", None)
         graph.update(
             render_action_graph(
@@ -354,6 +384,8 @@ class HomeScreen(BaseScreen):
 
     def refresh_live(self) -> None:
         """Host calls this after workspace/label mutations."""
+        if not self._chrome_ready():
+            return
         self._refresh_header()
         self._refresh_graph()
         if self._dest == "workspace":
@@ -470,11 +502,16 @@ class HomeScreen(BaseScreen):
         if dest == "recent":
             kicker.update("RECENT")
             filt = getattr(child, "key", RECENT_FILTERS[0]) if child else "all"
+            labels = {
+                "all": "All updates",
+                "relevant": "Relevant to investigation",
+                "filings": "SEC filings",
+                "economic": "Economic releases",
+            }
             body.update(
-                "No unified ingestion feed yet.\n\n"
-                "Newly ingested SEC filings and economic updates will land "
-                "here — type, title, related entity or series, timestamp.\n\n"
-                f"Filter: {filt}."
+                "Latest filings and economic data updates.\n\n"
+                f"[bold #888]FILTER[/]  {labels.get(filt, filt)}\n\n"
+                "[#888]No recent updates available[/]"
             )
             return
         if dest == "search":

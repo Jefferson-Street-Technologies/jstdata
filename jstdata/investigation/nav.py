@@ -47,60 +47,39 @@ DESTINATIONS: tuple[Destination, ...] = (
         number="01",
         title="Recent",
         blurb="Latest filings and economic updates",
-        inspector=(
-            "A chronological feed of ingested SEC filings and economic "
-            "updates. Filter by event type when a feed is available. "
-            "Enter opens the matching resource view."
-        ),
-        filters="All · Relevant · Filings · Economic",
+        inspector="Latest filings and economic data updates.",
+        filters="All updates · Relevant · SEC filings · Economic releases",
     ),
     Destination(
         id=DEST_SEARCH,
         number="02",
         title="Search",
         blurb="Find financial and economic data",
-        inspector=(
-            "Search the catalog for metrics, entities, and series. "
-            "Type to filter; f cycles resource type. Enter opens a view; "
-            "space collects into the workspace."
-        ),
-        filters="Resource type · Source · Frequency",
+        inspector="Find metrics, entities, and series.",
+        filters="All types · Metrics · Entities · Series",
     ),
     Destination(
         id=DEST_ACTIONS,
         number="03",
         title="Actions",
         blurb="Explore investigation relationships",
-        inspector=(
-            "The investigation action tree — every view opened in this "
-            "session. Nodes start large and shrink as the tree fills, "
-            "as a record of how far exploration has gone. Enter resumes "
-            "a view."
-        ),
-        filters="Tree outline",
+        inspector="Views opened in this investigation.",
+        filters="Outline · Resume a view",
     ),
     Destination(
         id=DEST_WORKSPACE,
         number="04",
         title="Workspace",
         blurb="Current working set",
-        inspector=(
-            "The live bag of staged metrics, entities, and series. "
-            "Enter opens a resource view. Backspace removes. c snapshots "
-            "the bag into a saved query."
-        ),
-        filters="Grouped by type",
+        inspector="Current working set.",
+        filters="Metrics · Entities · Series",
     ),
     Destination(
         id=DEST_QUERIES,
         number="05",
         title="Queries",
         blurb="Saved observation queries",
-        inspector=(
-            "Reusable cartesian metric × entity specifications. "
-            "Create from the workspace, open to view JSON results, or "
-            "backspace to delete. Editing comes later."
-        ),
+        inspector="Saved observation queries.",
         filters="Create · View · Delete",
     ),
 )
@@ -124,32 +103,73 @@ def workspace_counts_line(inv: Investigation) -> str:
     )
 
 
-def inspector_copy(dest: Destination, inv: Investigation) -> str:
-    """Inspector body for a highlighted destination, including live counts."""
+def is_fresh_investigation(inv: Investigation) -> bool:
+    """True when a new user would still be staring at an empty bag."""
     ws = inv.workspace
-    extra = {
-        DEST_RECENT: (
-            "No unified ingestion feed is exposed yet. This destination "
-            "is a placeholder until filings and economic updates can be "
-            "listed together."
-        ),
-        DEST_SEARCH: (
-            f"Workspace {len(ws.metric)} metrics · {len(ws.entity)} entities · "
-            f"{len(ws.series)} series"
-        ),
-        DEST_ACTIONS: f"{len(inv.actions)} nodes in the action tree",
-        DEST_WORKSPACE: (
+    resources = len(ws.metric) + len(ws.entity) + len(ws.series)
+    return resources <= 1 and not inv.queries and len(inv.actions) <= 1
+
+
+def inspector_copy(dest: Destination, inv: Investigation) -> str:
+    """Structured inspector panel — hierarchy, not documentation."""
+    ws = inv.workspace
+    nq = len(inv.queries)
+    nodes = len(inv.actions)
+
+    if dest.id == DEST_RECENT:
+        body = (
+            f"{dest.inspector}\n\n"
+            "[bold #888]BROWSE[/]\n"
+            "All updates                  Enter to explore\n"
+            "Relevant to investigation\n"
+            "SEC filings\n"
+            "Economic releases\n\n"
+            "[#888]No recent updates available[/]"
+        )
+    elif dest.id == DEST_SEARCH:
+        body = (
+            f"{dest.inspector}\n\n"
+            "[bold #888]BROWSE[/]\n"
+            "All types                    Enter to search\n"
+            "Metrics\n"
+            "Entities\n"
+            "Series\n\n"
+            "[bold #888]WORKSPACE[/]\n"
             f"{len(ws.metric)} metrics · {len(ws.entity)} entities · "
             f"{len(ws.series)} series"
-        ),
-        DEST_QUERIES: f"{len(inv.queries)} saved quer"
-        + ("y" if len(inv.queries) == 1 else "ies"),
-    }
-    return (
-        f"{dest.inspector}\n\n"
-        f"{extra[dest.id]}\n\n"
-        f"AVAILABLE\n{dest.filters}"
-    )
+        )
+    elif dest.id == DEST_ACTIONS:
+        label = "node" if nodes == 1 else "nodes"
+        body = (
+            f"{dest.inspector}\n\n"
+            "[bold #888]OUTLINE[/]\n"
+            f"{nodes} {label}                     Enter to resume"
+        )
+    elif dest.id == DEST_WORKSPACE:
+        body = (
+            f"{dest.inspector}\n\n"
+            "[bold #888]BAG[/]\n"
+            f"{len(ws.metric)} metrics\n"
+            f"{len(ws.entity)} entities\n"
+            f"{len(ws.series)} series\n\n"
+            "[#888]Enter to inspect · Backspace to remove[/]"
+        )
+    else:
+        label = "query" if nq == 1 else "queries"
+        body = (
+            f"{dest.inspector}\n\n"
+            "[bold #888]SAVED[/]\n"
+            f"{nq} {label}                      Enter to open\n"
+            "Create from workspace"
+        )
+
+    if is_fresh_investigation(inv):
+        body += (
+            "\n\n[bold #4ade80]Start exploring[/]\n"
+            "[#aaa]Search for a company, metric, or economic series. "
+            "Add resources to your workspace, then create a query.[/]"
+        )
+    return body
 
 
 # ---------------------------------------------------------------------------
@@ -353,6 +373,16 @@ def list_palette_items(
     from .commands import COMMANDS
 
     for spec in COMMANDS:
+        if spec.name == "rename":
+            items.append(
+                PaletteItem(
+                    label="Rename investigation",
+                    detail=spec.summary,
+                    line="rename",
+                    kind="command",
+                )
+            )
+            continue
         items.append(
             PaletteItem(
                 label=f":{spec.name}",
@@ -387,17 +417,87 @@ def parse_goto(line: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# Action graph visual (unlabeled; the drawing is the point)
+# Action graph visual — orthogonal left/right tree
 # ---------------------------------------------------------------------------
 
 _NODE = "●"
-_ROOT = "◉"
 _SMALL = "•"
-_STYLE_NODE = "bold #86efac"
-_STYLE_ROOT = "bold #bbf7d0"
-_STYLE_ACTIVE = "reverse bold #052e16 on #4ade80"
+_STYLE_ROOT = "bold #052e16 on #4ade80"
+_STYLE_NODE = "bold #4ade80"
+_STYLE_LEAF = "#86efac"
+_STYLE_ACTIVE = "bold #052e16 on #86efac"
 _STYLE_EDGE = "#4ade80"
-_STYLE_SPARK = "#166534"
+
+
+def _stack_offsets(n: int) -> list[int]:
+    """Row offsets centered on the parent. Even counts skip the parent row."""
+    if n <= 0:
+        return []
+    if n == 1:
+        return [0]
+    if n % 2 == 1:
+        half = n // 2
+        return list(range(-half, half + 1))
+    half = n // 2
+    return list(range(-half, 0)) + list(range(1, half + 1))
+
+
+def _split_root_children(kids: list) -> tuple[list, list]:
+    left, right = [], []
+    for i, kid in enumerate(kids):
+        (right if i % 2 == 0 else left).append(kid)
+    return left, right
+
+
+def _tree_depth(inv: Investigation, aid: int = ROOT_ACTION_ID) -> int:
+    kids = list(inv.children(aid))
+    if not kids:
+        return 0
+    return 1 + max(_tree_depth(inv, child.id) for child in kids)
+
+
+def _orthogonal_positions(
+    inv: Investigation, width: int, height: int
+) -> dict[int, tuple[int, int]]:
+    """Root at center; children go left or right; same-side siblings stack."""
+    cx, cy = width // 2, height // 2
+    pos: dict[int, tuple[int, int]] = {ROOT_ACTION_ID: (cx, cy)}
+    hops = max(_tree_depth(inv), 1)
+    gap = max(4, min((width // 2 - 2) // hops, 10))
+
+    def clamp_x(x: int) -> int:
+        return max(1, min(width - 2, x))
+
+    def clamp_y(y: int) -> int:
+        return max(0, min(height - 1, y))
+
+    def place_stack(nodes: list, x: int, parent_y: int, side: int) -> None:
+        x = clamp_x(x)
+        used: set[int] = set()
+        for node, off in zip(nodes, _stack_offsets(len(nodes))):
+            y = clamp_y(parent_y + off)
+            if y in used:
+                for candidate in range(height):
+                    down, up = y + candidate, y - candidate
+                    if 0 <= down < height and down not in used:
+                        y = down
+                        break
+                    if 0 <= up < height and up not in used:
+                        y = up
+                        break
+            used.add(y)
+            pos[node.id] = (x, y)
+            grand = list(inv.children(node.id))
+            if grand:
+                place_stack(grand, x + side * gap, y, side)
+
+    kids = list(inv.children(ROOT_ACTION_ID))
+    left, right = _split_root_children(kids)
+    if right:
+        place_stack(right, cx + gap, cy, +1)
+    if left:
+        place_stack(left, cx - gap, cy, -1)
+    return pos
 
 
 def render_action_graph(
@@ -407,51 +507,14 @@ def render_action_graph(
     height: int = 11,
     active_id: Optional[int] = None,
 ) -> str:
-    """Bright layered drawing of the investigation action tree.
-
-    Sparse trees sit large in the frame with a halo; dense trees pack into
-    dots. No caption — the shape is the signal.
-    """
+    """Dots and orthogonal limbs from the center. No rings, no diagonals."""
     width = max(int(width), 16)
     height = max(int(height), 5)
     if ROOT_ACTION_ID not in inv.actions:
         return ""
 
-    levels: list[list[int]] = []
-    queue = [ROOT_ACTION_ID]
-    while queue:
-        levels.append(list(queue))
-        nxt: list[int] = []
-        for aid in queue:
-            nxt.extend(child.id for child in inv.children(aid))
-        queue = nxt
-
-    n = sum(len(level) for level in levels)
-    label_mode = n <= 6 and height >= len(levels) * 3
-    stride = 3 if label_mode else 2
-    if len(levels) * stride - 1 > height:
-        stride = 2 if len(levels) * 2 - 1 <= height else 1
-        label_mode = False
-
-    max_depth = min(len(levels), (height + stride - 1) // stride)
-    levels = levels[:max_depth]
-
-    def xs_for(count: int) -> list[int]:
-        inner = width - 2
-        if count <= 0:
-            return []
-        if count == 1:
-            return [width // 2]
-        if count >= inner:
-            return [1 + int(i * (inner - 1) / max(count - 1, 1)) for i in range(count)]
-        gap = inner / (count + 1)
-        return [int(gap * (i + 1)) for i in range(count)]
-
-    pos: dict[int, tuple[int, int]] = {}
-    for depth, level in enumerate(levels):
-        ys = depth * stride
-        for aid, x in zip(level, xs_for(len(level))):
-            pos[aid] = (x, ys)
+    pos = _orthogonal_positions(inv, width, height)
+    n = len(pos)
 
     chars = [[" " for _ in range(width)] for _ in range(height)]
     styles: list[list[Optional[str]]] = [[None] * width for _ in range(height)]
@@ -461,74 +524,45 @@ def render_action_graph(
             chars[y][x] = ch
             styles[y][x] = style
 
-    # Halo for a young tree — keep it off the label/connector rows.
-    if n <= 3:
-        cx, cy = pos.get(ROOT_ACTION_ID, (width // 2, 0))
-        for dx, dy in ((-6, 0), (6, 0), (-3, 0), (3, 0), (0, height - 1)):
-            if (cx + dx, cy + dy) not in pos.values():
-                plot(cx + dx, cy + dy, "·", _STYLE_SPARK)
+    def hline(x0: int, x1: int, y: int) -> None:
+        if x0 == x1:
+            return
+        step = 1 if x1 > x0 else -1
+        for x in range(x0 + step, x1, step):
+            plot(x, y, "─", _STYLE_EDGE)
 
-    # Edges under each parent (skip when packed to one row per depth).
-    if stride >= 2:
-        for depth, level in enumerate(levels[:-1]):
-            for aid in level:
-                kids = [
-                    child.id
-                    for child in inv.children(aid)
-                    if child.id in pos
-                ]
-                if not kids:
-                    continue
-                px, py = pos[aid]
-                mid_y = py + 1
-                kxs = [pos[k][0] for k in kids]
-                lo, hi = min([px, *kxs]), max([px, *kxs])
-                for x in range(lo, hi + 1):
-                    plot(x, mid_y, "─", _STYLE_EDGE)
-                for kx in kxs:
-                    if kx == lo == hi:
-                        ch = "│"
-                    elif kx == lo:
-                        ch = "┌"
-                    elif kx == hi:
-                        ch = "┐"
-                    else:
-                        ch = "┬"
-                    plot(kx, mid_y, ch, _STYLE_EDGE)
-                child_here = px in kxs
-                if lo == hi:
-                    plot(px, mid_y, "│", _STYLE_EDGE)
-                elif px == lo:
-                    plot(px, mid_y, "├" if child_here else "└", _STYLE_EDGE)
-                elif px == hi:
-                    plot(px, mid_y, "┤" if child_here else "┘", _STYLE_EDGE)
-                else:
-                    plot(px, mid_y, "┼" if child_here else "┴", _STYLE_EDGE)
+    def vline(x: int, y0: int, y1: int) -> None:
+        lo, hi = min(y0, y1), max(y0, y1)
+        for y in range(lo, hi + 1):
+            plot(x, y, "│", _STYLE_EDGE)
 
-    glyph = _SMALL if n > 16 else _NODE
+    for aid, (px, py) in pos.items():
+        kids = [c for c in inv.children(aid) if c.id in pos]
+        if not kids:
+            continue
+        by_x: dict[int, list[int]] = {}
+        for child in kids:
+            child_x, child_y = pos[child.id]
+            by_x.setdefault(child_x, []).append(child_y)
+        for child_x, ys in by_x.items():
+            hline(px, child_x, py)
+            vline(child_x, min(ys + [py]), max(ys + [py]))
+
+    glyph = _SMALL if n > 18 else _NODE
     for aid, (x, y) in pos.items():
-        action = inv.get_action(aid)
-        is_root = aid == ROOT_ACTION_ID
         is_active = active_id is not None and aid == active_id
-        ch = _ROOT if is_root else glyph
+        is_leaf = not any(c.id in pos for c in inv.children(aid))
+        if aid == ROOT_ACTION_ID:
+            style = _STYLE_ACTIVE if is_active else _STYLE_ROOT
+            plot(x, y, _NODE, style)
+            continue
         if is_active:
             style = _STYLE_ACTIVE
-        elif is_root:
-            style = _STYLE_ROOT
+        elif is_leaf:
+            style = _STYLE_LEAF
         else:
             style = _STYLE_NODE
-        plot(x, y, ch, style)
-
-    if label_mode and stride >= 3:
-        for aid, (x, y) in pos.items():
-            action = inv.get_action(aid)
-            label = (action.description or action.type).strip()[:8]
-            ly = y + 2
-            if ly >= height:
-                continue
-            start = max(0, min(x - len(label) // 2, width - len(label)))
-            for i, lc in enumerate(label):
-                plot(start + i, ly, lc, _STYLE_NODE)
+        plot(x, y, glyph, style)
 
     lines: list[str] = []
     for y in range(height):

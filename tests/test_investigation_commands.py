@@ -21,13 +21,21 @@ def test_list_suggestions_filters_prefix():
         "workspace",
         "search",
         "query",
+        "rename",
         "add",
         "rm",
     }
 
 
 def test_complete_command_names():
-    assert complete_command_line("") == ["workspace", "search", "query", "add", "rm"]
+    assert complete_command_line("") == [
+        "workspace",
+        "search",
+        "query",
+        "rename",
+        "add",
+        "rm",
+    ]
     assert complete_command_line("se") == ["search"]
     assert complete_command_line(":a") == ["add"]
     # Exact command name offers next-token completions (action types for add).
@@ -36,6 +44,8 @@ def test_complete_command_names():
     assert "add discover" in add_next
     assert complete_command_line("workspace") == []
     assert complete_command_line("workspace ") == []
+    assert complete_command_line("rename") == ["rename --description"]
+    assert complete_command_line("rename --d") == ["rename --description"]
 
 
 def test_complete_search_types():
@@ -226,6 +236,30 @@ def test_parse_add_defaults_activate():
         parse_command_line("add console --description nope")
 
 
+def test_parse_rename():
+    parsed = parse_command_line("rename")
+    assert parsed.name == "rename"
+    assert parsed.options["title"] is None
+    assert parsed.options["description"] is None
+
+    parsed = parse_command_line("rename Plain Bagel")
+    assert parsed.options["title"] == "Plain Bagel"
+    assert parsed.options["description"] is None
+
+    parsed = parse_command_line(
+        'rename "EU Semis" --description Supply chain concentration'
+    )
+    assert parsed.options["title"] == "EU Semis"
+    assert parsed.options["description"] == "Supply chain concentration"
+
+    parsed = parse_command_line("rename --description just notes")
+    assert parsed.options["title"] is None
+    assert parsed.options["description"] == "just notes"
+
+    with pytest.raises(CommandError, match="Unexpected"):
+        parse_command_line("rename --force nope")
+
+
 def test_parse_query():
     parsed = parse_command_line("query")
     assert parsed.name == "query"
@@ -266,6 +300,7 @@ def test_palette_fuzzy_destinations_and_queries():
     assert "Open Workspace" in labels
     assert "Open Queries" in labels
     assert any(item.label.startswith("Open Q1") for item in empty)
+    assert any(item.label == "Rename investigation" for item in empty)
     assert any(item.kind == "command" and item.line == "workspace" for item in empty)
 
     hits = list_palette_items(inv, "query")

@@ -12,6 +12,7 @@ from .api import (
     parse_action_args_json,
     persist_investigation,
     remove_action,
+    update_investigation,
     remove_query,
     require_active_investigation,
     resume_or_create_investigation,
@@ -95,6 +96,7 @@ __all__ = [
     "save_active",
     "save_investigation",
     "set_active",
+    "update_investigation",
     "validate_action_type",
     "validate_investigation_id",
 ]

@@ -47,6 +47,11 @@ COMMANDS: tuple[CommandSpec, ...] = (
         usage="query [id]",
     ),
     CommandSpec(
+        "rename",
+        "Set the investigation title and description",
+        usage="rename [title] [--description text]",
+    ),
+    CommandSpec(
         "add",
         "Add an action under the active (or --parent) node",
         usage=ADD_USAGE,
@@ -66,6 +71,11 @@ _RM_FLAGS = ("--force",)
 _RM_FLAG_DOCS = {
     "--force": "Confirm cascade delete / removing the active action",
 }
+_RENAME_FLAGS = ("--description",)
+_RENAME_FLAG_DOCS = {
+    "--description": "Investigation description (notes)",
+}
+
 _SEARCH_TYPE_DOCS = {
     "metric": "Search metrics in the catalog",
     "entity": "Search entities in the catalog",
@@ -114,6 +124,11 @@ def completion_doc(candidate: str) -> str:
         flag = tokens[-1]
         if flag.startswith("-"):
             return _RM_FLAG_DOCS.get(flag, "")
+
+    if cmd == "rename":
+        flag = tokens[-1]
+        if flag.startswith("-"):
+            return _RENAME_FLAG_DOCS.get(flag, "")
 
     return ""
 
@@ -236,6 +251,17 @@ def complete_command_line(raw: str) -> list[str]:
     if cmd == "query":
         return []
 
+    if cmd == "rename":
+        if "--description" in head:
+            return []
+        if len(head) == 1:
+            matches = _prefix_matches(list(_RENAME_FLAGS), partial)
+            return [_rebuild(head, m) for m in matches]
+        if partial.startswith("-"):
+            matches = _prefix_matches(list(_RENAME_FLAGS), partial)
+            return [_rebuild(head, m) for m in matches]
+        return []
+
     if cmd == "search":
         if len(head) == 1:
             matches = _prefix_matches(sorted(SEARCH_TYPES), partial)
@@ -277,7 +303,9 @@ def parse_command_line(raw: str) -> ParsedCommand:
     if text.startswith(":"):
         text = text[1:].strip()
     if not text:
-        raise CommandError("Empty command. Try: workspace, search, query, add, rm")
+        raise CommandError(
+            "Empty command. Try: workspace, search, query, rename, add, rm"
+        )
     try:
         tokens = shlex.split(text)
     except ValueError as exc:
@@ -297,6 +325,8 @@ def parse_command_line(raw: str) -> ParsedCommand:
         return _parse_search(rest)
     if name == "query":
         return _parse_query(rest)
+    if name == "rename":
+        return _parse_rename(rest)
     if name == "add":
         return _parse_add(rest)
     if name == "rm":
@@ -321,6 +351,29 @@ def _parse_search(rest: list[str]) -> ParsedCommand:
             "Usage: search <metric|entity|series|taxonomy|all> <query>"
         )
     return ParsedCommand(name="search", args=[rtype, query])
+
+
+def _parse_rename(rest: list[str]) -> ParsedCommand:
+    title_parts: list[str] = []
+    description: Optional[str] = None
+    i = 0
+    while i < len(rest):
+        tok = rest[i]
+        if tok in ("--description", "--notes"):
+            description = " ".join(rest[i + 1 :])
+            break
+        if tok.startswith("-"):
+            raise CommandError(
+                f"Unexpected token {tok!r}. Usage: rename [title] [--description text]"
+            )
+        title_parts.append(tok)
+        i += 1
+    title = " ".join(title_parts).strip() or None
+    return ParsedCommand(
+        name="rename",
+        args=list(title_parts),
+        options={"title": title, "description": description},
+    )
 
 
 def _parse_query(rest: list[str]) -> ParsedCommand:

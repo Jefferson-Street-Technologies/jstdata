@@ -28,7 +28,7 @@ For **how to operate** the product as an agent (policy, modes, recipes), run
    - `g` Home (five destinations: Recent, Search, Actions, Workspace, Queries)
    - `esc` one navigation level back
    - `:` command palette (fuzzy destinations / queries + existing `:workspace`,
-     `:search`, `:add`, `:rm`, `:query` grammar)
+     `:search`, `:add`, `:rm`, `:query`, `:rename` grammar)
    - left workspace drawer / bottom search drawer
    - `n` / `p` (or ↑/↓) next / previous sibling action (action views)
    - `N` / `P` (or →/←) into first child / up to parent

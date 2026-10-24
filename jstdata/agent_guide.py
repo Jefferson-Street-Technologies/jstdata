@@ -252,8 +252,9 @@ jst action rm 2 --force
   Input Context; drills open child views with tighter context and do not mutate
   the global workspace.
 - New actions are children of the active action unless `--parent` is set.
-- Humans use `:` in the TUI (`:workspace`, `:search metric gdp`, `:add`, `:rm`).
-  The palette also fuzzy-matches destination names and saved query labels.
+- Humans use `:` in the TUI (`:workspace`, `:search metric gdp`, `:add`, `:rm`,
+  `:rename`). The palette also fuzzy-matches destination names and saved query
+  labels. `:rename` sets the investigation title and description in one command.
   Tree keys: `g` home, `esc` back, `n`/`p` siblings, `N`/`P` depth (arrows too).
   `:workspace` still opens the bag drawer. Views are typically idle until `r`
   (load). Space collects the focused resource into the workspace. Home has

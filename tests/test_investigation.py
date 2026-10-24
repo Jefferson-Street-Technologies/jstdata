@@ -33,6 +33,7 @@ from jstdata.investigation import (
     resolve_input_context,
     resume_or_create_investigation,
     save_investigation,
+    update_investigation,
     validate_investigation_id,
 )
 from jstdata.investigation.active import load_active, save_active
@@ -343,6 +344,24 @@ def test_create_and_open_api(tmp_path: Path):
     assert get_active(app_dir=tmp_path).action == ROOT_ACTION_ID
 
 
+def test_update_investigation_title_and_notes(tmp_path: Path):
+    ensure_bootstrap(app_dir=tmp_path)
+    inv = create_investigation("meta", title="Untitled", app_dir=tmp_path)
+    update_investigation(
+        inv,
+        title="Plain Bagel",
+        notes="EU semiconductor concentration",
+        app_dir=tmp_path,
+    )
+    loaded = get_investigation("meta", app_dir=tmp_path)
+    assert loaded.title == "Plain Bagel"
+    assert loaded.notes == "EU semiconductor concentration"
+    update_investigation(inv, notes="", app_dir=tmp_path)
+    assert get_investigation("meta", app_dir=tmp_path).notes is None
+    with pytest.raises(InvestigationError, match="empty"):
+        update_investigation(inv, title="  ", app_dir=tmp_path)
+
+
 def test_remove_requires_force_for_active_and_children(tmp_path: Path):
     ensure_bootstrap(app_dir=tmp_path)
     inv = create_investigation("force-rm", app_dir=tmp_path)
@@ -510,25 +529,60 @@ def test_home_destinations_are_five_in_order():
     inv.add_query(from_workspace=True, name="FR GDP")
     assert workspace_counts_line(inv) == "1M · 1E · 0S · 1Q"
     copy = inspector_copy(DESTINATIONS[4], inv)
-    assert "1 saved query" in copy
+    assert "1 query" in copy
+    assert "SAVED" in copy
     assert "Search" in DESTINATIONS[1].title
+    fresh = Investigation.new("fresh")
+    recent = inspector_copy(DESTINATIONS[0], fresh)
+    assert "No recent updates available" in recent
+    assert "unified" not in recent.lower()
+    assert "Start exploring" in recent
+    assert "Start exploring" not in copy
+
+
+def test_home_refresh_live_before_mount_does_not_raise():
+    from jstdata.investigation.home import HomeScreen
+
+    screen = HomeScreen(client=object(), workspace=Workspace())  # type: ignore[arg-type]
+    screen.refresh_live()
 
 
 def test_action_graph_renders_real_tree_and_stays_unlabeled():
+    import re
+
     from jstdata.investigation.nav import render_action_graph
+
+    def plain(art: str) -> str:
+        return re.sub(r"\[/?[^\]]*\]", "", art)
 
     inv = Investigation.new("graph")
     art = render_action_graph(inv, width=40, height=8)
-    assert "◉" in art or "●" in art
-    assert "#4ade80" in art or "#86efac" in art or "#bbf7d0" in art
+    empty = plain(art)
+    assert "JST" not in empty
+    assert "●" in empty
+    assert "/" not in empty and "\\" not in empty
+    assert "·" not in empty
+    assert "#4ade80" in art or "#86efac" in art or "#22c55e" in art
     assert "RELATIONSHIP" not in art
     assert "SIGNATURE" not in art
 
     parent = inv.add_action("console", parent_id=ROOT_ACTION_ID, description="Search")
     inv.add_action("table", parent_id=parent.id, description="Debt")
-    grown = render_action_graph(inv, width=48, height=10, active_id=parent.id)
+    inv.add_action("metric", parent_id=parent.id, description="LTD")
+    grown = plain(render_action_graph(inv, width=48, height=10, active_id=parent.id))
+    assert "JST" not in grown
     assert "●" in grown or "•" in grown
-    assert "─" in grown or "│" in grown or "┴" in grown or "┌" in grown
+    assert "─" in grown
+    assert "│" in grown
+    assert "/" not in grown and "\\" not in grown
+
+    fan = Investigation.new("fan")
+    for i in range(5):
+        fan.add_action("console", parent_id=ROOT_ACTION_ID, description=str(i))
+    burst = plain(render_action_graph(fan, width=48, height=9))
+    assert "─" in burst
+    assert "│" in burst
+    assert "/" not in burst and "\\" not in burst
 
 
 def test_action_tree_is_a_tree_and_shrinks_with_size():
