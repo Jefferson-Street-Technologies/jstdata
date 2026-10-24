@@ -870,6 +870,12 @@ class Investigation:
                 f"Unknown query {query_id} in investigation {self.id!r}."
             ) from exc
 
+    def remove_query(self, query_id: int) -> Query:
+        """Drop a saved query. Does not edit remaining queries."""
+        query = self.get_query(query_id)
+        del self.queries[query_id]
+        return query
+
     def get_action(self, action_id: int) -> Action:
         try:
             return self.actions[action_id]

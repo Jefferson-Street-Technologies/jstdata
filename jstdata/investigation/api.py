@@ -278,6 +278,40 @@ def add_query(
     return query
 
 
+def remove_query(
+    inv: Investigation,
+    query_id: int,
+    *,
+    app_dir: Optional[Path] = None,
+    persist: bool = True,
+) -> Query:
+    """Delete a saved query. Also drops query views that point at it."""
+    query = inv.remove_query(query_id)
+    stale = [
+        action.id
+        for action in list(inv.actions.values())
+        if action.type == "query"
+        and action.args.get("query_id") == query_id
+        and action.id != ROOT_ACTION_ID
+    ]
+    for action_id in stale:
+        try:
+            inv.remove_action_cascade(action_id)
+        except InvestigationError:
+            continue
+    if persist:
+        persist_investigation(inv, app_dir=app_dir)
+    ctx = try_load_active(app_dir=app_dir)
+    if ctx and ctx.investigation == inv.id and ctx.action not in inv.actions:
+        set_active(
+            inv.id,
+            workspace=DEFAULT_WORKSPACE_ID,
+            action=ROOT_ACTION_ID,
+            app_dir=app_dir,
+        )
+    return query
+
+
 def inspect_query(
     inv: Investigation,
     query_id: int,
@@ -371,6 +405,7 @@ __all__ = [
     "parse_action_args_json",
     "persist_investigation",
     "remove_action",
+    "remove_query",
     "require_active_investigation",
     "resume_or_create_investigation",
     "run_query",

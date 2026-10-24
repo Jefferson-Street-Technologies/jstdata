@@ -205,24 +205,34 @@ class SearchDrawer(ModalScreen[None]):
             list_view.append(SearchResultRow(resource, rtype))
 
     def _fetch_results(self) -> list[tuple[Any, str]]:
-        """Return ``(resource, display_type)`` pairs for the list."""
-        if self.resource_type == "taxonomy":
-            taxonomies = _filter_taxonomies(
-                _fetch_all_taxonomies(self.client), self.search_query
-            )
-            return [(t, "taxonomy") for t in taxonomies]
+        return fetch_search_results(
+            self.client, self.resource_type, self.search_query
+        )
 
-        if self.resource_type == "all":
-            results = self.client.search(self.search_query, limit=40)
-            return [(r, _resource_type_of(r, "series")) for r in results]
 
-        if self.resource_type == "entity":
-            results = self.client.search_entities(self.search_query, limit=40)
-        elif self.resource_type == "series":
-            results = self.client.search_series(self.search_query, limit=40)
-        else:
-            results = self.client.search_metrics(self.search_query, limit=40)
-        return [(r, self.resource_type) for r in results]
+def fetch_search_results(
+    client: JSTDataClient,
+    resource_type: str,
+    query: str,
+    *,
+    limit: int = 40,
+) -> list[tuple[Any, str]]:
+    """Return ``(resource, display_type)`` pairs for catalog search UIs."""
+    if resource_type == "taxonomy":
+        taxonomies = _filter_taxonomies(_fetch_all_taxonomies(client), query)
+        return [(t, "taxonomy") for t in taxonomies]
+
+    if resource_type == "all":
+        results = client.search(query, limit=limit)
+        return [(r, _resource_type_of(r, "series")) for r in results]
+
+    if resource_type == "entity":
+        results = client.search_entities(query, limit=limit)
+    elif resource_type == "series":
+        results = client.search_series(query, limit=limit)
+    else:
+        results = client.search_metrics(query, limit=limit)
+    return [(r, resource_type) for r in results]
 
     def _add_resource(self, resource: Any, resource_type: str) -> bool:
         if isinstance(resource, Taxonomy) or resource_type == "taxonomy":

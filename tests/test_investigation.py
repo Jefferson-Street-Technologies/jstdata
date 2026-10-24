@@ -499,19 +499,85 @@ def test_home_step_registered():
     assert query.id == "query"
 
 
-def test_home_primitives_include_core_and_saved_queries():
-    from jstdata.investigation.home import build_home_items
+def test_home_destinations_are_five_in_order():
+    from jstdata.investigation.nav import DEST_IDS, DESTINATIONS, inspector_copy, workspace_counts_line
 
-    inv = Investigation.new("demo")
+    assert [d.id for d in DESTINATIONS] == list(DEST_IDS)
+    assert DEST_IDS == ("recent", "search", "actions", "workspace", "queries")
+    inv = Investigation.new("demo", title="Hyperscaler")
     inv.workspace.add_metric("gdp")
     inv.workspace.add_entity("france")
     inv.add_query(from_workspace=True, name="FR GDP")
-    kinds = [item.kind for item in build_home_items(inv)]
-    assert kinds[:4] == ["search", "workspace", "table", "query_new"]
-    assert "query" in kinds
-    saved = [item for item in build_home_items(inv) if item.kind == "query"]
-    assert saved[0].payload == 1
-    assert "FR GDP" in saved[0].detail
+    assert workspace_counts_line(inv) == "1M · 1E · 0S · 1Q"
+    copy = inspector_copy(DESTINATIONS[4], inv)
+    assert "1 saved query" in copy
+    assert "Search" in DESTINATIONS[1].title
+
+
+def test_action_graph_renders_real_tree_and_stays_unlabeled():
+    from jstdata.investigation.nav import render_action_graph
+
+    inv = Investigation.new("graph")
+    art = render_action_graph(inv, width=40, height=8)
+    assert "◉" in art or "●" in art
+    assert "#4ade80" in art or "#86efac" in art or "#bbf7d0" in art
+    assert "RELATIONSHIP" not in art
+    assert "SIGNATURE" not in art
+
+    parent = inv.add_action("console", parent_id=ROOT_ACTION_ID, description="Search")
+    inv.add_action("table", parent_id=parent.id, description="Debt")
+    grown = render_action_graph(inv, width=48, height=10, active_id=parent.id)
+    assert "●" in grown or "•" in grown
+    assert "─" in grown or "│" in grown or "┴" in grown or "┌" in grown
+
+
+def test_action_tree_is_a_tree_and_shrinks_with_size():
+    from jstdata.investigation.nav import action_tree_rows, tree_row_height
+
+    inv = Investigation.new("tree")
+    sparse = action_tree_rows(inv)
+    assert sparse[0].action_id == ROOT_ACTION_ID
+    assert sparse[0].type == "home"
+    assert tree_row_height(len(sparse)) == 6
+
+    parent = inv.add_action("console", parent_id=ROOT_ACTION_ID, description="Search")
+    child = inv.add_action("metric", parent_id=parent.id, description="Long-term debt")
+    inv.add_action("entity", parent_id=parent.id, description="Microsoft")
+    rows = action_tree_rows(inv)
+    titles = [r.title() for r in rows]
+    assert any("Search" in t and "console" in t for t in titles)
+    assert any("└─" in r.prefix or "├─" in r.prefix for r in rows)
+    assert any(r.action_id == child.id for r in rows)
+    assert tree_row_height(len(rows)) < 6
+    assert tree_row_height(24) == 1
+    # Dense tree: every node is one cell.
+    for i in range(20):
+        inv.add_action("table", parent_id=ROOT_ACTION_ID, description=f"t{i}")
+    assert tree_row_height(len(action_tree_rows(inv))) == 1
+
+
+def test_remove_query_drops_query_and_its_views(tmp_path: Path):
+    from jstdata.investigation.api import add_query, remove_query
+
+    app_dir = tmp_path
+    inv = create_investigation("demo", app_dir=app_dir)
+    inv.workspace.add_metric("gdp")
+    inv.workspace.add_entity("france")
+    q = add_query(inv, from_workspace=True, name="FR GDP", app_dir=app_dir)
+    add_action(
+        inv,
+        "query",
+        args={"query_id": q.id},
+        parent_id=ROOT_ACTION_ID,
+        app_dir=app_dir,
+    )
+    removed = remove_query(inv, q.id, app_dir=app_dir)
+    assert removed.id == q.id
+    assert q.id not in inv.queries
+    assert not any(
+        a.type == "query" and a.args.get("query_id") == q.id
+        for a in inv.actions.values()
+    )
 
 
 def test_stage_ids_collects_into_workspace():

@@ -25,11 +25,14 @@ For **how to operate** the product as an agent (policy, modes, recipes), run
    action tree. It owns the active workspace, resolved Input Context, + labels
    cache (hydrated from the API; never persisted in the investigation).
    Universal UI:
-   - `:` command mode (`:workspace`, `:search`, `:add`, `:rm`, …)
+   - `g` Home (five destinations: Recent, Search, Actions, Workspace, Queries)
+   - `esc` one navigation level back
+   - `:` command palette (fuzzy destinations / queries + existing `:workspace`,
+     `:search`, `:add`, `:rm`, `:query` grammar)
    - left workspace drawer / bottom search drawer
-   - `n` / `p` (or ↑/↓) next / previous sibling action
+   - `n` / `p` (or ↑/↓) next / previous sibling action (action views)
    - `N` / `P` (or →/←) into first child / up to parent
-   - In `:workspace` drawer: `j`/`k` rows, backspace to remove
+   - Workspace destination / drawer: `j`/`k` rows, backspace to remove
    - `q` quit
    - `?` action-specific keybindings (from the catalog entry)
 4. **Investigation** — named YAML under `~/.jstdata/investigations/` that stores
@@ -144,7 +147,7 @@ Seed args go on `arguments`. They configure the TUI via
 | Resolve resources | `jst api metric search …` / `jst api entity search …` |
 | Query / observations | `jst api query …` / `jst api series observations …` |
 | Agent bootstrap | `jst agent-guide` |
-| Inside the TUI | `g` home · `:` commands · `n`/`p` siblings · `N`/`P` depth · `:workspace` · space collect · `?` · `q` |
+| Inside the TUI | `g` home · `esc` back · `:` palette · `n`/`p` siblings · `N`/`P` depth · `:workspace` · space collect · `?` · `q` |
 
 ## Catalog / search notes (for action authors)
 

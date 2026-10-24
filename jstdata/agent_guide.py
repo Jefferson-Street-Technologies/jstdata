@@ -253,10 +253,11 @@ jst action rm 2 --force
   the global workspace.
 - New actions are children of the active action unless `--parent` is set.
 - Humans use `:` in the TUI (`:workspace`, `:search metric gdp`, `:add`, `:rm`).
-  Tree keys: `g` home, `n`/`p` siblings, `N`/`P` depth (arrows too). `:workspace`
-  opens the bag drawer. Views are typically idle until `r` (load). Space
-  collects the focused resource into the workspace. Home lists Search /
-  Workspace / Table / Query.
+  The palette also fuzzy-matches destination names and saved query labels.
+  Tree keys: `g` home, `esc` back, `n`/`p` siblings, `N`/`P` depth (arrows too).
+  `:workspace` still opens the bag drawer. Views are typically idle until `r`
+  (load). Space collects the focused resource into the workspace. Home has
+  five destinations: Recent, Search, Actions, Workspace, Queries.
 - **When to use which:**
   - `table` — latest-value matrix; cheap `/preview` coverage on open; `r` runs
     `/query`; Enter drills to entity, metric, or **release** (provenance).

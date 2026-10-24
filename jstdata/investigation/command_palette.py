@@ -18,49 +18,65 @@ from .commands import (
     list_command_suggestions,
     parse_command_line,
 )
+from .model import Investigation
+from .nav import PaletteItem, list_palette_items, parse_goto
 
 
 class CommandPalette(ModalScreen[str | None]):
-    """Transparent bottom command line. Returns the submitted line or None."""
+    """Centered command palette. Returns the submitted line or None.
+
+    Vim ``:`` grammar (Tab cycle, Space lock) is unchanged. Fuzzy rows for
+    destinations and saved queries sit on top of that dispatcher.
+    """
 
     DEFAULT_CSS = """
     CommandPalette {
-        align: center bottom;
-        background: transparent;
+        align: center top;
+        background: rgba(0, 0, 0, 0.35);
+        padding-top: 3;
     }
 
     #cmd-panel {
-        width: 100%;
+        width: 72;
+        max-width: 90%;
         height: auto;
-        max-height: 14;
+        max-height: 22;
         background: #111111;
-        border-top: tall #4ade80;
-        padding: 0 1 1 1;
-    }
-
-    #cmd-suggestions {
-        height: auto;
-        max-height: 14;
-        color: #c0c0c0;
-        padding: 0 1;
+        border: tall #4ade80;
+        padding: 1 1 1 1;
     }
 
     #cmd-input {
         width: 100%;
         background: #0a0a0a;
         border: solid #333;
+        margin-bottom: 1;
     }
 
     #cmd-input.-invalid {
         border: solid #f87171;
         color: #f87171;
     }
+
+    #cmd-suggestions {
+        height: auto;
+        max-height: 16;
+        color: #c0c0c0;
+        padding: 0 1;
+    }
+
+    #cmd-hint {
+        color: #666;
+        height: 1;
+        margin-top: 1;
+        padding: 0 1;
+    }
     """
 
     BINDINGS = [
         Binding("escape", "cancel", "Close", show=False),
-        Binding("up", "history_prev", "History", show=False),
-        Binding("down", "history_next", "History", show=False),
+        Binding("up", "select_prev", "Up", show=False),
+        Binding("down", "select_next", "Down", show=False),
         Binding("tab", "complete", "Complete", show=False, priority=True),
         Binding(
             "shift+tab", "complete_prev", "Complete prev", show=False, priority=True
@@ -69,23 +85,34 @@ class CommandPalette(ModalScreen[str | None]):
         Binding("enter", "commit_or_submit", "Lock or run", show=False, priority=True),
     ]
 
-    def __init__(self, history: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        history: list[str] | None = None,
+        investigation: Investigation | None = None,
+    ) -> None:
         super().__init__()
         self.history = list(history or [])
+        self.investigation = investigation
         self._hist_index: int | None = None
         self._draft = ""
         self._completions: list[str] = []
         self._comp_index: int = -1
+        self._palette_index: int = 0
+        self._palette_items: list[PaletteItem] = []
         # Input.Changed can fire after programmatic sets; remember the value we
         # applied so a deferred event does not clear the Tab-cycle freeze.
         self._applied_value: str | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="cmd-panel"):
-            yield Static(self._format_suggestions(""), id="cmd-suggestions", markup=True)
             yield Input(
-                placeholder="Tab cycle · Space/Enter lock · Enter runs when idle",
+                placeholder="Filter destinations, queries, and : commands",
                 id="cmd-input",
+            )
+            yield Static(self._format_suggestions(""), id="cmd-suggestions", markup=True)
+            yield Static(
+                "↑↓ select  ·  ↵ run  ·  Tab cycle :commands  ·  esc dismiss",
+                id="cmd-hint",
             )
 
     def on_mount(self) -> None:
@@ -139,17 +166,40 @@ class CommandPalette(ModalScreen[str | None]):
                 rows.append(self._escape_markup(line))
         return rows
 
+    def _palette_block(self, text: str) -> list[str]:
+        """Fuzzy destination / query / command labels (VS Code-style rows)."""
+        if self.investigation is None or self._completions:
+            self._palette_items = []
+            return []
+        items = list_palette_items(self.investigation, self._body(text))[:12]
+        self._palette_items = items
+        if not items:
+            return []
+        if self._palette_index >= len(items):
+            self._palette_index = 0
+        lines: list[str] = []
+        for i, item in enumerate(items):
+            label = self._escape_markup(item.label)
+            detail = self._escape_markup(item.detail)
+            if i == self._palette_index:
+                head = f"[reverse bold #0a0a0a on #4ade80]{label}[/]"
+            else:
+                head = f"{label:<28}"
+            lines.append(f"{head}  {detail}" if detail else head)
+        return lines
+
     def _format_suggestions(self, text: str) -> str:
         body = self._body(text)
         parts = body.split(None, 1) if body else []
+        palette_lines = self._palette_block(text)
         completions = self._candidate_list(text)
+        vim_lines: list[str] = []
         if completions:
-            lines: list[str] = []
             # When completing flags for `add <type>`, show that type's args once.
             add_type = self._shared_add_action_type(completions)
             if add_type and self._comp_index < 0:
-                lines.append(f"  args for {add_type}:")
-                lines.extend(
+                vim_lines.append(f"  args for {add_type}:")
+                vim_lines.extend(
                     self._escape_markup(line)
                     for line in action_arg_doc_lines(add_type)
                 )
@@ -166,23 +216,32 @@ class CommandPalette(ModalScreen[str | None]):
                 show_args = (i == self._comp_index) or (
                     expand_all_types and cand in action_type_cands
                 )
-                lines.extend(
+                vim_lines.extend(
                     self._format_completion_row(
                         cand,
                         highlighted=(i == self._comp_index),
                         show_args=show_args,
                     )
                 )
-            return "\n".join(lines)
-        if parts and parts[0] in {c.name for c in COMMANDS}:
+        elif parts and parts[0] in {c.name for c in COMMANDS}:
             match = next(c for c in COMMANDS if c.name == parts[0])
             if len(parts) > 1 or text.rstrip() != text or body.endswith(" "):
-                return match.help_line()
-        prefix = parts[0] if parts else ""
-        specs = list_command_suggestions(prefix)
-        if not specs:
-            return ""
-        return "\n".join(s.help_line() for s in specs)
+                vim_lines.append(match.help_line())
+            else:
+                prefix = parts[0] if parts else ""
+                vim_lines.extend(
+                    s.help_line() for s in list_command_suggestions(prefix)
+                )
+        else:
+            prefix = parts[0] if parts else ""
+            vim_lines.extend(s.help_line() for s in list_command_suggestions(prefix))
+        # Palette labels first (destinations / queries); vim grammar under them.
+        # Skip duplicate vim help when the palette already lists :commands.
+        if palette_lines and not completions:
+            return "\n".join(palette_lines)
+        if palette_lines:
+            return "\n".join([*palette_lines, "", *vim_lines])
+        return "\n".join(vim_lines)
 
     @staticmethod
     def _shared_add_action_type(completions: list[str]) -> str | None:
@@ -265,17 +324,34 @@ class CommandPalette(ModalScreen[str | None]):
 
     def _submit(self) -> None:
         raw = self.query_one("#cmd-input", Input).value.strip()
+        if self._try_dismiss(raw):
+            return
+        if self._palette_items and not self._completions:
+            item = self._palette_items[self._palette_index]
+            if self._try_dismiss(item.line):
+                return
         if not raw:
             self.dismiss(None)
             return
+        self._set_input_invalid(True)
+
+    def _try_dismiss(self, raw: str) -> bool:
+        """Dismiss if ``raw`` is a goto or a valid : command. Else False."""
+        text = raw.strip()
+        if not text:
+            return False
+        if parse_goto(text) is not None:
+            self._set_input_invalid(False)
+            self.dismiss(text)
+            return True
         try:
-            parse_command_line(raw)
+            parse_command_line(text)
         except CommandError:
-            self._set_input_invalid(True)
-            return
+            return False
         self._set_input_invalid(False)
-        hist = raw[1:].strip() if raw.startswith(":") else raw
+        hist = text[1:].strip() if text.startswith(":") else text
         self.dismiss(hist)
+        return True
 
     def action_complete(self) -> None:
         self._apply_completion(+1)
@@ -304,6 +380,7 @@ class CommandPalette(ModalScreen[str | None]):
         # Real edit: drop Tab-cycle freeze so suggestions track the input.
         self._completions = []
         self._comp_index = -1
+        self._palette_index = 0
         self._hist_index = None
         self._set_input_invalid(False)
         self._refresh_suggestions(event.value)
@@ -319,6 +396,26 @@ class CommandPalette(ModalScreen[str | None]):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+    def action_select_prev(self) -> None:
+        if self._completions:
+            self._apply_completion(-1)
+            return
+        if self._palette_items:
+            self._palette_index = (self._palette_index - 1) % len(self._palette_items)
+            self._refresh_suggestions(self.query_one("#cmd-input", Input).value)
+            return
+        self.action_history_prev()
+
+    def action_select_next(self) -> None:
+        if self._completions:
+            self._apply_completion(+1)
+            return
+        if self._palette_items:
+            self._palette_index = (self._palette_index + 1) % len(self._palette_items)
+            self._refresh_suggestions(self.query_one("#cmd-input", Input).value)
+            return
+        self.action_history_next()
 
     def action_history_prev(self) -> None:
         if not self.history:

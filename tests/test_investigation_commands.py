@@ -246,3 +246,46 @@ def test_parse_rm():
     assert parsed.options["force"] is True
     with pytest.raises(CommandError, match="integer"):
         parse_command_line("rm nope")
+
+
+def test_palette_fuzzy_destinations_and_queries():
+    from jstdata.investigation.model import Investigation
+    from jstdata.investigation.nav import list_palette_items, parse_goto
+
+    inv = Investigation.new("demo")
+    inv.workspace.add_metric("gdp")
+    inv.workspace.add_entity("usa")
+    for i in range(20):
+        inv.add_query(from_workspace=True, name=f"Hyperscaler {i}")
+
+    empty = list_palette_items(inv, "")
+    labels = [item.label for item in empty]
+    assert "Open Recent" in labels
+    assert "Open Search" in labels
+    assert "Open Actions" in labels
+    assert "Open Workspace" in labels
+    assert "Open Queries" in labels
+    assert any(item.label.startswith("Open Q1") for item in empty)
+    assert any(item.kind == "command" and item.line == "workspace" for item in empty)
+
+    hits = list_palette_items(inv, "query")
+    hit_labels = [item.label for item in hits]
+    assert any("Open Queries" in l for l in hit_labels)
+    assert any("Hyperscaler" in l for l in hit_labels)
+    assert any(l.startswith(":") and "query" in l.lower() for l in hit_labels)
+
+    search_hits = list_palette_items(inv, "sear")
+    assert any(item.line == "goto search" for item in search_hits)
+    assert parse_goto("goto search") == "search"
+    assert parse_goto(":goto home") == "home"
+    assert parse_goto("query 1") is None
+
+
+def test_palette_format_includes_open_labels_when_investigation_set():
+    from jstdata.investigation.command_palette import CommandPalette
+    from jstdata.investigation.model import Investigation
+
+    inv = Investigation.new("demo")
+    palette = CommandPalette(investigation=inv)
+    text = palette._format_suggestions("act")
+    assert "Open Actions" in text

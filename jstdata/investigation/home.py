@@ -1,141 +1,204 @@
-"""Home action — reorienting launcher for investigation primitives."""
+"""Home — persistent three-pane investigation shell."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import asyncio
 from typing import Any, Optional
 
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
-from textual.widgets import Label, ListItem, ListView, Static
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.events import Resize
+from textual.widgets import Input, Label, ListItem, ListView, Static
 
+from ..actions.base import ActionBinding, ActionSpec, label_for, register, stage_ids
+from ..actions.screen import BaseScreen
 from ..client import JSTDataClient
 from ..investigation.model import Investigation, Workspace
-from ..actions.base import ActionBinding, ActionSpec, register
-from ..actions.screen import BaseScreen
+from ..models import Entity, Metric, Series, Taxonomy
+from .browsers import (
+    RECENT_FILTERS,
+    SEARCH_TYPES,
+    ActionTreeItem,
+    GroupHeader,
+    QueryListItem,
+    _resource_label,
+)
+from .nav import (
+    DESTINATIONS,
+    Destination,
+    action_tree_rows,
+    inspector_copy,
+    render_action_graph,
+    tree_row_height,
+    workspace_counts_line,
+)
+from .search_drawer import SearchResultRow, fetch_search_results
+from .workspace_drawer import WorkspaceResourceRow
 
 
-@dataclass(frozen=True)
-class HomeItem:
-    """One launcher row on the home screen."""
+class DestinationCard(Static):
+    """One of the five Home destinations — large, numbered, selectable."""
 
-    kind: str
-    title: str
-    detail: str
-    payload: Any = None
-
-
-def build_home_items(inv: Investigation) -> list[HomeItem]:
-    """Core primitives + saved queries. Pure so tests don't need the TUI."""
-    ws = inv.workspace
-    items = [
-        HomeItem(
-            kind="search",
-            title="SEARCH",
-            detail="Catalog → collect into the workspace",
-        ),
-        HomeItem(
-            kind="workspace",
-            title="WORKSPACE",
-            detail=(
-                f"bag  metric={len(ws.metric)}  entity={len(ws.entity)}  "
-                f"series={len(ws.series)}"
-            ),
-        ),
-        HomeItem(
-            kind="table",
-            title="TABLE",
-            detail="Latest-value matrix over the workspace",
-        ),
-        HomeItem(
-            kind="query_new",
-            title="QUERY",
-            detail=(
-                "Save the bag as a cartesian query and view JSON series"
-                if not ws.is_empty()
-                else "Stage ids first (Search), then save and run"
-            ),
-        ),
-    ]
-    for qid in sorted(inv.queries):
-        query = inv.queries[qid]
-        name = query.name or f"query {qid}"
-        items.append(
-            HomeItem(
-                kind="query",
-                title=f"Q{qid}",
-                detail=(
-                    f"{name}  metric={len(query.metric)} "
-                    f"entity={len(query.entity)} series={len(query.series)}"
-                ),
-                payload=qid,
-            )
-        )
-    return items
-
-
-class PrimitiveRow(ListItem):
-    def __init__(self, item: HomeItem) -> None:
+    def __init__(self, dest: Destination) -> None:
         super().__init__()
-        self.item = item
+        self.dest = dest
 
     def compose(self) -> ComposeResult:
-        yield Label(f"{self.item.title:<10} {self.item.detail}")
+        yield Label(self.dest.number, classes="dest-num")
+        yield Label(self.dest.title, classes="dest-title")
+        yield Label(self.dest.blurb, classes="dest-blurb")
+
+
+class FilterRow(ListItem):
+    def __init__(self, key: str, title: str) -> None:
+        super().__init__()
+        self.key = key
+        self.title = title
+
+    def compose(self) -> ComposeResult:
+        yield Label(self.title)
 
 
 class HomeScreen(BaseScreen):
-    """Launcher that makes Search, Collect, Query, and Table one Enter away."""
+    """Persistent Home: options left, data top-right, graph bottom-right."""
 
     BINDINGS = [
-        Binding("escape", "app.bell", " ", show=False),
+        Binding("escape", "leave", "Back", show=False),
         Binding("j", "cursor_down", "Cursor Down", show=False),
         Binding("k", "cursor_up", "Cursor Up", show=False),
-        Binding("enter", "confirm", "Open primitive", priority=True),
+        Binding("down", "cursor_down", "Cursor Down", show=False),
+        Binding("up", "cursor_up", "Cursor Up", show=False),
+        Binding("enter", "confirm", "Open", priority=True),
+        Binding("1", "jump_1", "Recent", show=False),
+        Binding("2", "jump_2", "Search", show=False),
+        Binding("3", "jump_3", "Actions", show=False),
+        Binding("4", "jump_4", "Workspace", show=False),
+        Binding("5", "jump_5", "Queries", show=False),
+        Binding("slash", "focus_filter", "Search", show=False),
+        Binding("f", "cycle_filter", "Filter", show=False),
+        Binding("space", "collect", "Collect", show=False),
+        Binding("backspace", "remove", "Remove", show=False),
+        Binding("delete", "remove", "Remove", show=False),
+        Binding("c", "create_query", "Query from workspace", show=False),
+        Binding("n", "create_query", "Query from workspace", show=False),
+        Binding("pagedown", "page_down", "Page down", show=False),
+        Binding("pageup", "page_up", "Page up", show=False),
     ]
 
     DEFAULT_CSS = """
-    #home-body {
-        height: 1fr;
-    }
-    .pane-container {
-        border: solid #222;
-        background: #0f0f0f;
-        height: 1fr;
-    }
-    .pane-header {
-        background: #1a1a1a;
-        color: #4ade80;
-        padding: 0 1;
-        text-style: bold;
-        height: 1;
+    #home-body { height: 1fr; }
+    #home-header {
+        height: 3;
+        padding: 1 2 0 2;
     }
     #home-kicker {
+        width: 20;
         color: #4ade80;
         text-style: bold;
-        padding: 1 1 0 1;
         height: 1;
     }
     #home-title {
+        width: 1fr;
         color: #e0e0e0;
         text-style: bold;
-        padding: 0 1;
+        text-align: center;
         height: 1;
     }
-    #home-orient {
+    #home-counts {
+        width: 20;
         color: #888;
-        padding: 0 1 1 1;
+        text-align: right;
+        height: 1;
+    }
+    #home-main { height: 1fr; }
+    #home-nav {
+        width: 42%;
+        height: 1fr;
+        padding: 0 1 0 1;
+    }
+    #home-data {
+        width: 1fr;
+        height: 1fr;
+        padding: 1 2 1 2;
+        border-left: solid #222;
+    }
+    #home-data-kicker {
+        color: #4ade80;
+        text-style: bold;
+        height: 1;
+        margin-bottom: 1;
+    }
+    #home-data-scroll {
+        height: 1fr;
+        overflow-y: auto;
+    }
+    #home-data-body {
+        color: #d1fae5;
         height: auto;
-        max-height: 4;
+    }
+    #home-graph {
+        height: 9;
+        min-height: 9;
+        max-height: 9;
+        background: #022c22;
+        border: tall #4ade80;
+        padding: 0 1;
+        color: #4ade80;
+        margin-top: 1;
+    }
+    #search-input {
+        height: 3;
+        background: transparent;
+        border: none;
+        border-bottom: solid #166534;
+        padding: 0 1;
+        display: none;
+    }
+    #home-dests {
+        height: 1fr;
+        overflow-y: auto;
     }
     #home-list {
         height: 1fr;
         background: #0f0f0f;
+        overflow-y: auto;
     }
-    ListView > ListItem.--highlight {
-        background: #1a3a2a;
+    DestinationCard {
+        height: 1fr;
+        min-height: 3;
+        padding: 1 2;
+        border-left: tall #222;
+        margin: 0 0 1 0;
+        background: #0f0f0f;
     }
+    DestinationCard.-selected {
+        background: #14532d;
+        border-left: tall #4ade80;
+    }
+    .dest-num { color: #4ade80; text-style: bold; height: 1; }
+    .dest-title { color: #e0e0e0; text-style: bold; height: 1; }
+    .dest-blurb { color: #888; height: 1; }
+    FilterRow, SearchResultRow, WorkspaceResourceRow, QueryListItem, ActionTreeItem {
+        width: 100%;
+        padding: 0 1;
+    }
+    SearchResultRow, WorkspaceResourceRow, FilterRow, GroupHeader {
+        height: 1;
+        min-height: 1;
+        max-height: 1;
+    }
+    QueryListItem { height: 2; min-height: 2; }
+    ListView > ListItem.--highlight { background: #14532d; }
+    .tree-title { color: #e0e0e0; height: 1; }
+    .tree-meta { color: #86efac; height: 1; }
+    .group-header { color: #4ade80; text-style: bold; height: 1; }
+    .query-create { color: #4ade80; height: 1; }
+    .query-title { color: #e0e0e0; height: 1; }
+    .query-meta { color: #888; height: 1; }
+    HomeScreen.-narrow #home-data { display: none; }
+    HomeScreen.-narrow #home-nav { width: 100%; }
     """
 
     def __init__(
@@ -152,93 +215,620 @@ class HomeScreen(BaseScreen):
         self.workspace = workspace
         self.home_title = title
         self.body = body
-        self._items: list[HomeItem] = []
+        self._index = 0
+        self._dest: Optional[str] = None
+        self._type_i = 0
+        self._search_task: asyncio.Task[None] | None = None
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="home-body"):
-            with Vertical(classes="pane-container"):
-                yield Label("HOME", classes="pane-header")
-                yield Label("JEFFERSON STREET", id="home-kicker")
+            with Horizontal(id="home-header"):
+                yield Label("JST / HOME", id="home-kicker")
                 yield Label(self.home_title, id="home-title")
-                yield Static("", id="home-orient")
-                yield ListView(id="home-list")
+                yield Label("", id="home-counts")
+            with Horizontal(id="home-main"):
+                with Vertical(id="home-nav"):
+                    yield Input(placeholder="/ search catalog…", id="search-input")
+                    with VerticalScroll(id="home-dests"):
+                        for dest in DESTINATIONS:
+                            yield DestinationCard(dest)
+                    yield ListView(id="home-list")
+                with Vertical(id="home-data"):
+                    yield Label("", id="home-data-kicker")
+                    with VerticalScroll(id="home-data-scroll"):
+                        yield Static("", id="home-data-body")
+                    yield Static("", id="home-graph")
 
     def on_mount(self) -> None:
         super().on_mount()
-        self._rebuild()
-        self.query_one("#home-list", ListView).focus()
+        stored = getattr(self.app, "_dest_index", {}).get("home")
+        if isinstance(stored, int) and 0 <= stored < len(DESTINATIONS):
+            self._index = stored
+        nav_dest = getattr(self.app, "_nav_dest", None)
+        self._refresh_header()
+        self._refresh_graph()
+        self._apply_narrow(self.size.width)
+        if nav_dest:
+            self.enter_destination(nav_dest)
+        else:
+            self._set_mode(drilled=False)
+            self._apply_menu_selection()
+            self.query_one("#home-dests").focus()
+
+    def on_resize(self, event: Resize) -> None:
+        self._apply_narrow(event.size.width)
+        self._refresh_graph()
+
+    def _apply_narrow(self, width: int) -> None:
+        self.set_class(width < 80, "-narrow")
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        dest = self._dest
+        if action.startswith("jump") and isinstance(self.focused, Input):
+            return False
+        if action == "focus_filter":
+            return dest == "search"
+        if action == "cycle_filter":
+            return dest in ("search", "recent")
+        if action == "collect":
+            return dest == "search" and not isinstance(self.focused, Input)
+        if action == "remove":
+            return dest in ("workspace", "queries")
+        if action == "create_query":
+            return dest in ("workspace", "queries")
+        if action == "leave_filter":
+            return isinstance(self.focused, Input)
+        if action in ("page_down", "page_up"):
+            return True
+        return True
 
     def footer_action_keys(self) -> list[str]:
-        return [
-            "[bold]j[/bold]/[bold]k[/bold] move",
-            "[bold]enter[/bold] open",
-            "[bold]g[/bold] home",
-        ]
+        dest = self._dest
+        if dest is None:
+            return [
+                "[bold]j[/bold]/[bold]k[/bold] move",
+                "[bold]enter[/bold] open",
+                "[bold]1[/bold]–[bold]5[/bold] jump",
+            ]
+        keys = ["[bold]j[/bold]/[bold]k[/bold] move", "[bold]enter[/bold] open"]
+        if dest == "search":
+            keys.extend(
+                ["[bold]/[/bold] type", "[bold]f[/bold] filter", "[bold]space[/bold] collect"]
+            )
+        elif dest == "workspace":
+            keys.extend(["[bold]backspace[/bold] remove", "[bold]c[/bold] query"])
+        elif dest == "queries":
+            keys.extend(["[bold]n[/bold] from workspace", "[bold]backspace[/bold] delete"])
+        elif dest == "recent":
+            keys.append("[bold]f[/bold] filter")
+        keys.append("[bold]esc[/bold] back")
+        return keys
 
     def footer_status(self) -> list[str]:
-        parts = super().footer_status()
-        ws = self.workspace
-        label = ws.label or "workspace"
-        parts.append(label)
-        return parts
+        inv = self._investigation()
+        dest = self._dest
+        tag = dest or "home"
+        return [tag, workspace_counts_line(inv)]
 
-    def _rebuild(self) -> None:
+    def _investigation(self) -> Investigation:
         inv = getattr(self.app, "investigation", None)
-        notes = ""
         if isinstance(inv, Investigation):
-            self._items = build_home_items(inv)
-            notes = (inv.notes or "").strip().splitlines()[0] if inv.notes else ""
-        else:
-            self._items = build_home_items(
-                Investigation.new("untitled", title=self.home_title)
+            return inv
+        return Investigation.new("untitled", title=self.home_title)
+
+    def _set_mode(self, *, drilled: bool) -> None:
+        self.set_class(drilled, "-drilled")
+        self.set_class(not drilled, "-menu")
+        self.set_class(drilled and self._dest == "search", "-search")
+        dests = self.query_one("#home-dests")
+        lst = self.query_one("#home-list", ListView)
+        inp = self.query_one("#search-input", Input)
+        dests.display = not drilled
+        lst.display = drilled
+        inp.display = bool(drilled and self._dest == "search")
+
+    def _refresh_header(self) -> None:
+        inv = self._investigation()
+        self.query_one("#home-counts", Label).update(workspace_counts_line(inv))
+        self.query_one("#home-title", Label).update(inv.title or self.home_title)
+        if self._dest:
+            title = next(
+                (d.title.upper() for d in DESTINATIONS if d.id == self._dest),
+                self._dest.upper(),
             )
-        orient_bits = []
-        if notes:
-            orient_bits.append(notes)
-        if self.body:
-            first = self.body.strip().splitlines()[0]
-            if first and first not in orient_bits:
-                orient_bits.append(first)
-        orient_bits.append(
-            "Search · Workspace · Table · Query — Enter to open · g always returns here"
+            self.query_one("#home-kicker", Label).update(f"JST / {title}")
+        else:
+            self.query_one("#home-kicker", Label).update("JST / HOME")
+
+    def _refresh_graph(self) -> None:
+        inv = self._investigation()
+        graph = self.query_one("#home-graph", Static)
+        width = max((graph.size.width or 32) - 2, 16)
+        height = graph.size.height or 9
+        active = getattr(getattr(self.app, "active", None), "action", None)
+        graph.update(
+            render_action_graph(
+                inv, width=width, height=height, active_id=active
+            )
         )
-        self.query_one("#home-orient", Static).update("\n".join(orient_bits))
+
+    def refresh_live(self) -> None:
+        """Host calls this after workspace/label mutations."""
+        self._refresh_header()
+        self._refresh_graph()
+        if self._dest == "workspace":
+            self._rebuild_list()
+        elif self._dest is None:
+            self._apply_menu_selection()
+        self.refresh_footer()
+
+    def enter_destination(self, dest: str) -> None:
+        self._dest = dest
+        self._set_mode(drilled=True)
+        self._refresh_header()
+        self._rebuild_list()
+        self._refresh_graph()
+        self.refresh_footer()
+        if dest == "search":
+            self.query_one("#search-input", Input).focus()
+        else:
+            self.query_one("#home-list", ListView).focus()
+
+    def leave_destination(self) -> None:
+        self._dest = None
+        self._set_mode(drilled=False)
+        self._refresh_header()
+        self._apply_menu_selection()
+        self._refresh_graph()
+        self.refresh_footer()
+        self.query_one("#home-dests").focus()
+
+    def _apply_menu_selection(self) -> None:
+        cards = list(self.query(DestinationCard))
+        for i, card in enumerate(cards):
+            card.set_class(i == self._index, "-selected")
+        dest = DESTINATIONS[self._index]
+        self.query_one("#home-data-kicker", Label).update(dest.title.upper())
+        self.query_one("#home-data-body", Static).update(
+            inspector_copy(dest, self._investigation())
+        )
+        remember = getattr(self.app, "remember_dest_index", None)
+        if callable(remember):
+            remember("home", self._index)
+
+    def _rebuild_list(self) -> None:
+        dest = self._dest
         list_view = self.query_one("#home-list", ListView)
         list_view.clear()
-        for item in self._items:
-            list_view.append(PrimitiveRow(item))
+        if dest == "recent":
+            for key in RECENT_FILTERS:
+                list_view.append(FilterRow(key, key.upper()))
+            stored = getattr(self.app, "_dest_index", {}).get("recent", 0)
+            if isinstance(stored, int) and list_view.children:
+                list_view.index = min(stored, len(RECENT_FILTERS) - 1)
+        elif dest == "search":
+            self._show_search_status("Type to search the catalog")
+        elif dest == "actions":
+            inv = self._investigation()
+            rows = action_tree_rows(inv)
+            height = tree_row_height(len(rows))
+            for row in rows:
+                list_view.append(ActionTreeItem(row, height))
+            ids = [r.action_id for r in rows]
+            active = getattr(getattr(self.app, "active", None), "action", None)
+            if active in ids:
+                list_view.index = ids.index(active)
+        elif dest == "workspace":
+            self._fill_workspace(list_view)
+        elif dest == "queries":
+            inv = self._investigation()
+            list_view.append(QueryListItem("create"))
+            for qid in sorted(inv.queries):
+                list_view.append(QueryListItem("query", inv.queries[qid]))
+        self._refresh_data_pane()
+
+    def _fill_workspace(self, list_view: ListView) -> None:
+        ws = self.workspace
+        labels = getattr(self.app, "labels", {})
+        if ws.taxonomy:
+            list_view.append(GroupHeader("TAXONOMY"))
+            list_view.append(
+                WorkspaceResourceRow(
+                    ws.taxonomy, "taxonomy", label_for(labels, ws.taxonomy)
+                )
+            )
+        groups = [
+            ("METRICS", "metric", list(ws.metric)),
+            ("ENTITIES", "entity", list(ws.entity)),
+            ("SERIES", "series", list(ws.series)),
+        ]
+        any_ids = False
+        for title, rtype, ids in groups:
+            list_view.append(GroupHeader(f"{title} · {len(ids)}"))
+            for rid in ids:
+                any_ids = True
+                list_view.append(
+                    WorkspaceResourceRow(rid, rtype, label_for(labels, rid))
+                )
+        if not any_ids and not ws.taxonomy:
+            list_view.append(GroupHeader("Empty — Search and collect first"))
+
+    def _list(self) -> ListView:
+        return self.query_one("#home-list", ListView)
+
+    def _highlighted(self):
+        return self._list().highlighted_child
+
+    def _refresh_data_pane(self) -> None:
+        dest = self._dest
+        kicker = self.query_one("#home-data-kicker", Label)
+        body = self.query_one("#home-data-body", Static)
+        if dest is None:
+            self._apply_menu_selection()
+            return
+        child = self._highlighted()
+        if dest == "recent":
+            kicker.update("RECENT")
+            filt = getattr(child, "key", RECENT_FILTERS[0]) if child else "all"
+            body.update(
+                "No unified ingestion feed yet.\n\n"
+                "Newly ingested SEC filings and economic updates will land "
+                "here — type, title, related entity or series, timestamp.\n\n"
+                f"Filter: {filt}."
+            )
+            return
+        if dest == "search":
+            if isinstance(child, SearchResultRow):
+                resource = child.resource
+                name = _resource_label(resource)
+                kicker.update(name.upper()[:40])
+                source = getattr(resource, "source", None) or "—"
+                freq = getattr(resource, "frequency", None) or "—"
+                desc = getattr(resource, "description", None) or ""
+                body.update(
+                    f"{child.resource_type.upper()}  [{resource.id}]\n"
+                    f"Source {source}  ·  Frequency {freq}\n\n"
+                    f"{str(desc)[:500]}\n\n"
+                    "Enter opens a view · Space collects into the workspace"
+                )
+            else:
+                kicker.update("SEARCH")
+                body.update(
+                    "Type two or more characters.\n"
+                    "f cycles resource type.\n"
+                    "Enter opens a view · Space collects."
+                )
+            return
+        if dest == "actions" and isinstance(child, ActionTreeItem):
+            row = child.row
+            action = self._investigation().get_action(row.action_id)
+            kicker.update(row.description.upper()[:40])
+            args = action.args or {}
+            arg_s = ", ".join(f"{k}={v!r}" for k, v in args.items()) or "(none)"
+            body.update(
+                f"{row.type}  ·  id {row.action_id}\n"
+                f"{row.child_count} child"
+                f"{'' if row.child_count == 1 else 'ren'}\n\n"
+                f"Args  {arg_s}\n\n"
+                "Enter opens this view."
+            )
+            return
+        if dest == "workspace" and isinstance(child, WorkspaceResourceRow):
+            kicker.update(child.display_name.upper()[:40])
+            body.update(
+                f"{child.resource_type.upper()}  [{child.resource_id}]\n\n"
+                "Enter opens a view.\n"
+                "Backspace removes it from the bag.\n"
+                "c snapshots the whole bag as a saved query."
+            )
+            return
+        if dest == "queries":
+            if isinstance(child, QueryListItem) and child.kind == "query" and child.query:
+                q = child.query
+                kicker.update((q.name or f"Q{q.id}").upper()[:40])
+                body.update(
+                    f"Q{q.id}  ·  saved\n\n"
+                    f"{len(q.metric)} metrics · {len(q.entity)} entities · "
+                    f"{len(q.series)} series\n"
+                    f"Frequency: {q.frequency or 'Any'}  ·  "
+                    f"Source: {q.source or 'Any'}\n"
+                    f"Units: {q.units or 'Native'}\n\n"
+                    "Enter opens JSON results.\n"
+                    "Backspace deletes. No edit in this pass."
+                )
+            else:
+                ws = self.workspace
+                kicker.update("NEW QUERY")
+                body.update(
+                    "Create by copying the current workspace bag.\n\n"
+                    + (
+                        "Workspace is empty — Search and collect first."
+                        if ws.is_empty()
+                        else f"Bag {workspace_counts_line(self._investigation())} "
+                        "will be copied. Later bag edits do not change this query."
+                    )
+                )
+            return
+        kicker.update(dest.upper())
+        body.update("")
 
     def action_cursor_down(self) -> None:
-        lv = self.query_one("#home-list", ListView)
+        if isinstance(self.focused, Input):
+            return
+        if self._dest is None:
+            self._index = min(self._index + 1, len(DESTINATIONS) - 1)
+            self._apply_menu_selection()
+            dests = self.query_one("#home-dests")
+            cards = list(self.query(DestinationCard))
+            if self._index < len(cards):
+                dests.scroll_to_widget(cards[self._index], animate=False)
+            return
+        lv = self._list()
+        lv.focus()
         if hasattr(lv, "action_cursor_down"):
             lv.action_cursor_down()
 
     def action_cursor_up(self) -> None:
-        lv = self.query_one("#home-list", ListView)
+        if isinstance(self.focused, Input):
+            return
+        if self._dest is None:
+            self._index = max(self._index - 1, 0)
+            self._apply_menu_selection()
+            dests = self.query_one("#home-dests")
+            cards = list(self.query(DestinationCard))
+            if self._index < len(cards):
+                dests.scroll_to_widget(cards[self._index], animate=False)
+            return
+        lv = self._list()
+        lv.focus()
         if hasattr(lv, "action_cursor_up"):
             lv.action_cursor_up()
 
-    def _highlighted_item(self) -> Optional[HomeItem]:
-        child = self.query_one("#home-list", ListView).highlighted_child
-        if isinstance(child, PrimitiveRow):
-            return child.item
-        return None
+    def action_page_down(self) -> None:
+        self._page(+1)
+
+    def action_page_up(self) -> None:
+        self._page(-1)
+
+    def _page(self, direction: int) -> None:
+        if isinstance(self.focused, Input):
+            return
+        if self._dest is None:
+            dests = self.query_one("#home-dests")
+            if direction > 0:
+                dests.scroll_page_down()
+            else:
+                dests.scroll_page_up()
+            return
+        lv = self._list()
+        lv.focus()
+        if direction > 0:
+            lv.action_page_down()
+        else:
+            lv.action_page_up()
+
+    def action_leave(self) -> None:
+        if isinstance(self.focused, Input):
+            self._list().focus()
+            return
+        if self._dest:
+            leave = getattr(self.app, "leave_destination", None)
+            if callable(leave):
+                leave()
+            else:
+                self.leave_destination()
+            return
+        self.app.bell()
+
+    def action_leave_filter(self) -> None:
+        if isinstance(self.focused, Input):
+            self._list().focus()
+
+    def action_focus_filter(self) -> None:
+        if self._dest == "search":
+            self.query_one("#search-input", Input).focus()
+
+    def action_cycle_filter(self) -> None:
+        if self._dest == "search":
+            self._type_i = (self._type_i + 1) % len(SEARCH_TYPES)
+            self._kick_search()
+            self._refresh_data_pane()
+            return
+        if self._dest == "recent":
+            self.action_cursor_down()
+
+    def _jump(self, index: int) -> None:
+        self._index = index
+        self._apply_menu_selection()
+        self.action_confirm()
+
+    def action_jump_1(self) -> None:
+        self._jump(0)
+
+    def action_jump_2(self) -> None:
+        self._jump(1)
+
+    def action_jump_3(self) -> None:
+        self._jump(2)
+
+    def action_jump_4(self) -> None:
+        self._jump(3)
+
+    def action_jump_5(self) -> None:
+        self._jump(4)
 
     def action_confirm(self) -> None:
-        item = self._highlighted_item()
-        if item is None:
-            self.notify("Nothing highlighted", severity="warning")
+        if isinstance(self.focused, Input):
+            self._list().focus()
             return
-        launch = getattr(self.app, "launch_home_item", None)
-        if launch is None:
-            self.notify("Host cannot launch primitives", severity="error")
+        if self._dest is None:
+            dest = DESTINATIONS[self._index]
+            open_fn = getattr(self.app, "open_destination", None)
+            if open_fn is None:
+                self.enter_destination(dest.id)
+                return
+            open_fn(dest.id)
             return
-        launch(item)
+        child = self._highlighted()
+        if self._dest == "recent":
+            self.notify("Recent feed is not available yet", severity="warning")
+            return
+        if self._dest == "search" and isinstance(child, SearchResultRow):
+            open_fn = getattr(self.app, "open_resource_view", None)
+            if callable(open_fn):
+                open_fn(
+                    child.resource_type,
+                    child.resource.id,
+                    label=_resource_label(child.resource),
+                )
+            return
+        if self._dest == "actions" and isinstance(child, ActionTreeItem):
+            open_fn = getattr(self.app, "open_action_from_nav", None)
+            if callable(open_fn):
+                open_fn(child.row.action_id)
+            return
+        if self._dest == "workspace" and isinstance(child, WorkspaceResourceRow):
+            open_fn = getattr(self.app, "open_resource_view", None)
+            if callable(open_fn):
+                open_fn(
+                    child.resource_type,
+                    child.resource_id,
+                    label=child.display_name,
+                )
+            return
+        if self._dest == "queries" and isinstance(child, QueryListItem):
+            if child.kind == "create":
+                self.action_create_query()
+                return
+            if child.query is not None:
+                open_fn = getattr(self.app, "open_query_view", None)
+                if callable(open_fn):
+                    open_fn(child.query.id)
+
+    def action_collect(self) -> None:
+        child = self._highlighted()
+        if not isinstance(child, SearchResultRow):
+            return
+        resource = child.resource
+        rtype = child.resource_type
+        if isinstance(resource, Taxonomy) or rtype == "taxonomy":
+            self.workspace.taxonomy = resource.id
+            if hasattr(self.app, "remember_label"):
+                self.app.remember_label(resource.id, _resource_label(resource))
+            persist = getattr(self.app, "persist_active_workspace", None)
+            if callable(persist):
+                persist()
+            self.notify(f"Taxonomy set to {resource.id}")
+            return
+        kwargs: dict[str, Any] = {"labels": {resource.id: _resource_label(resource)}}
+        if isinstance(resource, Metric) or rtype == "metric":
+            kwargs["metric"] = resource.id
+        elif isinstance(resource, Entity) or rtype == "entity":
+            kwargs["entity"] = resource.id
+        else:
+            kwargs["series"] = resource.id
+        added = stage_ids(self.workspace, self.app, **kwargs)
+        if not added:
+            self.notify(f"{resource.id} already in workspace", severity="warning")
+            return
+        self.notify(f"Collected {resource.id}")
+        self._refresh_header()
+        self._refresh_graph()
+
+    def action_remove(self) -> None:
+        child = self._highlighted()
+        if self._dest == "workspace" and isinstance(child, WorkspaceResourceRow):
+            rid = child.resource_id
+            if child.resource_type == "taxonomy":
+                self.workspace.taxonomy = None
+            else:
+                self.workspace.remove_id(rid)
+            labels = getattr(self.app, "labels", None)
+            if isinstance(labels, dict):
+                labels.pop(rid, None)
+            persist = getattr(self.app, "persist_active_workspace", None)
+            if callable(persist):
+                persist()
+            self.notify(f"Removed {rid}")
+            self._rebuild_list()
+            self._refresh_header()
+            self._list().focus()
+            return
+        if self._dest == "queries" and isinstance(child, QueryListItem):
+            if child.kind != "query" or child.query is None:
+                return
+            delete = getattr(self.app, "delete_query", None)
+            if callable(delete):
+                delete(child.query.id)
+
+    def action_create_query(self) -> None:
+        create = getattr(self.app, "query_from_workspace", None)
+        if callable(create):
+            create()
+
+    def _kick_search(self) -> None:
+        query = self.query_one("#search-input", Input).value.strip()
+        if self._search_task:
+            self._search_task.cancel()
+        if len(query) < 2:
+            msg = (
+                "Type to search the catalog"
+                if not query
+                else "Type two or more characters"
+            )
+            self._show_search_status(msg)
+            return
+        self._show_search_status("Searching…")
+        self._search_task = asyncio.create_task(self._run_search(query))
+
+    def _show_search_status(self, status: str) -> None:
+        list_view = self._list()
+        list_view.clear()
+        list_view.append(GroupHeader(status))
+        self._refresh_data_pane()
+
+    async def _run_search(self, query: str) -> None:
+        rtype = SEARCH_TYPES[self._type_i]
+        try:
+            await asyncio.sleep(0.3)
+            rows = await asyncio.to_thread(
+                fetch_search_results, self.client, rtype, query
+            )
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            self._show_search_status(f"Search error: {exc}")
+            self.notify(f"Search error: {exc}", severity="error")
+            return
+        list_view = self._list()
+        list_view.clear()
+        if not rows:
+            list_view.append(GroupHeader(f"No matches for {query!r}"))
+        else:
+            for resource, rt in rows:
+                list_view.append(SearchResultRow(resource, rt))
+        self._refresh_data_pane()
+
+    @on(Input.Changed, "#search-input")
+    def on_search_changed(self, event: Input.Changed) -> None:
+        if self._dest == "search":
+            self._kick_search()
+
+    @on(Input.Submitted, "#search-input")
+    def on_search_submit(self) -> None:
+        self._list().focus()
+
+    @on(ListView.Highlighted, "#home-list")
+    def on_list_highlighted(self, event: ListView.Highlighted) -> None:
+        idx = self._list().index or 0
+        remember = getattr(self.app, "remember_dest_index", None)
+        if callable(remember) and self._dest:
+            remember(self._dest, idx)
+        self._refresh_data_pane()
 
     @on(ListView.Selected, "#home-list")
-    def on_selected(self, event: ListView.Selected) -> None:
-        if isinstance(event.item, PrimitiveRow):
-            self.action_confirm()
+    def on_list_selected(self, event: ListView.Selected) -> None:
+        self.action_confirm()
 
 
 def create_home_screen(client, workspace, **kwargs):
@@ -260,15 +850,17 @@ HOME = register(
         id="home",
         name="Home",
         description=(
-            "Reorienting launcher for Search, Workspace, Table, and Query. "
-            "g always returns here."
+            "Investigation shell: destinations on the left, data on the right, "
+            "action tree along the bottom. g always returns here."
         ),
         create_screen=create_home_screen,
         arguments=(),
         bindings=(
-            ActionBinding("j / k", "cursor", "Move in the primitive list"),
-            ActionBinding("enter", "confirm", "Open the highlighted primitive"),
-            ActionBinding("g", "go_home", "Return to home (from any view)"),
+            ActionBinding("j / k", "cursor", "Move in the current options list"),
+            ActionBinding("enter", "confirm", "Open the highlighted option"),
+            ActionBinding("1–5", "jump", "Jump to Recent / Search / Actions / Workspace / Queries"),
+            ActionBinding("esc", "back", "Previous navigation level"),
+            ActionBinding("g", "go_home", "Return to home"),
         ),
         example="jst open tutorial",
     )

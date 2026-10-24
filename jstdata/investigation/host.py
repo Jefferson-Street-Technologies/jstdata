@@ -14,13 +14,14 @@ from textual.timer import Timer
 from textual.widgets import Input, Label, Static
 
 from ..client import JSTDataClient
-from ..actions.base import get_action, hydrate_labels
+from ..actions.base import ActionBinding, get_action, hydrate_labels
 from ..actions.help import HelpScreen
 from .active import ActiveContext, active_path, load_active, save_active
 from .api import (
     add_action,
     add_query,
     remove_action,
+    remove_query,
     persist_investigation,
 )
 from .bootstrap import ensure_bootstrap
@@ -34,6 +35,9 @@ from .model import (
     Workspace,
     resolve_input_context,
 )
+from .browsers import DestinationScreen, WorkspaceBrowser
+from .home import HomeScreen
+from .nav import DEST_IDS, parse_goto
 from .search_drawer import SearchDrawer
 from .store import investigation_path, load_investigation
 from .workspace_drawer import WorkspaceDrawer
@@ -192,6 +196,10 @@ class InvestigationHost(App):
         self._pending_d = False
         self._d_timer: Timer | None = None
         self._pending_command: ParsedCommand | None = None
+        self._pending_goto: str | None = None
+        self._nav_dest: str | None = None
+        self._nav_return: str | None = None
+        self._dest_index: dict[str, int] = {}
 
     def _active_file(self) -> Path:
         return active_path(app_dir=self.app_dir)
@@ -218,6 +226,12 @@ class InvestigationHost(App):
                 screen.workspace = self.workspace
                 screen.labels = self.labels
                 screen.rebuild()
+            if isinstance(screen, WorkspaceBrowser):
+                screen.workspace = self.workspace
+                screen.labels = self.labels
+                screen.rebuild()
+        if isinstance(self.screen, HomeScreen):
+            self.screen.refresh_live()
 
     @property
     def action_count(self) -> int:
@@ -316,6 +330,9 @@ class InvestigationHost(App):
             self.push_screen(err)
 
     def _show_current_action(self, *, reset: bool = False) -> None:
+        self._show_front(reset=reset)
+
+    def _show_front(self, *, reset: bool = False) -> None:
         if self._invalid or not self.investigation or not self.active:
             return
         if isinstance(
@@ -323,7 +340,7 @@ class InvestigationHost(App):
         ):
             # Command dispatch should already be deferred past dismiss; avoid
             # recursive call_after_refresh loops if a modal is still up.
-            self.set_timer(0.05, self._show_current_action)
+            self.set_timer(0.05, self._show_front)
             return
         screen = self._make_action_screen()
         self._pop_transient_overlays()
@@ -335,6 +352,79 @@ class InvestigationHost(App):
             while len(self.screen_stack) > 2:
                 self.pop_screen()
             self.switch_screen(screen)
+
+    def remember_dest_index(self, dest: str, index: int) -> None:
+        self._dest_index[dest] = index
+
+    def _leave_destination_for_action(self) -> None:
+        if self._nav_dest:
+            self._nav_return = self._nav_dest
+        self._nav_dest = None
+
+    def leave_destination(self) -> None:
+        """Undrill Home to the destination menu without leaving the shell."""
+        self._nav_dest = None
+        if isinstance(self.screen, HomeScreen):
+            self.screen.leave_destination()
+
+    def open_destination(self, dest: str) -> None:
+        if dest not in DEST_IDS:
+            self.notify(f"Unknown destination {dest!r}", severity="warning")
+            return
+        self._nav_dest = dest
+        self._nav_return = dest
+        if isinstance(self.screen, HomeScreen):
+            self.screen.enter_destination(dest)
+            return
+        if self.active and self.active.action != ROOT_ACTION_ID:
+            ctx = ActiveContext(
+                investigation=self.active.investigation,
+                workspace=self.active.workspace,
+                action=ROOT_ACTION_ID,
+            )
+            self._write_active(ctx)
+        self._show_front()
+
+    def open_action_from_nav(self, action_id: int) -> None:
+        if self._invalid or not self.investigation:
+            return
+        if action_id not in self.investigation.actions:
+            self.notify(f"Unknown action {action_id}", severity="error")
+            return
+        self._activate_action(action_id)
+
+    def open_resource_view(
+        self,
+        resource_type: str,
+        resource_id: str,
+        *,
+        label: str | None = None,
+    ) -> None:
+        name = label or resource_id
+        if resource_type == "taxonomy":
+            self.workspace.taxonomy = resource_id
+            self.remember_label(resource_id, name)
+            self.persist_active_workspace()
+            self.notify(f"Taxonomy set to {resource_id}")
+            return
+        if resource_type == "metric":
+            self.open_child_view(
+                "metric",
+                context=ResearchContext(metric=[resource_id]),
+                description=f"Metric {name}",
+            )
+        elif resource_type == "entity":
+            self.open_child_view(
+                "entity",
+                context=ResearchContext(entity=[resource_id]),
+                description=f"Entity {name}",
+            )
+        else:
+            self.open_child_view(
+                "table",
+                context=ResearchContext(series=[resource_id]),
+                description=f"Series {name}",
+            )
 
     def _make_action_screen(self) -> Screen:
         assert self.investigation is not None and self.active is not None
@@ -371,6 +461,7 @@ class InvestigationHost(App):
         if self._invalid or not self.investigation or not self.active:
             self.notify("No investigation loaded", severity="error")
             return
+        self._leave_destination_for_action()
         try:
             action = add_action(
                 self.investigation,
@@ -504,7 +595,14 @@ class InvestigationHost(App):
             return False
         if isinstance(
             self.screen,
-            (WorkspaceDrawer, SearchDrawer, CommandPalette, DrillDownModal),
+            (
+                WorkspaceDrawer,
+                SearchDrawer,
+                CommandPalette,
+                DrillDownModal,
+                DestinationScreen,
+                HomeScreen,
+            ),
         ):
             return False
         return True
@@ -564,6 +662,7 @@ class InvestigationHost(App):
             self.push_screen(WorkspaceDrawer(self.workspace, self.labels))
 
     def _activate_action(self, action_id: int) -> None:
+        self._leave_destination_for_action()
         assert self.active is not None
         ctx = ActiveContext(
             investigation=self.active.investigation,
@@ -662,7 +761,14 @@ class InvestigationHost(App):
                 "parent_action",
             } and isinstance(
                 self.screen,
-                (WorkspaceDrawer, SearchDrawer, CommandPalette, DrillDownModal),
+                (
+                    WorkspaceDrawer,
+                    SearchDrawer,
+                    CommandPalette,
+                    DrillDownModal,
+                    DestinationScreen,
+                    HomeScreen,
+                ),
             ):
                 return False
         return True
@@ -671,29 +777,19 @@ class InvestigationHost(App):
         """Reorient: dismiss overlays and activate the root home action."""
         if self._invalid or not self.investigation or not self.active:
             return
+        self._nav_dest = None
+        self._nav_return = None
         while len(self.screen_stack) > 2:
             self.pop_screen()
+        if isinstance(self.screen, HomeScreen) and self.active.action == ROOT_ACTION_ID:
+            self.screen.leave_destination()
+            self.notify("Home", timeout=1)
+            return
         if self.active.action == ROOT_ACTION_ID:
-            self._show_current_action(reset=True)
+            self._show_front(reset=True)
             self.notify("Home", timeout=1)
             return
         self._activate_action(ROOT_ACTION_ID)
-
-    def launch_home_item(self, item) -> None:
-        """Dispatch a HomeItem from the home launcher."""
-        kind = getattr(item, "kind", None)
-        if kind == "search":
-            self.ensure_action("console", description="Search catalog")
-        elif kind == "workspace":
-            self._open_workspace_drawer()
-        elif kind == "table":
-            self.ensure_action("table", description="Latest-value table")
-        elif kind == "query_new":
-            self.query_from_workspace()
-        elif kind == "query":
-            self.open_query_view(int(item.payload))
-        else:
-            self.notify(f"Unknown primitive {kind!r}", severity="warning")
 
     def ensure_action(
         self,
@@ -777,7 +873,10 @@ class InvestigationHost(App):
         if self._invalid:
             return
         self.push_screen(
-            CommandPalette(history=self._command_history),
+            CommandPalette(
+                history=self._command_history,
+                investigation=self.investigation,
+            ),
             self._on_command_submitted,
         )
 
@@ -786,6 +885,11 @@ class InvestigationHost(App):
             return
         if line not in self._command_history:
             self._command_history.append(line)
+        goto = parse_goto(line)
+        if goto is not None:
+            self._pending_goto = goto
+            self.call_later(self._run_pending_command)
+            return
         try:
             parsed = parse_command_line(line)
         except CommandError as exc:
@@ -797,6 +901,14 @@ class InvestigationHost(App):
         self.call_later(self._run_pending_command)
 
     def _run_pending_command(self) -> None:
+        goto = self._pending_goto
+        self._pending_goto = None
+        if goto is not None:
+            if goto == "home":
+                self.action_go_home()
+            else:
+                self.open_destination(goto)
+            return
         parsed = self._pending_command
         self._pending_command = None
         if parsed is not None:
@@ -865,6 +977,7 @@ class InvestigationHost(App):
                 + (" — activated" if parsed.options.get("activate", True) else "")
             )
             if parsed.options.get("activate", True):
+                self._leave_destination_for_action()
                 self._show_current_action(reset=True)
         finally:
             self._suppress_poll = False
@@ -915,10 +1028,64 @@ class InvestigationHost(App):
                 screen.query_one("#search-input", Input).focus()
             except Exception:
                 pass
+            return
+        if isinstance(self.screen, HomeScreen) and self._nav_dest:
+            self.leave_destination()
+            return
+        if self._nav_dest:
+            self._nav_dest = None
+            self._nav_return = None
+            if self.active and self.active.action != ROOT_ACTION_ID:
+                self._activate_action(ROOT_ACTION_ID)
+            else:
+                self._show_front(reset=True)
+            return
+        if self._nav_return:
+            dest = self._nav_return
+            self.open_destination(dest)
+            return
+        if self.active and self.active.action != ROOT_ACTION_ID:
+            self.action_go_home()
 
     def action_show_help(self) -> None:
+        if isinstance(self.screen, DestinationScreen):
+            bindings = [
+                ActionBinding(key, "help", desc)
+                for key, desc in self.screen.help_bindings()
+            ]
+            self.push_screen(HelpScreen(self.screen.dest_title(), bindings))
+            return
         spec = self.current_action_spec
         self.push_screen(HelpScreen(spec.name, list(spec.bindings)))
+
+    def delete_query(self, query_id: int) -> None:
+        if not self.investigation:
+            return
+        try:
+            query = self.investigation.get_query(query_id)
+        except InvestigationError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        name = query.name or f"query {query_id}"
+        self.push_screen(
+            ConfirmForceModal(
+                f"Delete Q{query_id} · {name}? This cannot be undone."
+            ),
+            lambda ok, qid=query_id: self._confirm_delete_query(qid) if ok else None,
+        )
+
+    def _confirm_delete_query(self, query_id: int) -> None:
+        if not self.investigation:
+            return
+        try:
+            remove_query(self.investigation, query_id, app_dir=self.app_dir)
+        except InvestigationError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        self.active = load_active(app_dir=self.app_dir)
+        self._order = self.investigation.bfs_order()
+        self.notify(f"Deleted query {query_id}")
+        self._show_front(reset=True)
 
 
 def run_investigation_host(
