@@ -35,7 +35,13 @@ from .nav import (
     tree_row_height,
     workspace_counts_line,
 )
-from .search_drawer import SearchResultRow, fetch_search_results
+from .search_drawer import (
+    TYPE_HEADINGS,
+    SearchResultRow,
+    clustered_search_items,
+    fetch_search_results,
+    resource_inspector_copy,
+)
 from .workspace_drawer import WorkspaceResourceRow
 
 
@@ -140,21 +146,32 @@ class HomeScreen(BaseScreen):
         color: #d1fae5;
         height: auto;
     }
+    #home-graph-kicker {
+        height: 1;
+        color: #4ade80;
+        text-style: bold;
+        margin-top: 1;
+    }
     #home-graph {
-        height: 9;
-        min-height: 9;
-        max-height: 9;
-        background: #03241c;
+        height: 6;
+        min-height: 6;
+        max-height: 6;
+        background: transparent;
         border: none;
         padding: 0;
         color: #4ade80;
-        margin-top: 1;
     }
     #search-input {
         height: 3;
         background: transparent;
         border: none;
         border-bottom: solid #166534;
+        padding: 0 1;
+        display: none;
+    }
+    #search-filters {
+        height: 1;
+        color: #888;
         padding: 0 1;
         display: none;
     }
@@ -187,13 +204,26 @@ class HomeScreen(BaseScreen):
         width: 100%;
         padding: 0 1;
     }
+    SearchResultRow {
+        border-left: solid #0a0a0a;
+        padding: 0 1 0 0;
+    }
     SearchResultRow, WorkspaceResourceRow, FilterRow, GroupHeader {
         height: 1;
         min-height: 1;
         max-height: 1;
     }
     QueryListItem { height: 2; min-height: 2; }
-    ListView > ListItem.--highlight { background: #14532d; }
+    ListView > ListItem.--highlight {
+        background: #1a3a2a;
+        border-left: solid #4ade80;
+    }
+    .search-row { height: 1; width: 100%; }
+    .search-type { width: 8; color: #555; height: 1; }
+    .search-name { width: 1fr; color: #c8c8c8; height: 1; }
+    .search-id { width: 16; color: #555; height: 1; text-align: right; }
+    ListView > ListItem.--highlight .search-type { color: #4ade80; }
+    ListView > ListItem.--highlight .search-name { color: #f5f5f5; }
     .tree-title { color: #e0e0e0; height: 1; }
     .tree-meta { color: #86efac; height: 1; }
     .group-header { color: #4ade80; text-style: bold; height: 1; }
@@ -232,6 +262,7 @@ class HomeScreen(BaseScreen):
             with Horizontal(id="home-main"):
                 with Vertical(id="home-nav"):
                     yield Input(placeholder="/ search catalog…", id="search-input")
+                    yield Label("", id="search-filters")
                     with VerticalScroll(id="home-dests"):
                         for dest in DESTINATIONS:
                             yield DestinationCard(dest)
@@ -240,6 +271,7 @@ class HomeScreen(BaseScreen):
                     yield Label("", id="home-data-kicker")
                     with VerticalScroll(id="home-data-scroll"):
                         yield Static("", id="home-data-body")
+                    yield Label("", id="home-graph-kicker")
                     yield Static("", id="home-graph")
 
     def on_mount(self) -> None:
@@ -298,13 +330,13 @@ class HomeScreen(BaseScreen):
             "[bold #e0e0e0]↵[/] [#888]open[/]",
         ]
         if dest == "search":
-            keys.extend(
-                [
-                    "[bold #e0e0e0]/[/] [#888]type[/]",
-                    "[bold #e0e0e0]f[/] [#888]filter[/]",
-                    "[bold #e0e0e0]space[/] [#888]collect[/]",
-                ]
-            )
+            keys = [
+                "[bold #e0e0e0]/[/] [#888]search[/]",
+                "[bold #e0e0e0]j[/]/[bold #e0e0e0]k[/] [#888]select[/]",
+                "[bold #e0e0e0]↵[/] [#888]open[/]",
+                "[bold #e0e0e0]space[/] [#888]collect[/]",
+                "[bold #e0e0e0]f[/] [#888]filter[/]",
+            ]
         elif dest == "workspace":
             keys.extend(
                 [
@@ -344,9 +376,14 @@ class HomeScreen(BaseScreen):
         dests = self.query_one("#home-dests")
         lst = self.query_one("#home-list", ListView)
         inp = self.query_one("#search-input", Input)
+        filt = self.query_one("#search-filters", Label)
         dests.display = not drilled
         lst.display = drilled
-        inp.display = bool(drilled and self._dest == "search")
+        searching = bool(drilled and self._dest == "search")
+        inp.display = searching
+        filt.display = searching
+        if searching:
+            self._refresh_search_filters()
 
     def _chrome_ready(self) -> bool:
         """False while the screen exists but compose has not attached widgets."""
@@ -354,6 +391,7 @@ class HomeScreen(BaseScreen):
             return False
         try:
             self.query_one("#home-title", Label)
+            self.query_one("#home-graph-kicker", Label)
             return True
         except NoMatches:
             return False
@@ -368,13 +406,22 @@ class HomeScreen(BaseScreen):
         subtitle.update(notes)
         subtitle.set_class(not notes, "-empty")
 
+    def _refresh_search_filters(self) -> None:
+        rtype = SEARCH_TYPES[self._type_i].upper()
+        self.query_one("#search-filters", Label).update(
+            f"TYPE: {rtype}  ·  SOURCE: ALL  ·  FREQUENCY: ALL"
+        )
+
     def _refresh_graph(self) -> None:
         if not self._chrome_ready():
             return
         inv = self._investigation()
+        n = len(inv.actions)
+        kicker = self.query_one("#home-graph-kicker", Label)
+        kicker.update(f"INVESTIGATION TREE  ·  {n} NODE{'S' if n != 1 else ''}")
         graph = self.query_one("#home-graph", Static)
         width = max(graph.size.width or 32, 16)
-        height = max(graph.size.height or 9, 5)
+        height = max(graph.size.height or 6, 4)
         active = getattr(getattr(self.app, "active", None), "action", None)
         graph.update(
             render_action_graph(
@@ -516,24 +563,15 @@ class HomeScreen(BaseScreen):
             return
         if dest == "search":
             if isinstance(child, SearchResultRow):
-                resource = child.resource
-                name = _resource_label(resource)
-                kicker.update(name.upper()[:40])
-                source = getattr(resource, "source", None) or "—"
-                freq = getattr(resource, "frequency", None) or "—"
-                desc = getattr(resource, "description", None) or ""
+                kicker.update(f"{child.resource_type.upper()} / INSPECTOR")
                 body.update(
-                    f"{child.resource_type.upper()}  [{resource.id}]\n"
-                    f"Source {source}  ·  Frequency {freq}\n\n"
-                    f"{str(desc)[:500]}\n\n"
-                    "Enter opens a view · Space collects into the workspace"
+                    resource_inspector_copy(child.resource, child.resource_type)
                 )
             else:
                 kicker.update("SEARCH")
                 body.update(
-                    "Type two or more characters.\n"
-                    "f cycles resource type.\n"
-                    "Enter opens a view · Space collects."
+                    "[#888]Highlight a result to inspect it here.[/]\n\n"
+                    "Type two or more characters. f cycles resource type."
                 )
             return
         if dest == "actions" and isinstance(child, ActionTreeItem):
@@ -604,6 +642,8 @@ class HomeScreen(BaseScreen):
         lv.focus()
         if hasattr(lv, "action_cursor_down"):
             lv.action_cursor_down()
+        if self._dest == "search" and isinstance(self._highlighted(), GroupHeader):
+            lv.action_cursor_down()
 
     def action_cursor_up(self) -> None:
         if isinstance(self.focused, Input):
@@ -619,6 +659,8 @@ class HomeScreen(BaseScreen):
         lv = self._list()
         lv.focus()
         if hasattr(lv, "action_cursor_up"):
+            lv.action_cursor_up()
+        if self._dest == "search" and isinstance(self._highlighted(), GroupHeader):
             lv.action_cursor_up()
 
     def action_page_down(self) -> None:
@@ -668,6 +710,7 @@ class HomeScreen(BaseScreen):
     def action_cycle_filter(self) -> None:
         if self._dest == "search":
             self._type_i = (self._type_i + 1) % len(SEARCH_TYPES)
+            self._refresh_search_filters()
             self._kick_search()
             self._refresh_data_pane()
             return
@@ -842,8 +885,25 @@ class HomeScreen(BaseScreen):
         if not rows:
             list_view.append(GroupHeader(f"No matches for {query!r}"))
         else:
-            for resource, rt in rows:
-                list_view.append(SearchResultRow(resource, rt))
+            first_row = None
+            prefer_entity = False
+            for kind, payload, rtype in clustered_search_items(rows):
+                if kind == "header":
+                    title = str(payload)
+                    prefer_entity = title.upper() not in TYPE_HEADINGS
+                    list_view.append(GroupHeader(title))
+                elif payload is not None and rtype is not None:
+                    list_view.append(
+                        SearchResultRow(
+                            payload,
+                            rtype,
+                            prefer_entity=prefer_entity and rtype == "series",
+                        )
+                    )
+                    if first_row is None:
+                        first_row = len(list_view.children) - 1
+            if first_row is not None:
+                list_view.index = first_row
         self._refresh_data_pane()
 
     @on(Input.Changed, "#search-input")

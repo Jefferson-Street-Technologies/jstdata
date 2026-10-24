@@ -659,6 +659,199 @@ def test_stage_ids_collects_into_workspace():
     assert stage_ids(ws, app, metric="gdp") == []
 
 
+def test_search_inspector_and_series_scan_column():
+    from datetime import datetime
+
+    from jstdata.investigation.search_drawer import (
+        clustered_search_items,
+        resource_inspector_copy,
+        result_primary_name,
+    )
+    from jstdata.models import Entity, Metric, Series
+
+    france = Entity(id="france", label="France")
+    spain = Entity(id="spain", label="Spain")
+    series = Series(
+        id="HDTGPDFRA163N",
+        label="Household Debt to GDP for France",
+        frequency="Quarterly",
+        source="FRED",
+        units="Percent of GDP",
+        seasonal_adjustment="NSA",
+        last_updated=datetime(2024, 1, 1),
+        metric_id="household-debt-to-gdp",
+        entities=[france],
+    )
+    spain_s = Series(
+        id="HDTGPDESA163N",
+        label="Household Debt to GDP for Spain",
+        frequency="Quarterly",
+        source="FRED",
+        units="Percent of GDP",
+        seasonal_adjustment="NSA",
+        last_updated=datetime(2024, 1, 1),
+        metric_id="household-debt-to-gdp",
+        entities=[spain],
+    )
+    assert result_primary_name(series, "series", prefer_entity=True) == "France"
+    assert result_primary_name(series, "series") == "Household Debt to GDP for France"
+    copy = resource_inspector_copy(series, "series")
+    assert "Household Debt to GDP for France" in copy
+    assert "SOURCE" in copy
+    assert "AVAILABLE ACTIONS" in copy
+    assert "Type two or more" not in copy
+    metric = Metric(id="gdp", name="GDP", description="Gross domestic product")
+    items = clustered_search_items(
+        [(metric, "metric"), (series, "series"), (spain_s, "series")]
+    )
+    kinds = [k for k, _, _ in items]
+    headers = [p for k, p, _ in items if k == "header"]
+    assert kinds[0] == "header"
+    assert "METRIC" in headers
+    assert "HOUSEHOLD DEBT TO GDP" in headers
+    assert any(k == "row" and r == series for k, r, _ in items)
+
+    bank = Series(
+        id="DDSI01FRA645NWDB",
+        label="Bank Z-Score for France",
+        frequency="Annual",
+        source="FRED",
+        units="Z-score",
+        seasonal_adjustment="NSA",
+        last_updated=datetime(2024, 1, 1),
+        metric_id="bank-z-score",
+        entities=[france],
+    )
+    migration = Series(
+        id="SMPOPNETMFRA",
+        label="Net migration for France",
+        frequency="Annual",
+        source="FRED",
+        units="People",
+        seasonal_adjustment="NSA",
+        last_updated=datetime(2024, 1, 1),
+        metric_id="net-migration",
+        entities=[france],
+    )
+    mixed = clustered_search_items(
+        [(france, "entity"), (bank, "series"), (migration, "series")]
+    )
+    mixed_headers = [p for k, p, _ in mixed if k == "header"]
+    assert mixed_headers == ["ENTITY", "SERIES"]
+    assert "BANK Z-SCORE" not in mixed_headers
+
+    unkeyed = clustered_search_items(
+        [
+            (france, "entity"),
+            (
+                Series(
+                    id="DDSI01FRA645NWDB",
+                    label="Bank Z-Score for France",
+                    frequency="Annual",
+                    source="FRED",
+                    units="Z-score",
+                    seasonal_adjustment="NSA",
+                    last_updated=datetime(2024, 1, 1),
+                    metric_id="",
+                    entities=[france],
+                ),
+                "series",
+            ),
+            (
+                Series(
+                    id="SMPOPNETMFRA",
+                    label="Net migration for France",
+                    frequency="Annual",
+                    source="FRED",
+                    units="People",
+                    seasonal_adjustment="NSA",
+                    last_updated=datetime(2024, 1, 1),
+                    metric_id="",
+                    entities=[france],
+                ),
+                "series",
+            ),
+        ]
+    )
+    assert [p for k, p, _ in unkeyed if k == "header"] == ["ENTITY", "SERIES"]
+
+
+def test_query_formats_periods_and_values():
+    from datetime import datetime
+
+    from textual_plotext import PlotextPlot
+
+    from jstdata.actions.query_view import (
+        format_period,
+        format_release,
+        format_value,
+        history_points,
+        observation_detail_copy,
+        plot_history,
+        query_spec_line,
+        record_title,
+    )
+    from jstdata.investigation.model import Query
+
+    stamp = datetime(2024, 1, 1)
+    assert format_period(stamp, "Quarterly") == "2024 Q1"
+    assert format_period(stamp, "Annual") == "2024"
+    assert format_release(datetime(2024, 8, 1)) == "2024-08-01"
+    assert format_release(datetime(2024, 8, 1), short=True) == "Aug 2024"
+    assert format_value(71.5228842446577) == "71.52"
+    assert format_value(None) == "—"
+    record = {
+        "id": "HDTGPDUSQ163N",
+        "label": "Household debt to GDP",
+        "metric_id": "household-debt-to-gdp",
+        "entities": [{"id": "united-states", "label": "United States"}],
+        "frequency": "Quarterly",
+        "units": "Ratio",
+        "source": "FSI",
+        "n_observations": 2,
+        "last": {
+            "observation_timestamp": "2024-01-01T00:00:00",
+            "release_timestamp": "2024-08-01T00:00:00",
+            "value": 71.522,
+            "release_id": "r1",
+        },
+        "observations": [
+            {
+                "observation_timestamp": "2023-10-01T00:00:00",
+                "release_timestamp": "2024-05-01T00:00:00",
+                "value": 70.1,
+                "release_id": "r0",
+            },
+            {
+                "observation_timestamp": "2024-01-01T00:00:00",
+                "release_timestamp": "2024-08-01T00:00:00",
+                "value": 71.522,
+                "release_id": "r1",
+            },
+        ],
+    }
+    assert "United States" in record_title(record)
+    detail = observation_detail_copy(record, record["last"])
+    assert "2024 Q1" in detail
+    assert "71.52" in detail
+    assert "HDTGPDUSQ163N" in detail
+    times, values = history_points(record)
+    assert times == ["2023-10-01", "2024-01-01"]
+    assert values == [70.1, 71.522]
+    plt = PlotextPlot().plt
+    assert plot_history(plt, record) is True
+    plt.plotsize(48, 12)
+    chart = plt.uncolorize(plt.build())
+    assert "70.1" in chart
+    assert "Ratio" in chart
+    assert plot_history(plt, {**record, "observations": []}) is False
+    spec = query_spec_line(
+        Query(id=1, name="x", metric=["a"], entity=["b"], frequency="Quarterly")
+    )
+    assert "1 metric" in spec
+    assert "cartesian" in spec
+
+
 def test_series_to_record_is_json_not_frame():
     from datetime import datetime
 

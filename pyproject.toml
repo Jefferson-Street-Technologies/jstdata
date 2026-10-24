@@ -30,6 +30,7 @@ textual = "^1.0.0"
 pyperclip = "^1.9.0"
 pyyaml = "^6.0.3"
 requests = "^2.31.0"
+textual-plotext = "^1.0.1"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.5"

@@ -43,6 +43,7 @@ from .search_drawer import SearchDrawer
 from .store import investigation_path, load_investigation
 from .workspace_drawer import WorkspaceDrawer
 from ..actions.drill import DrillDownModal
+from ..actions.query_view import ObservationDetail
 
 from . import home as _home  # noqa: F401
 import jstdata.actions  # noqa: F401
@@ -408,7 +409,13 @@ class InvestigationHost(App):
             return
         if isinstance(
             self.screen,
-            (CommandPalette, ConfirmForceModal, DrillDownModal, RenameModal),
+            (
+                CommandPalette,
+                ConfirmForceModal,
+                DrillDownModal,
+                RenameModal,
+                ObservationDetail,
+            ),
         ):
             # Command dispatch should already be deferred past dismiss; avoid
             # recursive call_after_refresh loops if a modal is still up.
@@ -557,7 +564,13 @@ class InvestigationHost(App):
         """Dismiss command palette / confirm; leave drawers alone when possible."""
         while len(self.screen_stack) > 2 and isinstance(
             self.screen,
-            (CommandPalette, ConfirmForceModal, DrillDownModal, RenameModal),
+            (
+                CommandPalette,
+                ConfirmForceModal,
+                DrillDownModal,
+                RenameModal,
+                ObservationDetail,
+            ),
         ):
             self.pop_screen()
 
@@ -676,6 +689,7 @@ class InvestigationHost(App):
                 DestinationScreen,
                 HomeScreen,
                 RenameModal,
+                ObservationDetail,
             ),
         ):
             return False
@@ -843,6 +857,7 @@ class InvestigationHost(App):
                     DestinationScreen,
                     HomeScreen,
                     RenameModal,
+                    ObservationDetail,
                 ),
             ):
                 return False
