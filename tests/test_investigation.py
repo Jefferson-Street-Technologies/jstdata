@@ -913,6 +913,77 @@ def test_query_groups_overlay_same_metric_units():
     assert len(lonely) == 2
 
 
+def test_query_chart_axis_export_and_cursor():
+    from datetime import datetime
+
+    from textual_plotext import PlotextPlot
+
+    from jstdata.actions.query_view import (
+        calendar_xticks,
+        coverage_status,
+        coverage_years,
+        cursor_dates,
+        observation_on_date,
+        plot_history,
+        query_python_snippet,
+        records_to_csv,
+    )
+    from jstdata.investigation.model import Query
+
+    obs = []
+    for year in range(2019, 2025):
+        obs.append(
+            {
+                "observation_timestamp": f"{year}-01-01T00:00:00",
+                "release_timestamp": f"{year}-08-01T00:00:00",
+                "value": 70 + year - 2019,
+                "release_id": f"r{year}",
+            }
+        )
+    record = {
+        "id": "s-us",
+        "label": "Household debt to GDP for United States",
+        "metric_id": "household-debt-to-gdp",
+        "entities": [{"id": "united-states", "label": "United States"}],
+        "frequency": "Quarterly",
+        "units": "Ratio",
+        "source": "FSI",
+        "n_observations": len(obs),
+        "last": obs[-1],
+        "observations": obs,
+    }
+    ticks, labels = calendar_xticks([record])
+    assert labels == ["2019", "2020", "2021", "2022", "2023", "2024"]
+    assert ticks[0] == "2019-01-01"
+    assert coverage_years([record]) == "2019–2024"
+    dates = cursor_dates([record])
+    assert dates[0].year == 2019
+    assert observation_on_date(record, datetime(2021, 1, 1))["value"] == 72
+    assert observation_on_date(record, datetime(2021, 4, 1)) is None
+    plt = PlotextPlot().plt
+    assert plot_history(plt, record, cursor_date=datetime(2021, 1, 1)) is True
+    plt.plotsize(60, 14)
+    chart = plt.uncolorize(plt.build())
+    assert "2019" in chart
+    assert "2024" in chart
+    assert "2019-03-31" not in chart
+    assert "%" not in chart
+    csv_text = records_to_csv([record])
+    assert "date,series_id,entity,metric_id,value" in csv_text
+    assert "s-us,united-states,household-debt-to-gdp,75" in csv_text
+    snippet = query_python_snippet(
+        Query(id=2, metric=["household-debt-to-gdp"], entity=["france", "united-states"])
+    )
+    assert "client.query_df" in snippet
+    assert "household-debt-to-gdp" in snippet
+    status = coverage_status(
+        Query(id=2, metric=["household-debt-to-gdp"], entity=["france", "united-states"]),
+        [record],
+    )
+    assert "missing" in status
+    assert "france" in status
+
+
 def test_series_to_record_is_json_not_frame():
     from datetime import datetime
 
