@@ -467,6 +467,45 @@ def agent_guide_cmd() -> None:
     click.echo(render_agent_guide(cli), nl=False)
 
 
+@cli.group("agent")
+def agent_group() -> None:
+    """Bootstrap agents: operating guide and skill install."""
+
+
+@agent_group.command("guide")
+def agent_guide_nested() -> None:
+    """Print a markdown bootstrap guide for agents (version-tied)."""
+    from .agent_guide import render_agent_guide
+
+    click.echo(render_agent_guide(cli), nl=False)
+
+
+@agent_group.command("install")
+@click.argument(
+    "target",
+    type=click.Choice(["codex", "claude", "cursor", "all"]),
+    default="all",
+    required=False,
+)
+def agent_install_cmd(target: str) -> None:
+    """Install the jst skill into user-level agent skill directories.
+
+    \b
+    jst agent install
+    jst agent install cursor
+    jst agent install all
+    """
+    from .agent.install import install_skill
+
+    paths = install_skill(target)
+    click.echo("Installed jst skill:")
+    for path in paths:
+        click.echo(f"  {path}")
+    click.echo()
+    click.echo("If the agent does not pick it up automatically, say:")
+    click.echo("  Use the jst skill. Then run `jst agent-guide` and follow it.")
+
+
 @cli.group("action")
 def action_group() -> None:
     """Catalog and mutate investigation actions."""

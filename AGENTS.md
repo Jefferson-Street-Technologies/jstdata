@@ -3,7 +3,8 @@
 Guidance for humans and agents **extending** the interactive CLI.
 
 For **how to operate** the product as an agent (policy, modes, recipes), run
-`jst agent-guide`. This file is for **extending** the codebase.
+`jst agent-guide`. To drop a pointer skill into Codex / Claude Code / Cursor,
+`jst agent install`. This file is for **extending** the codebase.
 
 ## Architecture
 
@@ -146,7 +147,7 @@ Seed args go on `arguments`. They configure the TUI via
 | Remove action | `jst action rm <action-id> --force` |
 | Resolve resources | `jst api metric search …` / `jst api entity search …` |
 | Query / observations | `jst api query …` / `jst api series observations …` |
-| Agent bootstrap | `jst agent-guide` |
+| Agent bootstrap | `jst agent-guide` / `jst agent install` |
 | Inside the TUI | `g` home · `esc` back · `:` palette · `n`/`p` siblings · `N`/`P` depth · `:workspace` · space collect · `?` · `q` |
 
 ## Catalog / search notes (for action authors)

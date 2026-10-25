@@ -35,6 +35,10 @@ _HARD_RULES = """\
   user explicitly asks you to operate the UI. Prefer CLI mutation of the active
   investigation (`jst action add` / `rm`, `jst query add` / `run`) or hand them
   `jst open <id>`.
+- **Do not edit investigation YAML to mutate state.** Read
+  `~/.jstdata/investigations/<id>.yaml` or `jst query show` only to inspect.
+  Mutate with `jst query add`, `jst action add` / `rm`. Never invent query ids
+  or rewrite `workspace:` / `queries:` / `actions:` by hand.
 - **Do not paginate exhaustively.** During discovery, use `--limit` 20–50. Do not walk
   `offset` through the catalog unless the returned set is clearly insufficient.
 - **Do not enumerate** `jst api metric ls`, `jst api series ls`, or full taxonomy
@@ -186,9 +190,15 @@ jst api metric search gdp --taxonomy country --limit 20 --format json
 jst api metric show <gdp-metric-id> --format json
 ```
 
-3. Create or load an investigation and stage metric + member entity ids into the
-   active workspace (edit investigation YAML, or guide the human to `:search` /
-   `:workspace` in the TUI).
+3. Persist the cartesian pull — do not edit investigation YAML:
+
+```bash
+jst query add \\
+  --metric <gdp-metric-id> \\
+  --entity <fr> --entity <de> --entity <it> \\
+  --name "EU member GDP"
+jst query inspect <new-id>
+```
 
 4. Compare or rank via API, or hand off a view / rank action:
 
@@ -200,11 +210,11 @@ jst api query \\
   --sort-by value \\
   --format json
 
-# Population leaderboard (stages entities back into the workspace)
+# Population leaderboard
 jst action add rank --args '{"taxonomy":"country"}' --activate
 
-# Or a latest-value matrix over the staged workspace (human drills with Enter)
-jst action add table --args '{"sort_by":"value"}' --activate
+# Saved cartesian pull (human drills with Enter)
+jst action add query --args '{"query_id":<new-id>}' --activate
 ```
 
 Human handoff:
@@ -212,6 +222,39 @@ Human handoff:
 ```bash
 jst open <investigation-id>
 ```
+
+### Add a country series to the current investigation
+
+Example: “Add Canadian household debt-to-GDP to my current investigation.”
+
+1. Inspect active state (`*` marks the current investigation):
+
+```bash
+jst ls
+jst query ls
+```
+
+2. Resolve ids (never invent them):
+
+```bash
+jst api metric search "household debt to gdp" --limit 20 --format json
+jst api entity search canada --taxonomy country --limit 10 --format json
+```
+
+3. Persist a cartesian query (do not edit YAML):
+
+```bash
+jst query add \\
+  --metric <household-debt-to-gdp-id> \\
+  --entity <canada-entity-id> \\
+  --name "Canada household debt to GDP"
+jst query inspect <new-id>
+jst action add query --args '{"query_id":<new-id>}' --activate
+```
+
+If the human already has a France vs US query and wants Canada on the same
+cartesian pull, add a **new** query that includes all three entities rather
+than rewriting YAML. Hand off with `jst open` only if they asked for the TUI.
 
 ### Prepare a human investigation
 
@@ -286,9 +329,12 @@ optional `label` / `description`, and resource id lists. Query filters
 Legacy files with `workspaces:` (a list) load id `0` / the first entry and ignore
 the rest.
 
-Agents typically edit `~/.jstdata/investigations/<id>.yaml` or ask the human to stage
-via `:search` / `:workspace`. Prefer resolved slug ids only.
+Stage resources into the workspace bag from the TUI (`:search` / space collect).
+Agents that need a persisted cartesian pull should `jst query add --metric … --entity …`
+rather than editing YAML. Read investigation YAML only to inspect. Prefer
+resolved slug ids only.
 """
+
 
 def package_version() -> str:
     try:
@@ -347,7 +393,9 @@ def iter_leaf_commands(
 ) -> Iterable[tuple[str, click.Command]]:
     """Yield ``(invocation, command)`` for every leaf command under ``root``."""
 
-    def walk(cmd: click.Command, parts: list[str], ctx: click.Context) -> Iterable[tuple[str, click.Command]]:
+    def walk(
+        cmd: click.Command, parts: list[str], ctx: click.Context
+    ) -> Iterable[tuple[str, click.Command]]:
         if isinstance(cmd, click.Group):
             seen: set[int] = set()
             for name in sorted(cmd.list_commands(ctx)):
@@ -423,7 +471,6 @@ def _annotation_label(annotation: object) -> str:
         return annotation.__name__
     text = str(annotation)
     return text.replace("typing.", "").replace("None", "null")
-
 
 
 _WORKSPACE_FIELD_NOTES: dict[str, str] = {

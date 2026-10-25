@@ -7,6 +7,7 @@ readme = "README.md"
 license = "MIT"
 include = [
     "jstdata/investigation/bundled/*.yaml",
+    "jstdata/agent/skills/jst/SKILL.md",
 ]
 homepage = "https://github.com/Jefferson-Street-Technologies/jstdata"
 repository = "https://github.com/Jefferson-Street-Technologies/jstdata"

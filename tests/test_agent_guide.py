@@ -29,6 +29,12 @@ def test_agent_guide_cli():
     assert "## Resolution" in out
     assert "## Common recipes" in out
     assert "Rank GDP among EU countries" in out
+    assert "Add a country series to the current investigation" in out
+    assert "Canadian household debt" in out
+    assert "Do not edit investigation YAML" in out
+    assert "typically edit" not in out
+    assert "`jst agent install`" in out
+    assert "`jst agent guide`" in out
     assert "workspace_entities=false" in out or "workspace_metrics=false" in out
     assert "## Investigations and actions" in out
     assert "## Workspaces" in out
