@@ -284,6 +284,37 @@ def test_preview_and_release(client, mock_url):
         assert release.release_date.isoformat() == "2025-02-04"
 
 
+def test_list_releases(client, mock_url):
+    payload = {
+        "records": [
+            {
+                "id": "bea-2024-02-01",
+                "label": "GDP (2024-02-01)",
+                "release_date": "2024-02-01",
+                "source": "BEA",
+            }
+        ]
+    }
+    with requests_mock.Mocker() as m:
+        m.get(f"{mock_url}/release", json=payload)
+        rows = client.list_releases(
+            limit=20,
+            offset=0,
+            sort_order="desc",
+            start_date="2024-01-01",
+            end_date="2024-12-31",
+        )
+        assert len(rows) == 1
+        assert rows[0].id == "bea-2024-02-01"
+        assert rows[0].label == "GDP (2024-02-01)"
+        qs = m.last_request.qs
+        assert qs["limit"] == ["20"]
+        assert qs["offset"] == ["0"]
+        assert qs["sort_order"] == ["desc"]
+        assert qs["start_date"] == ["2024-01-01"]
+        assert qs["end_date"] == ["2024-12-31"]
+
+
 def test_preview_requires_metric_and_entity(client):
     with pytest.raises(InvalidInputError, match="preview"):
         client.preview(metric=["long-term-debt"])

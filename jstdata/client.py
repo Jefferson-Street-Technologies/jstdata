@@ -323,13 +323,30 @@ class JSTDataClient:
     # --- Releases ---
 
     def list_releases(
-        self, limit: int = 100, offset: int = 0, sort_order: str = "asc"
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        sort_order: str = "asc",
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
     ) -> List[Release]:
-        """List releases / filings."""
-        data = self.make_request(
-            "release",
-            {"limit": limit, "offset": offset, "sort_order": sort_order},
-        )
+        """List releases / filings (``GET /release``).
+
+        ``start_date`` / ``end_date`` are inclusive ``YYYY-MM-DD`` bounds.
+        Omit ``start_date`` for full history (still paginated). The API
+        defaults ``end_date`` to today UTC. ``sort_order`` is by
+        ``release_date``.
+        """
+        params: Dict[str, Any] = {
+            "limit": limit,
+            "offset": offset,
+            "sort_order": sort_order,
+        }
+        if start_date:
+            params["start_date"] = start_date
+        if end_date:
+            params["end_date"] = end_date
+        data = self.make_request("release", params)
         return [Release.from_dict(r) for r in data["records"]]
 
     def get_release(self, release_id: str) -> Release:

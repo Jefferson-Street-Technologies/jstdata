@@ -74,6 +74,27 @@ def test_metrics_view_registered_with_mode_arg():
     assert any(b["key"] == "m" for b in metrics.to_dict()["bindings"])
 
 
+def test_metric_view_pagination_state():
+    from unittest.mock import MagicMock
+
+    from jstdata.actions.metric_view import ASSOCIATES_PAGE, MetricScreen, create_metric_screen
+    from jstdata.actions.pagination import page_fetch_limit, take_page
+    from jstdata.investigation.model import ResearchContext, Workspace
+
+    screen = create_metric_screen(
+        MagicMock(),
+        Workspace(metric=["gdp"]),
+        input_context=ResearchContext(metric=["gdp"]),
+    )
+    assert isinstance(screen, MetricScreen)
+    assert screen.page_offset == 0
+    assert screen.has_more is False
+    assert ASSOCIATES_PAGE == 20
+    page, more = take_page(list(range(page_fetch_limit(ASSOCIATES_PAGE))), ASSOCIATES_PAGE)
+    assert len(page) == ASSOCIATES_PAGE
+    assert more is True
+
+
 def test_metrics_view_pagination_state():
     from unittest.mock import MagicMock
 

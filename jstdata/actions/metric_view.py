@@ -1,6 +1,7 @@
 """Metric View — metadata plus entities that carry the metric.
 
 No network until the user presses ``r`` (load). ``/`` searches entities.
+j/k on the last row fetches the next page.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from ..investigation.model import (
 )
 from ..models import Entity, Metric, MetricTaxonomy
 from .base import ActionBinding, ActionSpec, label_for, register, stage_ids
+from .pagination import page_fetch_limit, take_page
 from .screen import BaseScreen
 
 ASSOCIATES_PAGE = 20
@@ -128,6 +130,9 @@ class MetricScreen(BaseScreen):
         self._search_task: asyncio.Task | None = None
         self._metric_meta_loaded = False
         self._taxonomies: list[MetricTaxonomy] = []
+        self.page_offset = 0
+        self.has_more = False
+        self.loading_more = False
 
     def _resolved_input_context(self) -> ResearchContext:
         if self._input_context is not None:
@@ -233,7 +238,7 @@ class MetricScreen(BaseScreen):
         keys = ["[bold]r[/bold] load"]
         if self._loaded:
             keys.append("[bold]/[/bold] search")
-            keys.append("[bold]j[/bold]/[bold]k[/bold] entities")
+            keys.append("[bold]j[/bold]/[bold]k[/bold] entities (more at end)")
             keys.append("[bold]enter[/bold] entity")
         keys.append("[bold]space[/bold] collect")
         return keys
@@ -244,7 +249,7 @@ class MetricScreen(BaseScreen):
             return
         self._filter_query = ""
         self.query_one("#assoc-filter", Input).value = ""
-        self.load_metric(reset_meta=True)
+        self.load_metric(reset=True, reset_meta=True)
 
     def action_focus_filter(self) -> None:
         if not self._loaded:
@@ -338,6 +343,20 @@ class MetricScreen(BaseScreen):
         if isinstance(event.item, EntityAssocRow):
             self.action_confirm()
 
+    @on(ListView.Highlighted, "#entities-list")
+    def on_entity_highlighted(self, event: ListView.Highlighted) -> None:
+        if self.loading_more or not self.has_more:
+            return
+        list_view = self.query_one("#entities-list", ListView)
+        if event.item is None:
+            return
+        index = list_view.index
+        if index is None or index < len(self._entities) - 1:
+            return
+        self.loading_more = True
+        self.page_offset = len(self._entities)
+        self.load_metric(reset=False)
+
     @on(Input.Changed, "#assoc-filter")
     def on_filter_changed(self, event: Input.Changed) -> None:
         if not self._loaded:
@@ -354,37 +373,53 @@ class MetricScreen(BaseScreen):
     async def _debounced_search(self) -> None:
         try:
             await asyncio.sleep(SEARCH_DEBOUNCE_S)
-            self.load_metric(reset_meta=False)
+            self.load_metric(reset=True, reset_meta=False)
         except asyncio.CancelledError:
             pass
 
-    def _show_entities(self, entities: list[Entity]) -> None:
-        self._entities = list(entities)
+    def _append_entities(self, entities: list[Entity]) -> None:
         list_view = self.query_one("#entities-list", ListView)
-        list_view.clear()
-        for ent in self._entities:
+        for ent in entities:
             if hasattr(self.app, "remember_label"):
                 self.app.remember_label(ent.id, ent.label or ent.id)
             list_view.append(EntityAssocRow(ent))
 
+    def _update_status(self, query: str | None) -> None:
+        status = self.query_one("#metric-status", Static)
+        extra = "+" if self.has_more else ""
+        qbit = f" · “{query}”" if query else ""
+        if self._entities:
+            status.update(
+                f"{len(self._entities)}{extra} "
+                f"entit{'y' if len(self._entities) == 1 else 'ies'}{qbit}"
+            )
+        else:
+            status.update(f"No entities{qbit}")
+
     @work(exclusive=True, group="metric-view")
-    async def load_metric(self, *, reset_meta: bool = True) -> None:
+    async def load_metric(self, *, reset: bool = True, reset_meta: bool = False) -> None:
         metric_id = self._metric_id
         if not metric_id:
+            self.loading_more = False
             return
+        if reset:
+            self.page_offset = 0
+            self.has_more = False
+            self.loading_more = False
         status = self.query_one("#metric-status", Static)
-        status.update("Loading…")
+        status.update("Loading…" if reset or not self._loaded else "Loading more…")
         query = self._filter_query.strip() or None
+        fetch_limit = page_fetch_limit(ASSOCIATES_PAGE)
         try:
             if reset_meta or not self._metric_meta_loaded:
-                metric, entities, taxonomies = await asyncio.gather(
+                metric, raw, taxonomies = await asyncio.gather(
                     asyncio.to_thread(self.client.get_metric, metric_id),
                     asyncio.to_thread(
                         self.client.search_entities,
                         query,
                         metric=metric_id,
-                        limit=ASSOCIATES_PAGE,
-                        offset=0,
+                        limit=fetch_limit,
+                        offset=self.page_offset,
                     ),
                     asyncio.to_thread(
                         self.client.get_metric_taxonomies,
@@ -394,6 +429,7 @@ class MetricScreen(BaseScreen):
                     ),
                 )
                 if metric_id != self._metric_id:
+                    self.loading_more = False
                     return
                 label = metric.name or metric.id
                 self._label = label
@@ -416,30 +452,31 @@ class MetricScreen(BaseScreen):
                 )
                 self._metric_meta_loaded = True
             else:
-                entities = await asyncio.to_thread(
+                raw = await asyncio.to_thread(
                     self.client.search_entities,
                     query,
                     metric=metric_id,
-                    limit=ASSOCIATES_PAGE,
-                    offset=0,
+                    limit=fetch_limit,
+                    offset=self.page_offset,
                 )
                 if metric_id != self._metric_id:
+                    self.loading_more = False
                     return
+            entities, has_more = take_page(raw, ASSOCIATES_PAGE)
         except Exception as exc:
             status.update(f"Could not load metric: {exc}")
+            self.loading_more = False
             return
 
+        if reset:
+            self._entities = []
+            self.query_one("#entities-list", ListView).clear()
+        self._entities.extend(entities)
+        self.has_more = has_more
         self._loaded = True
-        self._show_entities(list(entities))
-        extra = "+" if len(self._entities) >= ASSOCIATES_PAGE else ""
-        qbit = f" · “{query}”" if query else ""
-        if self._entities:
-            status.update(
-                f"{len(self._entities)}{extra} "
-                f"entit{'y' if len(self._entities) == 1 else 'ies'}{qbit}"
-            )
-        else:
-            status.update(f"No entities{qbit}")
+        self.loading_more = False
+        self._append_entities(entities)
+        self._update_status(query)
         self.refresh_footer()
 
 
@@ -453,14 +490,15 @@ METRIC_VIEW = register(
         name="Metric",
         description=(
             "Inspect a focused metric (description, variants, taxonomies, "
-            "covered entities). Idle until load (r); / searches entities."
+            "covered entities). Idle until load (r); / searches entities; "
+            "j/k loads more at the end of the list."
         ),
         create_screen=create_metric_screen,
         arguments=(),
         bindings=(
             ActionBinding("r", "load", "Load metric details and covered entities"),
             ActionBinding("/", "focus_filter", "Search entities for this metric"),
-            ActionBinding("j / k", "cursor", "Move in entities list"),
+            ActionBinding("j / k", "cursor", "Move in entities list (loads more at end)"),
             ActionBinding("enter", "confirm", "Open entity view for highlighted row"),
             ActionBinding(
                 "space",

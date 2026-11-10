@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Optional
 
-from textual import on
+from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -14,12 +14,12 @@ from textual.events import Resize
 from textual.widgets import Input, Label, ListItem, ListView, Static
 
 from ..actions.base import ActionBinding, ActionSpec, label_for, register, stage_ids
+from ..actions.pagination import page_fetch_limit, take_page
 from ..actions.screen import BaseScreen
 from ..client import JSTDataClient
 from ..investigation.model import Investigation, Workspace
-from ..models import Entity, Metric, Series, Taxonomy
+from ..models import Entity, Metric, Release, Series, Taxonomy
 from .browsers import (
-    RECENT_FILTERS,
     SEARCH_TYPES,
     ActionTreeItem,
     GroupHeader,
@@ -44,6 +44,8 @@ from .search_drawer import (
 )
 from .workspace_drawer import WorkspaceResourceRow
 
+RECENT_PAGE = 20
+
 
 class DestinationCard(Static):
     """One of the five Home destinations — large, numbered, selectable."""
@@ -58,14 +60,19 @@ class DestinationCard(Static):
         yield Label(self.dest.blurb, classes="dest-blurb")
 
 
-class FilterRow(ListItem):
-    def __init__(self, key: str, title: str) -> None:
+class ReleaseTile(ListItem):
+    """One stacked Recent card: title, id, date · source."""
+
+    def __init__(self, release: Release) -> None:
         super().__init__()
-        self.key = key
-        self.title = title
+        self.release = release
 
     def compose(self) -> ComposeResult:
-        yield Label(self.title)
+        rel = self.release
+        yield Label(rel.label or rel.id, classes="rel-title")
+        yield Label(rel.id, classes="rel-id")
+        source = rel.source or "—"
+        yield Label(f"{rel.release_date.isoformat()}  ·  {source}", classes="rel-meta")
 
 
 class HomeScreen(BaseScreen):
@@ -200,7 +207,7 @@ class HomeScreen(BaseScreen):
     .dest-num { color: #4ade80; text-style: bold; height: 1; }
     .dest-title { color: #e0e0e0; text-style: bold; height: 1; }
     .dest-blurb { color: #888; height: 1; }
-    FilterRow, SearchResultRow, WorkspaceResourceRow, QueryListItem, ActionTreeItem {
+    SearchResultRow, WorkspaceResourceRow, QueryListItem, ActionTreeItem {
         width: 100%;
         padding: 0 1;
     }
@@ -208,15 +215,32 @@ class HomeScreen(BaseScreen):
         border-left: solid #0a0a0a;
         padding: 0 1 0 0;
     }
-    SearchResultRow, WorkspaceResourceRow, FilterRow, GroupHeader {
+    SearchResultRow, WorkspaceResourceRow, GroupHeader {
         height: 1;
         min-height: 1;
         max-height: 1;
     }
+    ReleaseTile {
+        height: 5;
+        min-height: 5;
+        max-height: 5;
+        width: 100%;
+        padding: 1 1 0 1;
+        margin: 0 0 1 0;
+        border: solid #222;
+        background: #111;
+    }
+    .rel-title { color: #e0e0e0; text-style: bold; height: 1; }
+    .rel-id { color: #888; height: 1; }
+    .rel-meta { color: #86efac; height: 1; }
     QueryListItem { height: 2; min-height: 2; }
     ListView > ListItem.--highlight {
         background: #1a3a2a;
         border-left: solid #4ade80;
+    }
+    ListView > ReleaseTile.--highlight {
+        background: #1a3a2a;
+        border: solid #4ade80;
     }
     .search-row { height: 1; width: 100%; }
     .search-type { width: 8; color: #555; height: 1; }
@@ -252,6 +276,11 @@ class HomeScreen(BaseScreen):
         self._dest: Optional[str] = None
         self._type_i = 0
         self._search_task: asyncio.Task[None] | None = None
+        self._releases: list[Release] = []
+        self._recent_offset = 0
+        self._recent_has_more = False
+        self._recent_loading_more = False
+        self._recent_loaded = False
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="home-body"):
@@ -304,7 +333,7 @@ class HomeScreen(BaseScreen):
         if action == "focus_filter":
             return dest == "search"
         if action == "cycle_filter":
-            return dest in ("search", "recent")
+            return dest == "search"
         if action == "collect":
             return dest == "search" and not isinstance(self.focused, Input)
         if action == "remove":
@@ -351,8 +380,6 @@ class HomeScreen(BaseScreen):
                     "[bold #e0e0e0]backspace[/] [#888]delete[/]",
                 ]
             )
-        elif dest == "recent":
-            keys.append("[bold #e0e0e0]f[/] [#888]filter[/]")
         keys.append("[bold #e0e0e0]esc[/] [#888]back[/]")
         return keys
 
@@ -480,11 +507,8 @@ class HomeScreen(BaseScreen):
         list_view = self.query_one("#home-list", ListView)
         list_view.clear()
         if dest == "recent":
-            for key in RECENT_FILTERS:
-                list_view.append(FilterRow(key, key.upper()))
-            stored = getattr(self.app, "_dest_index", {}).get("recent", 0)
-            if isinstance(stored, int) and list_view.children:
-                list_view.index = min(stored, len(RECENT_FILTERS) - 1)
+            list_view.append(GroupHeader("Loading recent releases…"))
+            self.load_recent(reset=True)
         elif dest == "search":
             self._show_search_status("Type to search the catalog")
         elif dest == "actions":
@@ -547,19 +571,33 @@ class HomeScreen(BaseScreen):
             return
         child = self._highlighted()
         if dest == "recent":
-            kicker.update("RECENT")
-            filt = getattr(child, "key", RECENT_FILTERS[0]) if child else "all"
-            labels = {
-                "all": "All updates",
-                "relevant": "Relevant to investigation",
-                "filings": "SEC filings",
-                "economic": "Economic releases",
-            }
-            body.update(
-                "Latest filings and economic data updates.\n\n"
-                f"[bold #888]FILTER[/]  {labels.get(filt, filt)}\n\n"
-                "[#888]No recent updates available[/]"
-            )
+            extra = "+" if self._recent_has_more else ""
+            if isinstance(child, ReleaseTile):
+                rel = child.release
+                kicker.update((rel.label or rel.id).upper()[:40])
+                body.update(
+                    f"[bold]{rel.label or rel.id}[/bold]\n\n"
+                    f"id      {rel.id}\n"
+                    f"date    {rel.release_date.isoformat()}\n"
+                    f"source  {rel.source or '—'}\n\n"
+                    f"{len(self._releases)}{extra} releases · newest first\n"
+                    "Enter opens this release."
+                )
+            else:
+                kicker.update("RECENT")
+                if self._recent_loading_more:
+                    body.update("Loading more…")
+                elif not self._recent_loaded:
+                    body.update(
+                        "Latest filings and economic data updates, newest first.\n\n"
+                        "[#888]Loading…[/]"
+                    )
+                elif not self._releases:
+                    body.update("[#888]No recent releases.[/]")
+                else:
+                    body.update(
+                        f"{len(self._releases)}{extra} releases · newest first"
+                    )
             return
         if dest == "search":
             if isinstance(child, SearchResultRow):
@@ -642,7 +680,9 @@ class HomeScreen(BaseScreen):
         lv.focus()
         if hasattr(lv, "action_cursor_down"):
             lv.action_cursor_down()
-        if self._dest == "search" and isinstance(self._highlighted(), GroupHeader):
+        if self._dest in ("search", "recent") and isinstance(
+            self._highlighted(), GroupHeader
+        ):
             lv.action_cursor_down()
 
     def action_cursor_up(self) -> None:
@@ -660,7 +700,9 @@ class HomeScreen(BaseScreen):
         lv.focus()
         if hasattr(lv, "action_cursor_up"):
             lv.action_cursor_up()
-        if self._dest == "search" and isinstance(self._highlighted(), GroupHeader):
+        if self._dest in ("search", "recent") and isinstance(
+            self._highlighted(), GroupHeader
+        ):
             lv.action_cursor_up()
 
     def action_page_down(self) -> None:
@@ -714,8 +756,6 @@ class HomeScreen(BaseScreen):
             self._kick_search()
             self._refresh_data_pane()
             return
-        if self._dest == "recent":
-            self.action_cursor_down()
 
     def _jump(self, index: int) -> None:
         self._index = index
@@ -751,7 +791,15 @@ class HomeScreen(BaseScreen):
             return
         child = self._highlighted()
         if self._dest == "recent":
-            self.notify("Recent feed is not available yet", severity="warning")
+            if isinstance(child, ReleaseTile):
+                open_fn = getattr(self.app, "open_resource_view", None)
+                if callable(open_fn):
+                    rel = child.release
+                    open_fn(
+                        "release",
+                        rel.id,
+                        label=rel.label or rel.id,
+                    )
             return
         if self._dest == "search" and isinstance(child, SearchResultRow):
             open_fn = getattr(self.app, "open_resource_view", None)
@@ -921,11 +969,73 @@ class HomeScreen(BaseScreen):
         remember = getattr(self.app, "remember_dest_index", None)
         if callable(remember) and self._dest:
             remember(self._dest, idx)
+        if self._dest == "recent":
+            self._maybe_load_more_recent()
         self._refresh_data_pane()
 
     @on(ListView.Selected, "#home-list")
     def on_list_selected(self, event: ListView.Selected) -> None:
         self.action_confirm()
+
+    def _maybe_load_more_recent(self) -> None:
+        if self._recent_loading_more or not self._recent_has_more:
+            return
+        if not isinstance(self._highlighted(), ReleaseTile):
+            return
+        index = self._list().index
+        if index is None or index < len(self._releases) - 1:
+            return
+        self._recent_loading_more = True
+        self._recent_offset = len(self._releases)
+        self.load_recent(reset=False)
+
+    def _append_releases(self, releases: list[Release]) -> None:
+        list_view = self._list()
+        for rel in releases:
+            if hasattr(self.app, "remember_label"):
+                self.app.remember_label(rel.id, rel.label or rel.id)
+            list_view.append(ReleaseTile(rel))
+
+    @work(exclusive=True, group="home-recent")
+    async def load_recent(self, reset: bool = True) -> None:
+        if reset:
+            self._recent_offset = 0
+            self._recent_has_more = False
+            self._recent_loading_more = False
+            self._recent_loaded = False
+        offset = self._recent_offset
+        try:
+            raw = await asyncio.to_thread(
+                self.client.list_releases,
+                page_fetch_limit(RECENT_PAGE),
+                offset,
+                "desc",
+            )
+            page, has_more = take_page(raw, RECENT_PAGE)
+        except Exception as exc:
+            if self._dest != "recent":
+                return
+            self._recent_loading_more = False
+            self._recent_loaded = True
+            self._list().clear()
+            self._list().append(GroupHeader(f"Could not load releases: {exc}"))
+            self._refresh_data_pane()
+            return
+        if self._dest != "recent":
+            return
+        if reset:
+            self._releases = []
+            self._list().clear()
+        self._releases.extend(page)
+        self._recent_has_more = has_more
+        self._recent_loading_more = False
+        self._recent_loaded = True
+        if reset and not page:
+            self._list().append(GroupHeader("No recent releases"))
+        else:
+            self._append_releases(page)
+        self._refresh_data_pane()
+        self.refresh_footer()
 
 
 def create_home_screen(client, workspace, **kwargs):

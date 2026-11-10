@@ -534,10 +534,37 @@ def test_home_destinations_are_five_in_order():
     assert "Search" in DESTINATIONS[1].title
     fresh = Investigation.new("fresh")
     recent = inspector_copy(DESTINATIONS[0], fresh)
-    assert "No recent updates available" in recent
+    assert "Newest first" in recent
+    assert "No recent updates available" not in recent
     assert "unified" not in recent.lower()
     assert "Start exploring" in recent
     assert "Start exploring" not in copy
+
+
+def test_home_recent_pagination_state():
+    from unittest.mock import MagicMock
+
+    from jstdata.actions.pagination import page_fetch_limit, take_page
+    from jstdata.investigation.home import RECENT_PAGE, HomeScreen, ReleaseTile
+    from jstdata.models import Release
+    from datetime import date
+
+    screen = HomeScreen(client=MagicMock(), workspace=Workspace())
+    assert screen._recent_offset == 0
+    assert screen._recent_has_more is False
+    assert RECENT_PAGE == 20
+    page, more = take_page(list(range(page_fetch_limit(RECENT_PAGE))), RECENT_PAGE)
+    assert len(page) == RECENT_PAGE
+    assert more is True
+    tile = ReleaseTile(
+        Release(
+            id="bea-2024-02-01",
+            label="GDP (2024-02-01)",
+            release_date=date(2024, 2, 1),
+            source="BEA",
+        )
+    )
+    assert tile.release.id == "bea-2024-02-01"
 
 
 def test_home_refresh_live_before_mount_does_not_raise():

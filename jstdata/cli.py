@@ -167,10 +167,31 @@ def release():
     """Commands for releases / filings (observation provenance)."""
 
 @release.command("ls")
+@click.option(
+    "--start-date",
+    help="Inclusive start of the release-date window (YYYY-MM-DD).",
+)
+@click.option(
+    "--end-date",
+    help="Inclusive end of the release-date window (YYYY-MM-DD).",
+)
+@click.option(
+    "--sort-order",
+    type=click.Choice(["asc", "desc"]),
+    default="desc",
+    show_default=True,
+    help="Sort by release date.",
+)
 @common_params
-def list_releases(limit, offset, format):
-    """List releases."""
-    results = client.list_releases(limit=limit, offset=offset)
+def list_releases(limit, offset, format, start_date, end_date, sort_order):
+    """List releases, newest first by default."""
+    results = client.list_releases(
+        limit=limit,
+        offset=offset,
+        sort_order=sort_order,
+        start_date=start_date,
+        end_date=end_date,
+    )
     format_and_print(results, format)
 
 @release.command("show")

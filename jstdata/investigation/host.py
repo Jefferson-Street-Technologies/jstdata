@@ -498,6 +498,12 @@ class InvestigationHost(App):
                 context=ResearchContext(entity=[resource_id]),
                 description=f"Entity {name}",
             )
+        elif resource_type == "release":
+            self.open_child_view(
+                "release",
+                context=ResearchContext(release=[resource_id]),
+                description=f"Release {name}",
+            )
         else:
             self.open_child_view(
                 "table",
