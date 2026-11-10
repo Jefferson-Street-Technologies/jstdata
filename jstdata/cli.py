@@ -2,6 +2,7 @@ import sys
 import click
 from typing import List, Union, Optional
 
+from .add_options import apply_click_add_options
 from .client import ApiKeyNotSetError, JSTDataClient, InvalidApiKeyError
 from .utils import common_params, common_search_params, format_and_print
 
@@ -24,11 +25,16 @@ def resolve_id(value: str, search_func) -> str:
         pass
     return value
 
-@click.group()
-def cli():
+@click.group(invoke_without_command=True)
+@click.pass_context
+def cli(ctx):
     """
     Jefferson Street CLI - A Research OS for Financial Data.
+
+    Bare `jst` resumes the active investigation (creates Untitled if none).
     """
+    if ctx.invoked_subcommand is None:
+        _resume_investigation()
 
 @cli.command()
 @click.option("--api-key", prompt="Enter your Jefferson Street API Key", hide_input=True, help="Your API Key")
@@ -83,9 +89,16 @@ def config_set(key, value):
     client._cfg.write(**{key: value})
     click.echo(f"Set {key} to {value}")
 
-# --- Metric Commands ---
+# --- Low-level API (agent / power-user) ---
 
 @cli.group()
+def api():
+    """Direct API access. Prefer investigations for research; use api for resolution and queries."""
+    pass
+
+# --- Metric Commands ---
+
+@api.group()
 def metric():
     """Commands for interacting with Metrics (themes)."""
 
@@ -139,9 +152,75 @@ def metric_series(id, limit, offset, format):
     results = client.get_metric_series(id, limit=limit, offset=offset)
     format_and_print(results, format)
 
+@metric.command("taxonomies")
+@click.argument("id")
+@common_params
+def metric_taxonomies(id, limit, offset, format):
+    """List taxonomic coverage for a metric."""
+    results = client.get_metric_taxonomies(id, limit=limit, offset=offset)
+    format_and_print(results, format)
+
+# --- Release Commands ---
+
+@api.group()
+def release():
+    """Commands for releases / filings (observation provenance)."""
+
+@release.command("ls")
+@click.option(
+    "--start-date",
+    help="Inclusive start of the release-date window (YYYY-MM-DD).",
+)
+@click.option(
+    "--end-date",
+    help="Inclusive end of the release-date window (YYYY-MM-DD).",
+)
+@click.option(
+    "--sort-order",
+    type=click.Choice(["asc", "desc"]),
+    default="desc",
+    show_default=True,
+    help="Sort by release date.",
+)
+@common_params
+def list_releases(limit, offset, format, start_date, end_date, sort_order):
+    """List releases, newest first by default."""
+    results = client.list_releases(
+        limit=limit,
+        offset=offset,
+        sort_order=sort_order,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    format_and_print(results, format)
+
+@release.command("show")
+@click.argument("id")
+@click.option("--format", default="pretty")
+def show_release(id, format):
+    """Show a release / filing by id."""
+    results = client.get_release(id)
+    format_and_print(results, format)
+
+# --- Preview Command ---
+
+@api.command("preview")
+@click.option("--metric", multiple=True, required=True, help="Metric ID(s). Repeatable.")
+@click.option("--entity", multiple=True, required=True, help="Entity ID(s). Repeatable.")
+@common_params
+def preview_coverage(metric, entity, limit, offset, format):
+    """Cheap metric×entity coverage (pairs with series only). Cache results."""
+    results = client.preview(
+        metric=list(metric),
+        entity=list(entity),
+        limit=limit,
+        offset=offset,
+    )
+    format_and_print(results, format)
+
 # --- Entity Commands ---
 
-@cli.group()
+@api.group()
 def entity():
     """Commands for interacting with Entities (contexts)."""
 
@@ -204,7 +283,7 @@ def entity_relations(id, limit, offset, format):
 
 # --- Taxonomy Commands ---
 
-@cli.group()
+@api.group()
 def taxonomy():
     """Commands for interacting with Taxonomies (membership catalogs)."""
 
@@ -241,7 +320,7 @@ def taxonomy_metrics(id, limit, offset, format):
 
 # --- Series Commands ---
 
-@cli.group()
+@api.group()
 def series():
     """Commands for interacting with Series (data points)."""
 
@@ -275,6 +354,12 @@ def search_series(query, limit, offset, format):
 @click.option("--start-time", type=int, help="Start time (unix timestamp)")
 @click.option("--end-time", type=int, help="End time (unix timestamp)")
 @click.option(
+    "--release-id",
+    "release_id",
+    multiple=True,
+    help="Filter to observations from these release ids. Repeatable.",
+)
+@click.option(
     "--order-by",
     type=click.Choice(["asc", "desc"]),
     default="asc",
@@ -282,7 +367,16 @@ def search_series(query, limit, offset, format):
 )
 @common_params
 def series_observations(
-    id, start_date, end_date, start_time, end_time, order_by, limit, offset, format
+    id,
+    start_date,
+    end_date,
+    start_time,
+    end_time,
+    release_id,
+    order_by,
+    limit,
+    offset,
+    format,
 ):
     """Paginated history for one series."""
     results = client.get_series_observations(
@@ -291,6 +385,7 @@ def series_observations(
         end_date=end_date,
         start_time=start_time,
         end_time=end_time,
+        release_id=list(release_id) or None,
         order_by=order_by,
         limit=limit,
         offset=offset,
@@ -299,7 +394,7 @@ def series_observations(
 
 # --- Query Command ---
 
-@cli.command()
+@api.command()
 @click.option("--metric", multiple=True, help="Metric ID(s) or keywords")
 @click.option("--entity", multiple=True, help="Entity ID(s) or keywords")
 @click.option("--series", multiple=True, help="Series ID(s) or keywords")
@@ -307,6 +402,12 @@ def series_observations(
 @click.option(
     "--taxonomy",
     help="Restrict to series whose entities have an identity relation to this taxonomy",
+)
+@click.option(
+    "--release-id",
+    "release_id",
+    multiple=True,
+    help="Filter observations to these release ids. Repeatable.",
 )
 @click.option("--head", type=int, help="Earliest N observations per series")
 @click.option("--tail", type=int, help="Latest N observations per series (default 20)")
@@ -336,6 +437,7 @@ def query(
     series,
     frequency,
     taxonomy,
+    release_id,
     head,
     tail,
     as_of,
@@ -349,7 +451,7 @@ def query(
     Bounded cross-sectional query. Mix metrics, entities, and series.
 
     Uses head/tail per series (not a date window). For deep history of one
-    series, use `jst series observations`. Use --sort-by value with
+    series, use `jst api series observations`. Use --sort-by value with
     --taxonomy to rank a population (e.g. country GDP).
     """
     m_ids = list(metric)
@@ -367,6 +469,7 @@ def query(
         series=s_ids or None,
         frequency=frequency,
         taxonomy=taxonomy,
+        release_id=list(release_id) or None,
         head=head,
         tail=tail,
         as_of=as_of,
@@ -377,24 +480,6 @@ def query(
     
     format_and_print(results, format)
 
-@cli.command("tutorial")
-@click.option(
-    "--session",
-    type=click.Path(exists=True, dir_okay=False, path_type=str),
-    help="Preload a session JSON into the pipeline",
-)
-@click.option(
-    "--output",
-    type=click.Path(dir_okay=False, path_type=str),
-    help="Default path for export session writes",
-)
-def tutorial_cmd(session: str | None, output: str | None) -> None:
-    """Run the built-in interactive tutorial (alias for workflow run tutorial)."""
-    from .workflows import run_tutorial
-
-    run_tutorial(client, session_path=session, output_path=output)
-
-
 @cli.command("agent-guide")
 def agent_guide_cmd() -> None:
     """Print a markdown bootstrap guide for agents (version-tied)."""
@@ -403,262 +488,501 @@ def agent_guide_cmd() -> None:
     click.echo(render_agent_guide(cli), nl=False)
 
 
-@cli.command("steps")
+@cli.group("agent")
+def agent_group() -> None:
+    """Bootstrap agents: operating guide and skill install."""
+
+
+@agent_group.command("guide")
+def agent_guide_nested() -> None:
+    """Print a markdown bootstrap guide for agents (version-tied)."""
+    from .agent_guide import render_agent_guide
+
+    click.echo(render_agent_guide(cli), nl=False)
+
+
+@agent_group.command("install")
+@click.argument(
+    "target",
+    type=click.Choice(["codex", "claude", "cursor", "all"]),
+    default="all",
+    required=False,
+)
+def agent_install_cmd(target: str) -> None:
+    """Install the jst skill into user-level agent skill directories.
+
+    \b
+    jst agent install
+    jst agent install cursor
+    jst agent install all
+    """
+    from .agent.install import install_skill
+
+    paths = install_skill(target)
+    click.echo("Installed jst skill:")
+    for path in paths:
+        click.echo(f"  {path}")
+    click.echo()
+    click.echo("If the agent does not pick it up automatically, say:")
+    click.echo("  Use the jst skill. Then run `jst agent-guide` and follow it.")
+
+
+@cli.group("action")
+def action_group() -> None:
+    """Catalog and mutate investigation actions."""
+
+
+@action_group.command("ls")
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable catalog")
-def steps_cmd(as_json: bool) -> None:
-    """List available investigation steps."""
+def action_ls(as_json: bool) -> None:
+    """List available action types.
+
+    \b
+    jst action ls
+    jst action ls --json
+    """
     import json as json_lib
 
-    from .workflows import list_steps
+    from .actions import list_actions
 
-    specs = list_steps()
+    specs = list_actions()
     if as_json:
         click.echo(json_lib.dumps([s.to_dict() for s in specs], indent=2))
         return
     if not specs:
-        click.echo("No steps registered.")
+        click.echo("No actions registered.")
         return
     for spec in specs:
         click.echo(f"{spec.id:20} {spec.name} — {spec.description}")
 
 
-@cli.command("step")
-@click.argument("step_id")
-@click.option("--json", "as_json", is_flag=True, help="Machine-readable step metadata")
-def step_cmd(step_id: str, as_json: bool) -> None:
-    """Describe a step: arguments, requirements, example."""
+@action_group.command("show")
+@click.argument("action_id")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable action metadata")
+def action_show(action_id: str, as_json: bool) -> None:
+    """Describe an action type: seed args, keybindings, example.
+
+    \b
+    jst action show console
+    jst action show rank --json
+    """
     import json as json_lib
 
-    from .workflows import format_step_help, get_step
+    from .actions import format_action_help, get_action
 
     try:
-        spec = get_step(step_id)
+        spec = get_action(action_id)
     except KeyError as e:
         click.echo(str(e), err=True)
         sys.exit(1)
     if as_json:
         click.echo(json_lib.dumps(spec.to_dict(), indent=2))
         return
-    click.echo(format_step_help(spec), nl=False)
+    click.echo(format_action_help(spec), nl=False)
 
 
-@cli.command(
-    "run",
-    context_settings={
-        "ignore_unknown_options": True,
-        "allow_extra_args": True,
-        "allow_interspersed_args": False,
-    },
-)
-@click.option(
-    "--session",
-    type=click.Path(exists=True, dir_okay=False, path_type=str),
-    help="Preload a session JSON into the pipeline",
-)
-@click.option(
-    "--output",
-    type=click.Path(dir_okay=False, path_type=str),
-    help="Default path for export session writes",
-)
-@click.pass_context
-def run_cmd(ctx: click.Context, session: str | None, output: str | None) -> None:
-    """Run one or more steps, daisy-chained with ':'
+@action_group.command("add")
+@click.argument("action_type")
+@apply_click_add_options
+def action_add(
+    action_type: str,
+    args_json: str | None,
+    parent_id: int | None,
+    activate: bool,
+) -> None:
+    """Add an action under the active investigation.
 
     \b
-    jst run console
-    jst run --session in.json console : console
-    jst run company-selector --industry semiconductors : console
+    jst action add console
+    jst action add console --args '{"taxonomy":"country"}'
+    jst action add discover --parent 0 --activate
     """
-    from .workflows import PipelineError, run_pipeline
-
-    if not ctx.args:
-        click.echo(ctx.get_help())
-        raise SystemExit(2)
-    try:
-        run_pipeline(client, ctx.args, session_path=session, output_path=output)
-    except KeyError as e:
-        click.echo(str(e), err=True)
-        sys.exit(1)
-    except PipelineError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(2)
-
-
-@cli.group("workflow")
-def workflow_group() -> None:
-    """Save and run named step pipelines."""
-
-
-# Backward-compatible plural alias (same group object).
-cli.add_command(workflow_group, "workflows")
-
-
-@workflow_group.command("ls")
-def workflow_ls() -> None:
-    """List saved workflows."""
-    from .workflows import (
-        format_pipeline,
-        is_bundled_workflow,
-        list_saved_workflows,
+    from .investigation import (
+        InvestigationError,
+        add_action,
+        parse_action_args_json,
+        require_active_investigation,
     )
 
-    workflows = list_saved_workflows()
-    if not workflows:
-        click.echo("No saved workflows.")
-        return
-    for wf in workflows:
-        desc = wf.description or "-"
-        tag = " (built-in)" if is_bundled_workflow(wf.id) else ""
-        click.echo(
-            f"{wf.id:24}{tag:11} {desc:40} {format_pipeline(wf)}"
+    try:
+        inv, _ctx = require_active_investigation()
+        args = parse_action_args_json(args_json)
+        action = add_action(
+            inv,
+            action_type,
+            parent_id=parent_id,
+            args=args,
+            activate=activate,
         )
+    except InvestigationError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(2)
+    click.echo(
+        f"Added action {action.id} type={action.type} "
+        f"parent={action.parent_id}"
+        + (" (activated)" if activate else "")
+    )
 
 
-@workflow_group.command("rm")
-@click.argument("workflow_id")
-def workflow_rm(workflow_id: str) -> None:
-    """Delete a saved workflow."""
-    from .workflows import WorkflowStoreError, delete_workflow
+@action_group.command("rm")
+@click.argument("action_id", type=int)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Required to remove an action with children, or the active action",
+)
+def action_rm(action_id: int, force: bool) -> None:
+    """Remove an action (and descendants) from the active investigation.
+
+    \b
+    jst action rm 3
+    jst action rm 1 --force
+    """
+    from .investigation import (
+        InvestigationError,
+        remove_action,
+        require_active_investigation,
+    )
 
     try:
-        delete_workflow(workflow_id)
-    except WorkflowStoreError as e:
+        inv, _ctx = require_active_investigation()
+        removed = remove_action(inv, action_id, force=force)
+    except InvestigationError as e:
         click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
-    click.echo(f"Removed workflow {workflow_id!r}.")
+        sys.exit(2)
+    click.echo(
+        f"Removed action{'s' if len(removed) != 1 else ''} "
+        + ", ".join(str(i) for i in removed)
+    )
 
 
-@workflow_group.command(
-    "create",
-    context_settings={
-        "ignore_unknown_options": True,
-        "allow_extra_args": True,
-        "allow_interspersed_args": False,
-    },
-)
+def _resume_investigation() -> None:
+    """Bare `jst`: resume `.active.yaml`, or create Untitled if none."""
+    from .investigation import (
+        InvestigationError,
+        get_active,
+        resume_or_create_investigation,
+        run_investigation_host,
+    )
+
+    try:
+        inv = resume_or_create_investigation()
+        ctx = get_active()
+    except InvestigationError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(2)
+    click.echo(
+        f"Opening {inv.id!r} ({inv.title})  action={ctx.action}"
+    )
+    run_investigation_host(client)
+
+
+@cli.command("new")
 @click.option(
     "--id",
-    "workflow_id",
-    required=True,
-    help="Slug id for the workflow (e.g. gdp-rank)",
+    "investigation_id",
+    default=None,
+    help="Slug (generated as inv-<unix> if omitted)",
 )
-@click.option(
-    "--description",
-    default="",
-    help="Optional short description",
-)
-@click.pass_context
-def workflow_create(
-    ctx: click.Context, workflow_id: str, description: str
+@click.option("--title", default=None, help="Display title (defaults to Untitled)")
+@click.option("--notes", default=None, help="Freeform notes (for agents / later you)")
+def new_cmd(
+    investigation_id: str | None, title: str | None, notes: str | None
 ) -> None:
-    """Save a step pipeline as a named workflow.
+    """Create an investigation, activate it, and open the TUI.
+
+    Id and title are optional.
 
     \b
-    jst workflow create --id gdp-rank -- console : rank --taxonomy country
-    jst workflow create --id gdp --description "GDP leaders" -- console : rank
+    jst new
+    jst new --title "European defense constraints"
+    jst new --id housing-slowdown --title Housing
     """
-    import sys as _sys
-
-    from .workflows import (
-        PipelineError,
-        WorkflowStoreError,
-        create_workflow_from_tokens,
-        save_workflow,
-        workflow_exists,
+    from .investigation import (
+        InvestigationError,
+        create_investigation,
+        run_investigation_host,
     )
 
-    # Hard boundary: pipeline must follow '--'. Enforce when this process
-    # looks like a real ``jst workflow create`` (CliRunner leaves sys.argv alone).
     try:
-        create_at = _sys.argv.index("create")
-        via_workflow = any(
-            name in _sys.argv[:create_at] for name in ("workflow", "workflows")
-        )
-    except ValueError:
-        via_workflow = False
-    if via_workflow and "--" not in _sys.argv[create_at:]:
+        inv = create_investigation(investigation_id, title=title, notes=notes)
+    except InvestigationError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(2)
+    click.echo(f"Created investigation {inv.id!r} ({inv.title})")
+    run_investigation_host(client)
+
+
+@cli.command("open")
+@click.argument("investigation_id")
+def open_cmd(investigation_id: str) -> None:
+    """Open an investigation, activate it, and launch the TUI.
+
+    \b
+    jst open tutorial
+    jst open plain-bagel
+    jst open housing-slowdown
+    """
+    from .investigation import (
+        InvestigationError,
+        open_investigation,
+        run_investigation_host,
+    )
+
+    try:
+        inv = open_investigation(investigation_id)
+    except InvestigationError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(2)
+    click.echo(f"Opened investigation {inv.id!r} ({inv.title})")
+    run_investigation_host(client)
+
+
+@cli.command("ls")
+def ls_cmd() -> None:
+    """List investigations on disk (active marked with *).
+
+    \b
+    jst ls
+    """
+    from .investigation import (
+        ensure_bootstrap,
+        get_active,
+        list_investigations,
+        load_investigation,
+    )
+    from .investigation.store import investigations_dir
+
+    ensure_bootstrap()
+    try:
+        active_id = get_active().investigation
+    except Exception:
+        active_id = None
+
+    ids = list_investigations()
+    if not ids:
+        click.echo("No investigations.")
+        return
+    root = investigations_dir()
+    for inv_id in ids:
+        marker = "*" if inv_id == active_id else " "
+        try:
+            inv = load_investigation(inv_id, root=root)
+            title = inv.title
+        except Exception:
+            title = "?"
+        click.echo(f"{marker} {inv_id:<28} {title}")
+
+
+@cli.group("query")
+def query_group() -> None:
+    """Saved investigation queries (cartesian metric × entity)."""
+
+
+@query_group.command("ls")
+def query_ls() -> None:
+    """List saved queries on the active investigation.
+
+    \b
+    jst query ls
+    """
+    from .investigation import InvestigationError, require_active_investigation
+
+    try:
+        inv, _ctx = require_active_investigation()
+    except InvestigationError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(2)
+    if not inv.queries:
+        click.echo("No saved queries.")
+        return
+    for qid in sorted(inv.queries):
+        query = inv.queries[qid]
+        label = query.name or ""
         click.echo(
-            "Error: pass the pipeline after '--'.\n"
-            "Example: jst workflow create --id gdp-rank -- console : rank",
-            err=True,
+            f"{qid:>4}  {label:<32}  "
+            f"metric={len(query.metric)} entity={len(query.entity)} "
+            f"series={len(query.series)}"
         )
-        sys.exit(2)
-    if not ctx.args:
-        click.echo(ctx.get_help())
-        raise SystemExit(2)
-
-    try:
-        if workflow_exists(workflow_id):
-            if not click.confirm(
-                f"Workflow {workflow_id!r} already exists. Overwrite?",
-                default=False,
-            ):
-                click.echo("Aborted.")
-                return
-        workflow = create_workflow_from_tokens(workflow_id, description, list(ctx.args))
-        path = save_workflow(workflow)
-    except WorkflowStoreError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(2)
-    except KeyError as e:
-        click.echo(str(e), err=True)
-        sys.exit(1)
-    except PipelineError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(2)
-
-    click.echo(f"Saved workflow {workflow.id!r} → {path}")
 
 
-@workflow_group.command("run")
-@click.argument("workflow_id")
-@click.option(
-    "--session",
-    type=click.Path(exists=True, dir_okay=False, path_type=str),
-    help="Preload a session JSON into the pipeline",
-)
-@click.option(
-    "--output",
-    type=click.Path(dir_okay=False, path_type=str),
-    help="Default path for export session writes",
-)
-def workflow_run(
-    workflow_id: str, session: str | None, output: str | None
-) -> None:
-    """Run a saved workflow (validates before launching the UI).
+@query_group.command("show")
+@click.argument("query_id", type=int)
+def query_show(query_id: int) -> None:
+    """Print a saved query spec (no observations).
 
     \b
-    jst workflow run gdp-rank
-    jst workflow run gdp-rank --session in.json
+    jst query show 1
     """
-    from .workflows import (
-        PipelineError,
-        TUTORIAL_WORKFLOW_ID,
-        WorkflowStoreError,
-        load_workflow,
-        resolve_saved_workflow,
-        run_resolved_pipeline,
-        run_tutorial,
+    import yaml
+
+    from .investigation import InvestigationError, require_active_investigation
+
+    try:
+        inv, _ctx = require_active_investigation()
+        query = inv.get_query(query_id)
+    except InvestigationError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(2)
+    click.echo(
+        yaml.safe_dump(query.to_dict(), sort_keys=False, allow_unicode=True),
+        nl=False,
+    )
+
+
+@query_group.command("inspect")
+@click.argument("query_id", type=int)
+@click.option("--limit", default=50, help="Max preview rows (default 50)")
+@click.option("--offset", default=0, help="Preview offset")
+@click.option(
+    "--format",
+    default="json",
+    help="Output format. Valid formats are: json, csv, pretty.",
+)
+def query_inspect(query_id: int, limit: int, offset: int, format: str) -> None:
+    """Resolved cartesian coverage (series counts, mismatches) — no observations.
+
+    \b
+    jst query inspect 1
+    jst query inspect 1 --format pretty
+    """
+    from .investigation import (
+        InvestigationError,
+        inspect_query,
+        require_active_investigation,
     )
 
     try:
-        workflow = load_workflow(workflow_id)
-        if workflow_id == TUTORIAL_WORKFLOW_ID:
-            run_tutorial(client, session_path=session, output_path=output)
-            return
-        resolved = resolve_saved_workflow(workflow)
-    except WorkflowStoreError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
-    except KeyError as e:
-        click.echo(str(e), err=True)
-        sys.exit(1)
-    except PipelineError as e:
+        inv, _ctx = require_active_investigation()
+        payload = inspect_query(
+            inv, query_id, client=client, limit=limit, offset=offset
+        )
+    except InvestigationError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(2)
+    format_and_print(payload, format)
 
-    run_resolved_pipeline(
-        client, resolved, session_path=session, output_path=output
+
+@query_group.command("run")
+@click.argument("query_id", type=int)
+@click.option(
+    "--format",
+    default="pretty",
+    help="Output format. Valid formats are: json, csv, pretty.",
+)
+def query_run(query_id: int, format: str) -> None:
+    """Execute a saved query (cartesian metric × entity).
+
+    \b
+    jst query run 1
+    jst query run 1 --format csv
+    """
+    from .investigation import (
+        InvestigationError,
+        require_active_investigation,
+        run_query,
+    )
+
+    try:
+        inv, _ctx = require_active_investigation()
+        results = run_query(inv, query_id, client=client)
+    except InvestigationError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(2)
+    format_and_print(results, format)
+
+
+@query_group.command("add")
+@click.option("--name", default=None, help="Display name")
+@click.option("--notes", default=None, help="Freeform notes")
+@click.option("--metric", multiple=True, help="Metric ID. Repeatable.")
+@click.option("--entity", multiple=True, help="Entity ID. Repeatable.")
+@click.option("--series", multiple=True, help="Series ID. Repeatable.")
+@click.option(
+    "--frequency",
+    type=click.Choice(["Annual", "Quarterly", "Monthly", "Daily", "Intraday"]),
+)
+@click.option("--units", default=None, help="Persisted; not sent to /query yet")
+@click.option("--source", default=None, help="Persisted; not sent to /query yet")
+@click.option(
+    "--seasonal-adjustment",
+    "seasonal_adjustment",
+    default=None,
+    help="Persisted; not sent to /query yet",
+)
+@click.option("--taxonomy", default=None)
+@click.option("--head", type=int, default=None)
+@click.option("--tail", type=int, default=None)
+@click.option("--as-of", "as_of", default=None)
+@click.option("--sort-by", "sort_by", default=None)
+@click.option("--order-by", "order_by", default=None)
+@click.option(
+    "--from-workspace",
+    "from_workspace",
+    is_flag=True,
+    default=False,
+    help="Snapshot the investigation workspace into the new query",
+)
+def query_add(
+    name: str | None,
+    notes: str | None,
+    metric: tuple[str, ...],
+    entity: tuple[str, ...],
+    series: tuple[str, ...],
+    frequency: str | None,
+    units: str | None,
+    source: str | None,
+    seasonal_adjustment: str | None,
+    taxonomy: str | None,
+    head: int | None,
+    tail: int | None,
+    as_of: str | None,
+    sort_by: str | None,
+    order_by: str | None,
+    from_workspace: bool,
+) -> None:
+    """Add a saved query to the active investigation (cartesian metric × entity).
+
+    \b
+    jst query add --metric gdp --entity france --entity usa --name "FR vs US"
+    jst query add --from-workspace --name scratch
+    """
+    from .investigation import (
+        InvestigationError,
+        add_query,
+        require_active_investigation,
+    )
+
+    try:
+        inv, _ctx = require_active_investigation()
+        query = add_query(
+            inv,
+            name=name,
+            notes=notes,
+            metric=list(metric) or None,
+            entity=list(entity) or None,
+            series=list(series) or None,
+            frequency=frequency,
+            units=units,
+            source=source,
+            seasonal_adjustment=seasonal_adjustment,
+            taxonomy=taxonomy,
+            head=head,
+            tail=tail,
+            as_of=as_of,
+            sort_by=sort_by,
+            order_by=order_by,
+            from_workspace=from_workspace,
+        )
+    except InvestigationError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(2)
+    click.echo(
+        f"Added query {query.id}"
+        + (f" {query.name!r}" if query.name else "")
+        + f" metric={len(query.metric)} entity={len(query.entity)} "
+        f"series={len(query.series)}"
     )
 
 

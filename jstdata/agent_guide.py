@@ -1,8 +1,7 @@
 """Generate the markdown agent bootstrap guide (`jst agent-guide`).
 
-CLI commands, interactive steps, and session field names are derived from the
-live Click tree, step registry, and ``Session`` dataclass. Conceptual glue
-(policy, modes, recipes, data model, sessions) is static prose that changes rarely.
+CLI commands and action catalog entries are derived from the live Click tree
+and action registry. Conceptual glue (policy, modes, recipes) is static prose.
 """
 
 from __future__ import annotations
@@ -14,35 +13,40 @@ from typing import Iterable, get_args, get_origin
 
 import click
 
-from .session import Session
-from .workflows import list_steps
+from .investigation.model import Workspace
+from .actions import list_actions
 
 _PACKAGE = "jstdata"
 
-# Session fields that expand the action space without helping typical agent work.
-_SESSION_FIELDS_OMIT = frozenset(
-    {"start_date", "end_date", "start_time", "end_time"}
+_WORKSPACE_FIELDS_OMIT = frozenset(
+    {"id", "label", "description", "start_date", "end_date", "start_time", "end_time"}
 )
 
 _HARD_RULES = """\
 ## Hard rules
 
 - **Never invent IDs.** Never invent metric, entity, taxonomy, or series ids from
-  English names. Resolve via search (or scoped list) first.
-- **Resolve before use.** Resolve ids before `jst query`, session JSON, or workflow args.
-- **Use `--format json`** on resource and search commands unless the user needs a table.
-- **Do not launch interactive TUIs** (`jst run`, `jst workflow run`) unless the user
-  explicitly asks you to operate the UI. Prepare a Session/workflow and give them the
-  launch command.
+  English names. Resolve via `jst api … search` (or scoped list) first.
+- **Resolve before use.** Resolve ids before `jst api query`, investigation
+  workspaces, saved queries, or action `--args`.
+- **Use `--format json`** on `jst api` resource and search commands unless the user
+  needs a table.
+- **Do not launch interactive TUIs** (`jst` / `jst new` / `jst open`) unless the
+  user explicitly asks you to operate the UI. Prefer CLI mutation of the active
+  investigation (`jst action add` / `rm`, `jst query add` / `run`) or hand them
+  `jst open <id>`.
+- **Do not edit investigation YAML to mutate state.** Read
+  `~/.jstdata/investigations/<id>.yaml` or `jst query show` only to inspect.
+  Mutate with `jst query add`, `jst action add` / `rm`. Never invent query ids
+  or rewrite `workspace:` / `queries:` / `actions:` by hand.
 - **Do not paginate exhaustively.** During discovery, use `--limit` 20–50. Do not walk
   `offset` through the catalog unless the returned set is clearly insufficient.
-- **Do not enumerate** `jst metric ls`, `jst series ls`, or full taxonomy populations
-  unless the task requires enumeration. Prefer `search` with a query (and taxonomy /
-  relation filters when relevant).
+- **Do not enumerate** `jst api metric ls`, `jst api series ls`, or full taxonomy
+  populations unless the task requires enumeration. Prefer `search` with a query.
 - **Do not retrieve deep history** until the candidate universe is narrowed. Use
   `tail=1` (or similarly shallow queries) for triage.
-- **Do not create a workflow** when direct CLI analysis satisfies the request. Use
-  workflows for human handoff of an interactive investigation.
+- **Prefer investigations over raw API loops** when the user will continue the work
+  interactively. Stage work into the investigation, then hand off.
 - **Stop when good enough.** Prefer a partial useful result over open-ended search.
 """
 
@@ -60,8 +64,8 @@ When solving a JST research task:
 4. **Prefer good-enough candidate sets** over exhaustive search unless the user asks
    for comprehensiveness.
 5. **Escalate to deep history only after narrowing** (specific series ids, date bounds).
-6. **Hand off TUIs to the human.** Prepare Session JSON and/or a saved workflow; print
-   the `jst workflow run … --session …` (or `jst run …`) command for them.
+6. **Hand off TUIs to the human.** Prepare or mutate an investigation; print
+   `jst open <id>` for them.
 7. **Prefer JSON** for anything you will parse or reason over.
 """
 
@@ -72,23 +76,23 @@ _OPERATING_MODES = """\
 
 Example: “Find metrics relevant to defense spending.”
 
-Use search / show. Do **not** retrieve observations unless needed to disambiguate
-candidates. Select a useful set and stop.
+Use `jst api … search` / `show`. Do **not** retrieve observations unless needed to
+disambiguate candidates. Select a useful set and stop.
 
 ### Agent analysis
 
 Example: “Compare military expenditure as a share of GDP across NATO countries.”
 
-Resolve ids → bounded `jst query` → deeper `series observations` only if needed →
-answer from structured CLI output. No TUI or workflow required.
+Resolve ids → bounded `jst api query` → deeper `jst api series observations` only if
+needed → answer from structured CLI output. No TUI required.
 
 ### Human handoff
 
 Example: “Set me up to explore defense spending across Europe.”
 
-Resolve resources → write Session JSON → compose/save a workflow when useful → hand
-the user the launch command. Do not substitute extra research for completing the
-handoff.
+Resolve resources → create/open an investigation → `jst action add` actions
+and/or `jst query add` → hand the user `jst open <id>`.
+Do not substitute endless search for completing the handoff.
 """
 
 _DATA_MODEL = """\
@@ -97,10 +101,25 @@ _DATA_MODEL = """\
 - **Metric** — a measurable theme (e.g. GDP, employed-persons). Identified by a slug id.
 - **Entity** — a context the metric is measured in (e.g. a country, a company). Slug id.
 - **Taxonomy** — a named population of entities (e.g. `country`, `us-county`,
-  `sec-central-index-key`). Use it to scope search, query, and ranking to that population.
+  `sec-central-index-key`). Use it to scope search, query, and ranking.
 - **Series** — one concrete time series: a metric observed for an entity (at a frequency).
-- **Session** — portable analytical intent (resource ids + query filters). See **Sessions**
-  below. No observations live in a session file.
+- **Investigation** — the durable research artifact: title, notes, one workspace,
+  saved queries, and an action tree.
+- **Workspace** — the **global** bag of staged resource ids inside an
+  investigation (no observations). Mutated by `:search` / `:workspace` and staging
+  actions; never mutated by view drills.
+- **Query** — a saved `GET /query` spec. Metric × entity is a **cartesian product**
+  (every metric against every entity), plus optional `series`. Filters such as
+  frequency / head / tail live here. Inspect coverage with `jst query inspect`
+  (no observations); execute with `jst query run`.
+- **Action / View** — one use of a reusable analytical UI in the investigation tree.
+  Read/drill views (`table`, `metric`, `entity`, `metrics`) take an **Input Context**
+  resolved from the workspace plus optional per-node `context` overrides. Staging /
+  explore actions (`console`, `discover`, `rank`) still grow the global workspace.
+- **Input Context** — what a view is *about*: workspace resources with optional
+  focus/replace overrides stored on the action node as YAML `context` (metric /
+  entity / series / taxonomy). Empty override dimensions inherit from the workspace.
+  Child drills use focus/replace; they do **not** rewrite the global workspace.
 
 Ids are opaque slugs. Display names are not ids.
 """
@@ -110,9 +129,10 @@ _RESOLUTION = """\
 
 Never invent metric, entity, taxonomy, or series ids from English names.
 
-Always resolve via search (prefer a query string) before writing ids into a workflow,
-`--session` JSON, or `jst query` flags. Scope with `--taxonomy` / `--relation` when the
-user names a population or relationship. Confirm ambiguous hits with `show` before use.
+Always resolve via `jst api … search` (prefer a query string) before writing ids into
+an investigation workspace or `jst api query` flags. Scope with `--taxonomy` /
+`--relation` when the user names a population or relationship. Confirm ambiguous hits
+with `show` before use.
 """
 
 _RECIPES = """\
@@ -121,13 +141,13 @@ _RECIPES = """\
 ### Find relevant metrics
 
 ```bash
-jst metric search "defense spending" --taxonomy country --limit 20 --format json
+jst api metric search "defense spending" --taxonomy country --limit 20 --format json
 ```
 
 If insufficient, try one or two synonyms the same way. Inspect only promising ids:
 
 ```bash
-jst metric show <resolved-id> --format json
+jst api metric show <resolved-id> --format json
 ```
 
 Stop once a useful candidate set exists. Do not page the full catalog.
@@ -135,7 +155,7 @@ Stop once a useful candidate set exists. Do not page the full catalog.
 ### Compare latest values
 
 ```bash
-jst query \\
+jst api query \\
   --metric <metric-id> \\
   --taxonomy country \\
   --tail 1 \\
@@ -147,8 +167,8 @@ jst query \\
 ### Retrieve history after narrowing
 
 ```bash
-jst metric series <metric-id> --format json
-jst series observations <series-id> \\
+jst api metric series <metric-id> --format json
+jst api series observations <series-id> \\
   --start-date 2015-01-01 \\
   --format json
 ```
@@ -158,137 +178,161 @@ jst series observations <series-id> \\
 1. Resolve the EU entity, then list members via relation (do not invent country ids):
 
 ```bash
-jst entity search "european union" --limit 10 --format json
-jst entity search --relation part_of:<eu-entity-id> --taxonomy country \\
+jst api entity search "european union" --limit 10 --format json
+jst api entity search --relation part_of:<eu-entity-id> --taxonomy country \\
   --limit 50 --format json
 ```
 
 2. Resolve a GDP metric for the country population:
 
 ```bash
-jst metric search gdp --taxonomy country --limit 20 --format json
-jst metric show <gdp-metric-id> --format json
+jst api metric search gdp --taxonomy country --limit 20 --format json
+jst api metric show <gdp-metric-id> --format json
 ```
 
-3. Write a session with the chosen metric and every EU member entity id:
-
-```json
-{
-  "metric": ["<gdp-metric-id>"],
-  "entity": ["<fr>", "<de>", "<it>", "..."]
-}
-```
-
-4. Rank **only those session entities** (``rank`` does this by default when the
-   session has entities; agents can call ``/query`` the same way):
+3. Persist the cartesian pull — do not edit investigation YAML:
 
 ```bash
-jst query \\
+jst query add \\
+  --metric <gdp-metric-id> \\
+  --entity <fr> --entity <de> --entity <it> \\
+  --name "EU member GDP"
+jst query inspect <new-id>
+```
+
+4. Compare or rank via API, or hand off a view / rank action:
+
+```bash
+jst api query \\
   --metric <gdp-metric-id> \\
   --entity <fr> --entity <de> --entity <it> \\
   --tail 1 \\
   --sort-by value \\
   --format json
+
+# Population leaderboard
+jst action add rank --args '{"taxonomy":"country"}' --activate
+
+# Saved cartesian pull (human drills with Enter)
+jst action add query --args '{"query_id":<new-id>}' --activate
 ```
 
 Human handoff:
 
 ```bash
-jst run --session eu-gdp.json rank
+jst open <investigation-id>
 ```
 
-With an empty entity list, ``rank`` falls back to the taxonomy/all population.
-Pass ``--session-entities=false`` to force that even when entities are staged.
-Optional ``--taxonomy country`` still ANDs with session entities when both apply.
+### Add a country series to the current investigation
+
+Example: “Add Canadian household debt-to-GDP to my current investigation.”
+
+1. Inspect active state (`*` marks the current investigation):
+
+```bash
+jst ls
+jst query ls
+```
+
+2. Resolve ids (never invent them):
+
+```bash
+jst api metric search "household debt to gdp" --limit 20 --format json
+jst api entity search canada --taxonomy country --limit 10 --format json
+```
+
+3. Persist a cartesian query (do not edit YAML):
+
+```bash
+jst query add \\
+  --metric <household-debt-to-gdp-id> \\
+  --entity <canada-entity-id> \\
+  --name "Canada household debt to GDP"
+jst query inspect <new-id>
+jst action add query --args '{"query_id":<new-id>}' --activate
+```
+
+If the human already has a France vs US query and wants Canada on the same
+cartesian pull, add a **new** query that includes all three entities rather
+than rewriting YAML. Hand off with `jst open` only if they asked for the TUI.
 
 ### Prepare a human investigation
 
-1. Resolve metric/entity/taxonomy ids via search.
-2. Write a Session JSON with those ids and filters (`taxonomy`, `tail`, …).
-3. Create or reuse a workflow if the human needs a TUI pipeline.
-4. Hand them a launch command, for example:
-
-```bash
-jst workflow run eu-analysis --session defense.json
-```
+1. Resolve ids via `jst api … search`.
+2. `jst new` (or `jst open <id>` / mutate with `jst action add` / `jst query add`).
+3. Prefer a **view** for read/drill (`table`, `metric`, `entity`, `metrics`) and
+   keep `console` / `discover` / `rank` when the human still needs to stage or
+   explore the global workspace. Prefer `jst query add` for a cartesian pull.
+4. Hand them: `jst open <id>`.
 
 Do not substitute extra research for completing the requested handoff.
 """
 
 _COMPOSITION = """\
-## Composition and workflows
+## Investigations and actions
 
-Interactive investigation is composed in the shell, not a custom DSL:
+Research is an **investigation**: a tree of **actions / views** over one
+**workspace**, plus saved **queries** (cartesian metric × entity).
 
 ```bash
-jst run STEP [ARGS...] : STEP [ARGS...] : ...
+jst new --id housing-slowdown
+jst open housing-slowdown
+jst ls
+jst query add --metric gdp --entity france --entity usa --name "FR vs US"
+jst query inspect 1
+jst query run 1 --format json
+jst action add table --args '{"sort_by":"value"}' --activate
+jst action add query --args '{"query_id":1}' --activate
+jst action add metrics --args '{"mode":"intersect"}'
+jst action add rank --args '{"taxonomy":"country"}'
+jst action rm 2 --force
 ```
 
-- **Steps** are TUI screens for the **human**. They edit one shared session for the run.
-- **Step args** seed that step; they are not the session.
-- **Saved workflows** (`jst workflow create` / `run`) persist step topology + step args
-  only. Bake discovered metrics/entities into a **session JSON** and pass `--session`
-  when running (see **Sessions**).
-- Pipeline tokens for `workflow create` must follow a `--` boundary, e.g.
-  `jst workflow create --id gdp-rank -- console : rank --taxonomy country`.
+- **Actions** are reusable TUI screens (`jst action ls` / `jst action show <id>`).
+- Seed args go in `--args` JSON on `action add` (or `:add` in the TUI).
+- Optional per-node **Input Context** overrides live under YAML `context` on the
+  action (focus/replace relative to the active workspace). Views resolve this as
+  Input Context; drills open child views with tighter context and do not mutate
+  the global workspace.
+- New actions are children of the active action unless `--parent` is set.
+- Humans use `:` in the TUI (`:workspace`, `:search metric gdp`, `:add`, `:rm`,
+  `:rename`). The palette also fuzzy-matches destination names and saved query
+  labels. `:rename` sets the investigation title and description in one command.
+  Tree keys: `g` home, `esc` back, `n`/`p` siblings, `N`/`P` depth (arrows too).
+  `:workspace` still opens the bag drawer. Views are typically idle until `r`
+  (load). Space collects the focused resource into the workspace. Home has
+  five destinations: Recent, Search, Actions, Workspace, Queries.
+- **When to use which:**
+  - `table` — latest-value matrix; cheap `/preview` coverage on open; `r` runs
+    `/query`; Enter drills to entity, metric, or **release** (provenance).
+  - `metric` / `entity` — inspect one resource (metric includes description /
+    variants / taxonomies); Enter cross-drills.
+  - `release` — filing / release behind an observation (`context.release`).
+  - `metrics` — metrics associated with an entity set (`mode` union|intersect).
+  - `console` / `:search` — catalog search that stages into the global workspace.
+  - `discover` — candidate metrics with preview chart; Space stages metrics.
+  - `rank` — single-metric population leaderboard; stages entities back.
+- Demo investigation: `jst open plain-bagel` (hyperscaler debt + provenance
+  loop; query 1 is the cartesian latest-value pull).
+- Agents prefer CLI mutation + `jst api …` for resolution; do not drive the TUI.
 
-`jst run` and `jst workflow run` launch interactive TUIs. Agents should normally prepare
-the Session/workflow and provide the launch command rather than controlling the TUI.
-For step-specific help, run `jst step <id>` (or `jst step <id> --json`) on demand.
+Active context lives in `~/.jstdata/.active.yaml` (investigation, workspace id, action id).
 """
 
-_SESSION_HOWTO = """\
-### Create and modify
+_WORKSPACE_HOWTO = """\
+### Workspace contents
 
-**Write a JSON file** (usual agent path after resolving ids):
+Each investigation has a single `workspace:` mapping (numeric `id` default `0`),
+optional `label` / `description`, and resource id lists. Query filters
+(frequency, head/tail, units, …) belong on `queries:`, not the workspace bag.
 
-```json
-{
-  "metric": ["employed-persons", "unemployment-rate"],
-  "taxonomy": "country",
-  "tail": 1,
-  "sort_by": "value"
-}
-```
+Legacy files with `workspaces:` (a list) load id `0` / the first entry and ignore
+the rest.
 
-Omit unused fields. Empty lists may be omitted. Ids must already be resolved.
-
-**Python API** (same shape as the JSON file):
-
-```python
-from jstdata import Session
-
-session = Session(
-    metric=["employed-persons", "unemployment-rate"],
-    taxonomy="country",
-    tail=1,
-    sort_by="value",
-)
-session.add_metric("gdp")          # no-op if already present
-session.add_entity("united-states")
-session.remove_id("gdp")           # removes from metric/entity/series
-session.save("labor.json")         # write JSON
-session = Session.load("labor.json")
-```
-
-Edit the JSON by hand or re-save from Python; there is no separate session CLI.
-
-### Use with steps and workflows
-
-Preload into a pipeline or saved workflow:
-
-```bash
-jst run --session labor.json rank --taxonomy country
-jst workflow run gdp-rank --session labor.json
-```
-
-`--session` copies the file into the live session at startup. The human can still
-change it in the TUI. Typical agent pattern after metric discovery:
-
-1. Resolve metric (and taxonomy) ids via search.
-2. Write a session JSON with those `metric` ids (and optional filters).
-3. Create or reuse a workflow whose steps consume session metrics (e.g. `rank`).
-4. Hand the user: `jst workflow run <id> --session <file>.json`.
+Stage resources into the workspace bag from the TUI (`:search` / space collect).
+Agents that need a persisted cartesian pull should `jst query add --metric … --entity …`
+rather than editing YAML. Read investigation YAML only to inspect. Prefer
+resolved slug ids only.
 """
 
 
@@ -349,7 +393,9 @@ def iter_leaf_commands(
 ) -> Iterable[tuple[str, click.Command]]:
     """Yield ``(invocation, command)`` for every leaf command under ``root``."""
 
-    def walk(cmd: click.Command, parts: list[str], ctx: click.Context) -> Iterable[tuple[str, click.Command]]:
+    def walk(
+        cmd: click.Command, parts: list[str], ctx: click.Context
+    ) -> Iterable[tuple[str, click.Command]]:
         if isinstance(cmd, click.Group):
             seen: set[int] = set()
             for name in sorted(cmd.list_commands(ctx)):
@@ -385,7 +431,7 @@ def render_commands_table(root: click.Group) -> str:
     return "\n".join(lines)
 
 
-def _format_step_args(spec) -> str:
+def _format_action_args(spec) -> str:
     if not spec.arguments:
         return "_(none)_"
     bits: list[str] = []
@@ -406,7 +452,7 @@ def _format_step_args(spec) -> str:
 
 
 def _annotation_label(annotation: object) -> str:
-    """Human-readable type for a Session field annotation."""
+    """Human-readable type for a workspace field annotation."""
     origin = get_origin(annotation)
     if origin is list:
         args = get_args(annotation)
@@ -427,7 +473,7 @@ def _annotation_label(annotation: object) -> str:
     return text.replace("typing.", "").replace("None", "null")
 
 
-_SESSION_FIELD_NOTES: dict[str, str] = {
+_WORKSPACE_FIELD_NOTES: dict[str, str] = {
     "metric": "Resolved metric slug ids staged for the investigation",
     "entity": "Resolved entity slug ids",
     "series": "Resolved series slug ids (when targeting series directly)",
@@ -441,49 +487,55 @@ _SESSION_FIELD_NOTES: dict[str, str] = {
 }
 
 
-def render_session_section() -> str:
-    """Sessions how-to plus a field table derived from ``Session``."""
+def render_workspace_section() -> str:
+    """Workspaces how-to plus a field table derived from ``Workspace``."""
     lines = [
-        "## Sessions",
+        "## Workspaces",
         "",
-        "A **session** is the portable bag of resource ids and filters that steps share.",
-        "It mirrors `jst query` / `JSTDataClient.query` intent: no observations, only what",
-        "is needed to (re)run a query or drive a TUI pipeline.",
+        "A **workspace** is the investigation's single global bag of resource ids.",
+        "Views also see an **Input Context**: workspace plus optional action `context`",
+        "overrides (focus/replace). Saved **queries** are the cartesian `/query` specs;",
+        "the workspace itself is a basket. No observations are stored.",
         "",
-        "Saved workflows do **not** store session contents. After discovering metrics or",
-        "entities, write them into a session JSON and pass `--session` on `jst run` or",
-        "`jst workflow run`. `discover` defaults to session metrics when any are staged",
-        "(pass `--session-metrics=false` for the full entity-anchored candidate search);",
-        "`rank` defaults to session entities when any are staged.",
+        "`discover` defaults to workspace metrics when any are staged",
+        "(`workspace_metrics=false` in `--args` for the full entity-anchored search);",
+        "`rank` defaults to workspace entities when any are staged",
+        "(`workspace_entities=false` to rank the full taxonomy/all population).",
+        "`metrics` takes `mode` `union`|`intersect` over the Input Context entity set.",
+        "`table` takes optional `sort_by` `id`|`value` for the latest-value matrix.",
         "",
-        "### Session JSON fields",
+        "### Workspace resource fields",
         "",
-        "Primary fields for agent-written sessions (from the installed `Session` model).",
-        "Prefer `head` / `tail` / `as_of` for query windows. Omit unused fields.",
+        "Primary fields inside each investigation workspace (from the installed",
+        "`Workspace` model). Prefer `head` / `tail` / `as_of` for query windows.",
+        "Omit unused fields.",
         "",
         "| Field | Type | Notes |",
         "|-------|------|-------|",
     ]
-    for f in fields(Session):
-        if f.name in _SESSION_FIELDS_OMIT:
+    for f in fields(Workspace):
+        if f.name in _WORKSPACE_FIELDS_OMIT:
             continue
-        note = _SESSION_FIELD_NOTES.get(f.name, "")
+        note = _WORKSPACE_FIELD_NOTES.get(f.name, "")
         lines.append(
             f"| `{_md_cell(f.name)}` | {_md_cell(_annotation_label(f.type))} | {_md_cell(note)} |"
         )
     lines.append("")
-    lines.append(_SESSION_HOWTO.rstrip())
+    lines.append(_WORKSPACE_HOWTO.rstrip())
     return "\n".join(lines)
 
 
-def render_steps_section() -> str:
-    specs = list_steps()
+def render_actions_section() -> str:
+    specs = list_actions()
     lines = [
-        "## Interactive steps",
+        "## Actions",
         "",
-        "Atoms for `jst run` / saved workflows (human-facing TUIs). Order-agnostic: any",
-        "step accepts an empty or arbitrary session. Do not operate these UIs yourself;",
-        "use `jst step <id>` if you need details while helping a human.",
+        "Reusable analytical UIs instantiated inside investigations. Prefer **views**",
+        "(`table`, `metric`, `entity`, `metrics`) for read/drill over Input Context;",
+        "keep `console` / `discover` / `rank` when the human still needs to stage or",
+        "explore the global workspace. Do not operate these UIs yourself; use",
+        "`jst action show <id>` if you need details while helping a human. Seed them",
+        "with `jst action add <id> --args '{...}'`.",
         "",
         "| Id | Name | Description | Arguments | Example |",
         "|----|------|-------------|-----------|---------|",
@@ -500,15 +552,15 @@ def render_steps_section() -> str:
                     f"`{_md_cell(spec.id)}`",
                     _md_cell(spec.name),
                     _md_cell(spec.description),
-                    _md_cell(_format_step_args(spec)),
-                    f"`{_md_cell(spec.example or f'jst run {spec.id}')}`",
+                    _md_cell(_format_action_args(spec)),
+                    f"`{_md_cell(spec.example or f'jst action add {spec.id}')}`",
                 ]
             )
             + " |"
         )
 
     lines.append("")
-    lines.append("### Step details")
+    lines.append("### Action details")
     for spec in specs:
         lines.append("")
         lines.append(f"#### `{spec.id}` — {spec.name}")
@@ -516,7 +568,7 @@ def render_steps_section() -> str:
         lines.append(spec.description.strip())
         lines.append("")
         if spec.arguments:
-            lines.append("Arguments:")
+            lines.append("Seed arguments (JSON keys for `--args`):")
             lines.append("")
             for arg in spec.arguments:
                 req = "required" if arg.required else "optional"
@@ -525,7 +577,7 @@ def render_steps_section() -> str:
                 )
                 multi = ", repeatable" if arg.multiple else ""
                 lines.append(
-                    f"- `{arg.flag()}` ({arg.type}, {req}{multi}{default}): "
+                    f"- `{arg.name}` ({arg.type}, {req}{multi}{default}): "
                     f"{arg.description}"
                 )
                 if arg.choices:
@@ -533,7 +585,7 @@ def render_steps_section() -> str:
                         f"  - Choices: {', '.join(f'`{c}`' for c in arg.choices)}"
                     )
             lines.append("")
-        example = spec.example or f"jst run {spec.id}"
+        example = spec.example or f"jst action add {spec.id}"
         lines.append(f"Example: `{example}`")
     return "\n".join(lines)
 
@@ -563,15 +615,15 @@ def render_agent_guide(cli_group: click.Group) -> str:
         "",
         _COMPOSITION.rstrip(),
         "",
-        render_session_section(),
+        render_workspace_section(),
         "",
-        render_steps_section(),
+        render_actions_section(),
         "",
         "## CLI commands",
         "",
         "One row per leaf command, derived from the installed CLI. Prefer the recipes "
         "and hard rules above; use this table to confirm flags, not as a checklist to "
-        "execute.",
+        "execute. Low-level resource commands live under `jst api`.",
         "",
         render_commands_table(cli_group),
         "",

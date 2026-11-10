@@ -3,8 +3,8 @@ from datetime import datetime
 import pytest
 
 from jstdata.models import Entity, Observation, Series, TimeSeries
-from jstdata.workflows.base import PipelineError, get_step, resolve_pipeline
-from jstdata.workflows.chart import (
+from jstdata.actions.base import get_action, parse_action_kwargs
+from jstdata.actions.chart import (
     downsample,
     format_compact,
     pick_frequency,
@@ -145,10 +145,10 @@ def test_render_preview_scales_each_series_to_its_own_max():
 def test_discover_check_action_enables_keys():
     from unittest.mock import MagicMock
 
-    import jstdata.workflows.discover as discover_mod
-    from jstdata.session import Session
+    import jstdata.actions.discover as discover_mod
+    from jstdata.investigation.model import Workspace
 
-    screen = discover_mod.DiscoverScreen(MagicMock(), Session())
+    screen = discover_mod.DiscoverScreen(MagicMock(), Workspace())
     assert screen.check_action("add_metric", ()) is True
     assert screen.check_action("cursor_down", ()) is True
     screen.focused = MagicMock()  # not an Input
@@ -156,11 +156,11 @@ def test_discover_check_action_enables_keys():
 
 
 def test_discover_is_registered():
-    import jstdata.workflows  # noqa: F401
+    import jstdata.actions  # noqa: F401
 
-    spec = get_step("discover")
+    spec = get_action("discover")
     assert spec.name == "Discover"
-    assert spec.to_dict()["example"].startswith("jst run console")
+    assert "action add discover" in spec.to_dict()["example"]
     assert any(a["name"] == "mode" for a in spec.to_dict()["arguments"])
     keys = {b["key"] for b in spec.to_dict()["bindings"]}
     assert "/" in keys
@@ -168,53 +168,84 @@ def test_discover_is_registered():
     assert "tab" in keys
 
 
-def test_resolve_discover_mode():
-    resolved = resolve_pipeline(["discover", "--mode", "intersect"])
-    assert resolved[0].spec.id == "discover"
-    assert resolved[0].kwargs["mode"] == "intersect"
+def test_parse_discover_mode():
+    spec = get_action("discover")
+    kwargs = parse_action_kwargs(spec, ["--mode", "intersect"])
+    assert kwargs["mode"] == "intersect"
 
-    defaulted = resolve_pipeline(["discover"])
-    assert defaulted[0].kwargs["mode"] == "union"
-    assert defaulted[0].kwargs.get("session_metrics") is True
+    defaulted = parse_action_kwargs(spec, [])
+    assert defaulted["mode"] == "union"
+    assert defaulted.get("workspace_metrics") is True
 
-    with pytest.raises(PipelineError, match="Choices"):
-        resolve_pipeline(["discover", "--mode", "nope"])
+    with pytest.raises(ValueError, match="Choices"):
+        parse_action_kwargs(spec, ["--mode", "nope"])
 
 
-def test_resolve_discover_session_metrics():
-    import jstdata.workflows  # noqa: F401
+def test_parse_discover_workspace_metrics():
+    import jstdata.actions  # noqa: F401
 
-    off = resolve_pipeline(["discover", "--session-metrics", "false"])
-    assert off[0].kwargs["session_metrics"] is False
+    spec = get_action("discover")
+    off = parse_action_kwargs(spec, ["--workspace-metrics", "false"])
+    assert off["workspace_metrics"] is False
 
-    spec = get_step("discover")
-    arg = next(a for a in spec.to_dict()["arguments"] if a["name"] == "session_metrics")
+    arg = next(a for a in spec.to_dict()["arguments"] if a["name"] == "workspace_metrics")
     assert arg["default"] is True
 
 
-def test_discover_session_metrics_scope():
+def test_discover_workspace_metrics_scope():
     from unittest.mock import MagicMock
 
-    from jstdata.session import Session
-    from jstdata.workflows.discover import DiscoverScreen
+    from jstdata.investigation.model import Workspace
+    from jstdata.actions.discover import DiscoverScreen
 
     with_metrics = DiscoverScreen(
         MagicMock(),
-        Session(entity=["france"], metric=["gdp", "cpi"]),
-        session_metrics=True,
+        Workspace(entity=["france"], metric=["gdp", "cpi"]),
+        workspace_metrics=True,
     )
-    assert with_metrics._using_session_metrics()
+    assert with_metrics._using_workspace_metrics()
 
     no_metrics = DiscoverScreen(
         MagicMock(),
-        Session(entity=["france"]),
-        session_metrics=True,
+        Workspace(entity=["france"]),
+        workspace_metrics=True,
     )
-    assert not no_metrics._using_session_metrics()
+    assert not no_metrics._using_workspace_metrics()
 
     opted_out = DiscoverScreen(
         MagicMock(),
-        Session(entity=["france"], metric=["gdp"]),
-        session_metrics=False,
+        Workspace(entity=["france"], metric=["gdp"]),
+        workspace_metrics=False,
     )
-    assert not opted_out._using_session_metrics()
+    assert not opted_out._using_workspace_metrics()
+
+
+def test_discover_metric_scope_includes_taxonomy():
+    from unittest.mock import MagicMock
+
+    from jstdata.investigation.model import Workspace
+    from jstdata.actions.discover import DiscoverScreen
+
+    empty = DiscoverScreen(MagicMock(), Workspace())
+    assert not empty._has_metric_scope()
+
+    with_entities = DiscoverScreen(MagicMock(), Workspace(entity=["usa"]))
+    assert with_entities._has_metric_scope()
+
+    with_tax = DiscoverScreen(MagicMock(), Workspace(taxonomy="country"))
+    assert with_tax._has_metric_scope()
+
+
+def test_take_page_intelligent_pagination():
+    from jstdata.actions.pagination import page_fetch_limit, take_page
+
+    assert page_fetch_limit(20) == 21
+    page, more = take_page(list(range(21)), 20)
+    assert page == list(range(20))
+    assert more is True
+    page, more = take_page(list(range(20)), 20)
+    assert page == list(range(20))
+    assert more is False
+    page, more = take_page(list(range(3)), 20)
+    assert page == list(range(3))
+    assert more is False

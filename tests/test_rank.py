@@ -3,8 +3,8 @@ from datetime import datetime
 import pytest
 
 from jstdata.models import Entity, Observation, Series, TimeSeries
-from jstdata.workflows.base import get_step, resolve_pipeline
-from jstdata.workflows.chart import (
+from jstdata.actions.base import get_action, parse_action_kwargs
+from jstdata.actions.chart import (
     format_compact,
     format_rank_line,
     horizontal_bar,
@@ -77,9 +77,9 @@ def test_format_rank_line_shared_scale():
 
 
 def test_rank_is_registered():
-    import jstdata.workflows  # noqa: F401
+    import jstdata.actions  # noqa: F401
 
-    spec = get_step("rank")
+    spec = get_action("rank")
     assert spec.name == "Rank"
     assert "rank" in spec.to_dict()["example"]
     assert any(a["name"] == "taxonomy" for a in spec.to_dict()["arguments"])
@@ -89,59 +89,53 @@ def test_rank_is_registered():
     assert "tab" in keys
 
 
-def test_resolve_rank_taxonomy():
-    resolved = resolve_pipeline(["rank", "--taxonomy", "country"])
-    assert resolved[0].spec.id == "rank"
-    assert resolved[0].kwargs["taxonomy"] == "country"
+def test_parse_rank_taxonomy():
+    spec = get_action("rank")
+    resolved = parse_action_kwargs(spec, ["--taxonomy", "country"])
+    assert resolved["taxonomy"] == "country"
 
-    defaulted = resolve_pipeline(["rank"])
-    assert defaulted[0].kwargs.get("taxonomy") in (None, "")
+    defaulted = parse_action_kwargs(spec, [])
+    assert defaulted.get("taxonomy") in (None, "")
 
-    chained = resolve_pipeline(
-        ["discover", ":", "rank", "--taxonomy", "country"]
+
+def test_parse_rank_workspace_entities():
+    import jstdata.actions  # noqa: F401
+
+    spec = get_action("rank")
+    defaulted = parse_action_kwargs(spec, [])
+    assert defaulted.get("workspace_entities") is True
+
+    flag_off = parse_action_kwargs(spec, ["--workspace-entities", "false"])
+    assert flag_off["workspace_entities"] is False
+
+    combined = parse_action_kwargs(
+        spec, ["--taxonomy", "country", "--workspace-entities", "true"]
     )
-    assert [r.spec.id for r in chained] == ["discover", "rank"]
-    assert chained[1].kwargs["taxonomy"] == "country"
+    assert combined["taxonomy"] == "country"
+    assert combined["workspace_entities"] is True
 
-
-def test_resolve_rank_session_entities():
-    import jstdata.workflows  # noqa: F401
-
-    defaulted = resolve_pipeline(["rank"])
-    assert defaulted[0].kwargs.get("session_entities") is True
-
-    flag_off = resolve_pipeline(["rank", "--session-entities", "false"])
-    assert flag_off[0].kwargs["session_entities"] is False
-
-    combined = resolve_pipeline(
-        ["rank", "--taxonomy", "country", "--session-entities", "true"]
-    )
-    assert combined[0].kwargs["taxonomy"] == "country"
-    assert combined[0].kwargs["session_entities"] is True
-
-    spec = get_step("rank")
-    arg = next(a for a in spec.to_dict()["arguments"] if a["name"] == "session_entities")
+    arg = next(a for a in spec.to_dict()["arguments"] if a["name"] == "workspace_entities")
     assert arg["default"] is True
 
 
-def test_rank_scopes_to_session_entities_when_present():
+def test_rank_scopes_to_workspace_entities_when_present():
     from unittest.mock import MagicMock
 
-    from jstdata.session import Session
-    from jstdata.workflows.rank import RankScreen
+    from jstdata.investigation.model import Workspace
+    from jstdata.actions.rank import RankScreen
 
     with_entities = RankScreen(
-        MagicMock(), Session(entity=["france", "germany"]), session_entities=True
+        MagicMock(), Workspace(entity=["france", "germany"]), workspace_entities=True
     )
-    assert with_entities._using_session_entities()
+    assert with_entities._using_workspace_entities()
     assert with_entities._scoped_entity_ids() == ["france", "germany"]
 
-    no_entities = RankScreen(MagicMock(), Session(metric=["gdp"]), session_entities=True)
-    assert not no_entities._using_session_entities()
+    no_entities = RankScreen(MagicMock(), Workspace(metric=["gdp"]), workspace_entities=True)
+    assert not no_entities._using_workspace_entities()
     assert no_entities._scoped_entity_ids() is None
 
     opted_out = RankScreen(
-        MagicMock(), Session(entity=["france"]), session_entities=False
+        MagicMock(), Workspace(entity=["france"]), workspace_entities=False
     )
-    assert not opted_out._using_session_entities()
+    assert not opted_out._using_workspace_entities()
     assert opted_out._scoped_entity_ids() is None

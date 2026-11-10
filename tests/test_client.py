@@ -9,7 +9,16 @@ from jstdata.client import (
     InvalidInputError,
     JSTDataClient
 )
-from jstdata.models import Series, Entity, Metric, Observation, Taxonomy, TimeSeries
+from jstdata.models import (
+    Series,
+    Entity,
+    Metric,
+    Observation,
+    PreviewRow,
+    Release,
+    Taxonomy,
+    TimeSeries,
+)
 
 
 @pytest.fixture
@@ -90,6 +99,7 @@ def _query_record():
             {
                 "observation_timestamp": "2024-01-01T00:00:00",
                 "release_timestamp": "2024-01-01T00:00:00",
+                "release_id": "bea-2024-01-01",
                 "value": 100.0,
             }
         ],
@@ -106,6 +116,7 @@ def test_query(client, mock_url):
         assert isinstance(results[0], TimeSeries)
         assert results[0].series.id == "ABC123"
         assert results[0].observations[0].value == 100.0
+        assert results[0].observations[0].release_id == "bea-2024-01-01"
         qs = m.request_history[-1].qs
         assert qs["tail"] == ["20"]
         assert "head" not in qs
@@ -179,6 +190,7 @@ def test_query_df(client, mock_url):
         assert df.iloc[0]["value"] == 100.0
         assert df.iloc[0]["series_id"] == "ABC123"
         assert df.iloc[0]["entity_id"] == "usa"
+        assert df.iloc[0]["release_id"] == "bea-2024-01-01"
 
 
 def test_get_series_observations(client, mock_url):
@@ -190,6 +202,7 @@ def test_get_series_observations(client, mock_url):
             {
                 "observation_timestamp": "2024-01-01T00:00:00",
                 "release_timestamp": "2024-01-01T00:00:00",
+                "release_id": "bea-2024-01-01",
                 "value": 100.0,
             }
         ],
@@ -197,15 +210,114 @@ def test_get_series_observations(client, mock_url):
     with requests_mock.Mocker() as m:
         m.get(f"{mock_url}/series/ABC123/observations", json=mock_data)
         results = client.get_series_observations(
-            "ABC123", start_date="2000-01-01", limit=1000
+            "ABC123",
+            start_date="2000-01-01",
+            release_id="bea-2024-01-01",
+            limit=1000,
         )
         assert len(results) == 1
         assert isinstance(results[0], Observation)
         assert results[0].series_id == "ABC123"
         assert results[0].value == 100.0
+        assert results[0].release_id == "bea-2024-01-01"
         qs = m.request_history[-1].qs
         assert qs["start_date"] == ["2000-01-01"]
         assert qs["limit"] == ["1000"]
+        assert qs["release_id"] == ["bea-2024-01-01"]
+
+
+def test_get_metric_fat_fields(client, mock_url):
+    mock_data = {
+        "id": "long-term-debt",
+        "name": "Long-term Debt",
+        "description": "Obligations due beyond one year.",
+        "variants": [
+            {
+                "frequency": "Annual",
+                "source": "10-K",
+                "seasonal_adjustment": None,
+                "units": "USD",
+                "series_count": 4,
+            }
+        ],
+    }
+    with requests_mock.Mocker() as m:
+        m.get(f"{mock_url}/metric/long-term-debt", json=mock_data)
+        metric = client.get_metric("long-term-debt")
+        assert isinstance(metric, Metric)
+        assert metric.description.startswith("Obligations")
+        assert len(metric.variants) == 1
+        assert metric.variants[0].series_count == 4
+
+
+def test_preview_and_release(client, mock_url):
+    preview_data = {
+        "records": [
+            {
+                "metric_id": "long-term-debt",
+                "entity_id": "cik:1652044",
+                "series_count": 1,
+                "observation_count": 12,
+                "earliest": "2015-01-01T00:00:00",
+                "latest": "2025-01-01T00:00:00",
+            }
+        ]
+    }
+    release_data = {
+        "id": "0001652044-25-000012",
+        "label": "10-K (2025-02-04)",
+        "release_date": "2025-02-04",
+        "source": "10-K",
+    }
+    with requests_mock.Mocker() as m:
+        m.get(f"{mock_url}/preview", json=preview_data)
+        m.get(f"{mock_url}/release/0001652044-25-000012", json=release_data)
+        rows = client.preview(
+            metric="long-term-debt", entity="cik:1652044", limit=10
+        )
+        assert len(rows) == 1
+        assert isinstance(rows[0], PreviewRow)
+        assert rows[0].series_count == 1
+        release = client.get_release("0001652044-25-000012")
+        assert isinstance(release, Release)
+        assert release.source == "10-K"
+        assert release.release_date.isoformat() == "2025-02-04"
+
+
+def test_list_releases(client, mock_url):
+    payload = {
+        "records": [
+            {
+                "id": "bea-2024-02-01",
+                "label": "GDP (2024-02-01)",
+                "release_date": "2024-02-01",
+                "source": "BEA",
+            }
+        ]
+    }
+    with requests_mock.Mocker() as m:
+        m.get(f"{mock_url}/release", json=payload)
+        rows = client.list_releases(
+            limit=20,
+            offset=0,
+            sort_order="desc",
+            start_date="2024-01-01",
+            end_date="2024-12-31",
+        )
+        assert len(rows) == 1
+        assert rows[0].id == "bea-2024-02-01"
+        assert rows[0].label == "GDP (2024-02-01)"
+        qs = m.last_request.qs
+        assert qs["limit"] == ["20"]
+        assert qs["offset"] == ["0"]
+        assert qs["sort_order"] == ["desc"]
+        assert qs["start_date"] == ["2024-01-01"]
+        assert qs["end_date"] == ["2024-12-31"]
+
+
+def test_preview_requires_metric_and_entity(client):
+    with pytest.raises(InvalidInputError, match="preview"):
+        client.preview(metric=["long-term-debt"])
 
 
 def test_list_taxonomies(client, mock_url):

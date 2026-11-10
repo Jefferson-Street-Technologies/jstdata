@@ -3,14 +3,14 @@
 from click.testing import CliRunner
 
 from jstdata.agent_guide import (
-    _SESSION_FIELDS_OMIT,
+    _WORKSPACE_FIELDS_OMIT,
     format_command_params,
     iter_leaf_commands,
     package_version,
     render_agent_guide,
 )
 from jstdata.cli import cli
-from jstdata.workflows import list_steps
+from jstdata.actions import list_actions
 
 
 def test_agent_guide_cli():
@@ -29,20 +29,33 @@ def test_agent_guide_cli():
     assert "## Resolution" in out
     assert "## Common recipes" in out
     assert "Rank GDP among EU countries" in out
-    assert "session has entities" in out or "--session-entities=false" in out
-    assert "## Composition and workflows" in out
-    assert "## Sessions" in out
-    assert "### Session JSON fields" in out
-    assert "### Create and modify" in out
-    assert "`Session.load" in out or "Session.load" in out
-    assert "--session" in out
+    assert "Add a country series to the current investigation" in out
+    assert "Canadian household debt" in out
+    assert "Do not edit investigation YAML" in out
+    assert "typically edit" not in out
+    assert "`jst agent install`" in out
+    assert "`jst agent guide`" in out
+    assert "workspace_entities=false" in out or "workspace_metrics=false" in out
+    assert "## Investigations and actions" in out
+    assert "## Workspaces" in out
+    assert "### Workspace resource fields" in out
     assert "`metric`" in out
+    assert "Input Context" in out
+    assert "`table`" in out
+    assert "`metrics`" in out
+    assert "`release`" in out
+    assert "plain-bagel" in out
     assert "## CLI commands" in out
-    assert "## Interactive steps" in out
+    assert "## Actions" in out
     assert "`jst agent-guide`" in out
-    assert "`jst metric search`" in out
-    assert "`jst workflow create`" in out
-    assert "`jst run`" in out
+    assert "`jst api metric search`" in out
+    assert "`jst new`" in out
+    assert "`jst open`" in out
+    assert "`jst action add`" in out
+    assert "`jst query ls`" in out
+    assert "`jst run`" not in out
+    assert "`jst investigation create`" not in out
+    assert "jst workflow" not in out
     assert "Never invent" in out
     assert "--format json" in out
     assert "Do not launch interactive TUIs" in out
@@ -50,22 +63,26 @@ def test_agent_guide_cli():
     assert "Step keybindings" not in out
 
 
-def test_agent_guide_omits_legacy_session_fields():
+def test_agent_guide_omits_legacy_workspace_fields():
     guide = render_agent_guide(cli)
-    for name in _SESSION_FIELDS_OMIT:
-        assert f"`{name}`" not in guide, name
-    assert "`tail`" in guide
-    assert "`taxonomy`" in guide
+    # Only the workspace field table should omit these; the word may appear elsewhere.
+    start = guide.index("### Workspace resource fields")
+    end = guide.index("## Actions")
+    table = guide[start:end]
+    for name in _WORKSPACE_FIELDS_OMIT:
+        assert f"| `{name}` |" not in table, name
+    assert "`tail`" in table
+    assert "`taxonomy`" in table
 
 
-def test_agent_guide_session_fields_match_primary_model():
+def test_agent_guide_workspace_fields_match_primary_model():
     from dataclasses import fields
 
-    from jstdata.session import Session
+    from jstdata.investigation.model import Workspace
 
     guide = render_agent_guide(cli)
-    for f in fields(Session):
-        if f.name in _SESSION_FIELDS_OMIT:
+    for f in fields(Workspace):
+        if f.name in _WORKSPACE_FIELDS_OMIT:
             continue
         assert f"`{f.name}`" in guide, f.name
 
@@ -76,10 +93,10 @@ def test_agent_guide_lists_all_leaf_commands():
         assert f"`{invocation}`" in guide, invocation
 
 
-def test_agent_guide_lists_all_steps_without_keybindings():
+def test_agent_guide_lists_all_actions_without_keybindings():
     guide = render_agent_guide(cli)
-    specs = list_steps()
-    assert specs, "expected registered steps"
+    specs = list_actions()
+    assert specs, "expected registered actions"
     for spec in specs:
         assert f"`{spec.id}`" in guide
         if spec.example:
@@ -91,14 +108,13 @@ def test_agent_guide_policy_before_cli_table():
     guide = render_agent_guide(cli)
     assert guide.index("## Hard rules") < guide.index("## Common recipes")
     assert guide.index("## Common recipes") < guide.index("## CLI commands")
-    assert guide.index("## Interactive steps") < guide.index("## CLI commands")
+    assert guide.index("## Actions") < guide.index("## CLI commands")
 
 
 def test_format_command_params_includes_options():
-    # Pick a known leaf with several options.
     cmd = None
     for invocation, leaf in iter_leaf_commands(cli):
-        if invocation == "jst metric search":
+        if invocation == "jst api metric search":
             cmd = leaf
             break
     assert cmd is not None
