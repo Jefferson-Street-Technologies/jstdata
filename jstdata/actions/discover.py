@@ -453,7 +453,10 @@ class DiscoverScreen(BaseScreen):
         self.query_one("#metrics-list", ListView).action_cursor_up()
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        if action == "add_metric" and isinstance(self.focused, Input):
+        # Priority keys must reach the filter Input (Enter submits, Space types).
+        if action in ("add_metric", "preview_metric") and isinstance(
+            self.focused, Input
+        ):
             return False
         return True
 

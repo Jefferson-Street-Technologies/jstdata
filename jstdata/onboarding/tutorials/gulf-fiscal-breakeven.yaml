@@ -1,0 +1,38 @@
+id: gulf-fiscal-breakeven
+title: What Oil Price Do Gulf Budgets Need?
+level: open
+summary: An open research question. The coach only checks progress — you choose the path.
+start_action: 0
+investigation:
+  title: "Tutorial · What Oil Price Do Gulf Budgets Need?"
+  workspace:
+    id: 0
+    label: Gulf budgets
+  actions:
+  - id: 0
+    type: home
+    description: Tutorial home. g always returns here.
+phases:
+  - text: |
+      RESEARCH QUESTION: Which Gulf producers need the highest oil price to balance their budgets — and are they also the biggest exporters?
+      No step-by-step this time. First, collect the fiscal breakeven oil price, plus at least one export or production metric.
+    do: 'Your call. Stuck? Home → 2 searches, Space collects, Enter opens a view, ? lists keys'
+    until:
+      workspace_has_metric: breakeven-fiscal-oil-price
+      workspace_metric_count: 2
+
+  - text: |
+      Now build your population: collect at least five Persian Gulf states.
+    until:
+      workspace_entity_count: 5
+
+  - text: |
+      Save your workspace as a query and chart it. Who is most exposed if oil falls to $60?
+    until:
+      screen_flag: chart
+
+  - text: |
+      Done! Copy the Python for this query (y in the query view) to keep going in a notebook.
+    do: 'Press :  →  type tutorial  →  Enter for more tutorials, or g for Home'
+    until:
+      done: true

@@ -451,3 +451,24 @@ def test_get_resources_batches_over_api_limit(client, mock_url):
         assert len(m.request_history) == 2
         assert [r.id for r in resources] == ids
         assert resources[0].label == "ID-0"
+
+
+@pytest.mark.parametrize(
+    "method, path",
+    [
+        ("search", "search"),
+        ("search_entities", "search/entities"),
+        ("search_metrics", "search/metrics"),
+        ("search_series", "search/series"),
+    ],
+)
+def test_search_lowercases_query(client, mock_url, method, path):
+    """The API only matches lowercase text; ``Amazon`` must be sent as ``amazon``."""
+    from urllib.parse import parse_qs, urlparse
+
+    with requests_mock.Mocker() as m:
+        m.get(f"{mock_url}/{path}", json={"records": []})
+        getattr(client, method)("  Amazon ")
+        # requests_mock's .qs lowercases values, so read the raw URL.
+        raw = parse_qs(urlparse(m.request_history[-1].url).query)
+        assert raw["query"] == ["amazon"]
