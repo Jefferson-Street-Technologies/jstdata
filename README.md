@@ -111,7 +111,7 @@ investigation (`tutorial-<id>`); leaving it reopens yours.
 
 | Tutorial | Level | What you do |
 |----------|-------|-------------|
-| `first-investigation` | Beginner · guided | Compare Apple, Microsoft, Amazon: Home → Search → collect → metric view → Workspace → Query → chart |
+| `big-tech-gross-profit` | Beginner · guided | Compare Apple, Microsoft, Amazon: Home → Search → collect → metric view → Workspace → Query → chart |
 | `gulf-oil-exports` | Intermediate · assisted | Metric-first: collect the oil metrics, open one to see which countries report it, collect the Gulf, chart the query |
 | `gulf-fiscal-breakeven` | Advanced · open | Research question on fiscal breakeven oil prices; the coach only checks progress |
 

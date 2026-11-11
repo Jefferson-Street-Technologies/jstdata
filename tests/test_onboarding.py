@@ -23,7 +23,7 @@ from jstdata.onboarding import (
 def test_bundled_tutorials_cover_every_level():
     tutorials = list_tutorials()
     assert [t.id for t in tutorials] == [
-        "first-investigation",
+        "big-tech-gross-profit",
         "gulf-oil-exports",
         "gulf-fiscal-breakeven",
     ]
@@ -106,7 +106,7 @@ def test_render_hints_follow_focus_and_progress():
     _, _, do = gulf.render(CoachSnapshot(entities=("saudi-arabia",)))
     assert do.startswith("▶ DO: /")
     assert "collected so far: 1/5 entities" in do
-    coach = TutorialCoach(load_tutorial("first-investigation"))
+    coach = TutorialCoach(load_tutorial("big-tech-gross-profit"))
     coach.phase_index = 5  # "g → 4" (needs navigation)
     _, _, do = coach.render(CoachSnapshot(focus_in_input=True))
     assert "Esc" in do and "text box" in do
@@ -136,7 +136,7 @@ def test_cli_tutorial_list():
 def test_cli_tutorial_unknown_id():
     result = CliRunner().invoke(cli, ["tutorial", "nope"])
     assert result.exit_code == 2
-    assert "first-investigation" in result.output
+    assert "big-tech-gross-profit" in result.output
 
 
 def test_cli_tutorial_launches_host(monkeypatch):
@@ -249,7 +249,7 @@ def test_opening_another_investigation_ends_tutorial(tmp_path):
     mark_prompted(tmp_path)
 
     async def run():
-        mine, app = _host(tmp_path, start_tutorial="first-investigation")
+        mine, app = _host(tmp_path, start_tutorial="big-tech-gross-profit")
         async with app.run_test() as pilot:
             await pilot.pause(0.5)
             assert app.coach is not None
@@ -267,7 +267,7 @@ def test_coach_follows_into_workspace_drawer(tmp_path):
     mark_prompted(tmp_path)
 
     async def run():
-        _, app = _host(tmp_path, start_tutorial="first-investigation")
+        _, app = _host(tmp_path, start_tutorial="big-tech-gross-profit")
         async with app.run_test() as pilot:
             await pilot.pause(0.5)
             base = app.screen
