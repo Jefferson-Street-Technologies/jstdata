@@ -1,10 +1,10 @@
 id: gulf-fiscal-breakeven
-title: What oil price do Gulf budgets need?
+title: What Oil Price Do Gulf Budgets Need?
 level: open
 summary: An open research question. The coach only checks progress — you choose the path.
 start_action: 0
 investigation:
-  title: "Tutorial · Gulf fiscal breakeven"
+  title: "Tutorial · What Oil Price Do Gulf Budgets Need?"
   workspace:
     id: 0
     label: Gulf budgets

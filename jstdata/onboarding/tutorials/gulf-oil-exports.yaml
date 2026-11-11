@@ -1,10 +1,10 @@
 id: gulf-oil-exports
-title: Persian Gulf oil exports
+title: Persian Gulf Oil Exports
 level: assisted
 summary: Start from the oil metrics, open one to see which countries report it, collect the Gulf producers, then chart them.
 start_action: 0
 investigation:
-  title: "Tutorial · Persian Gulf oil exports"
+  title: "Tutorial · Persian Gulf Oil Exports"
   workspace:
     id: 0
     label: Gulf oil

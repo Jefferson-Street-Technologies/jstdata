@@ -1,10 +1,10 @@
 id: big-tech-gross-profit
-title: Big Tech gross profit
+title: Big Tech Gross Profit
 level: guided
 summary: Compare Apple, Microsoft, and Amazon. Learn Home, Search, the workspace, metric views, and queries.
 start_action: 0
 investigation:
-  title: "Tutorial · Big Tech gross profit"
+  title: "Tutorial · Big Tech Gross Profit"
   workspace:
     id: 0
     label: Big tech
