@@ -165,7 +165,8 @@ def inspector_copy(dest: Destination, inv: Investigation) -> str:
         body += (
             "\n\n[bold #4ade80]Start exploring[/]\n"
             "[#aaa]Search for a company, metric, or economic series. "
-            "Add resources to your workspace, then create a query.[/]"
+            "Add resources to your workspace, then create a query.[/]\n"
+            "[#aaa]New here? Press [bold #e0e0e0]t[/] for a guided tutorial.[/]"
         )
     return body
 

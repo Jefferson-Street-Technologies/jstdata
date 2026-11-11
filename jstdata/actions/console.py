@@ -278,8 +278,9 @@ class WorkspaceScreen(BaseScreen):
             or len(metrics) > LOCAL_CAP
             or len(series) > LOCAL_CAP
         )
-        self._show_rows(self.catalog)
         self._refresh_help_hint()
+        # Re-apply anything typed while the prefetch was in flight.
+        self._apply_query(self.query_one("#search-input", Input).value)
 
     async def _fetch_catalog(
         self,
@@ -369,9 +370,12 @@ class WorkspaceScreen(BaseScreen):
 
     @on(Input.Changed, "#search-input")
     def on_search_changed(self, event: Input.Changed) -> None:
+        self._apply_query(event.value)
+
+    def _apply_query(self, value: str) -> None:
         if self.search_task:
             self.search_task.cancel()
-        query = event.value.strip()
+        query = value.strip()
         if not query:
             self._show_rows(self.catalog)
             return

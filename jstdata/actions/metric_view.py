@@ -243,6 +243,10 @@ class MetricScreen(BaseScreen):
         keys.append("[bold]space[/bold] collect")
         return keys
 
+    def coach_flags(self) -> set[str]:
+        """State the onboarding coach can check (``loaded``)."""
+        return {"loaded"} if self._loaded else set()
+
     def action_load(self) -> None:
         if not self._metric_id:
             self.notify("No metric in Input Context", severity="warning")
@@ -260,7 +264,11 @@ class MetricScreen(BaseScreen):
     def action_leave_filter(self) -> None:
         filt = self.query_one("#assoc-filter", Input)
         if self.focused is filt:
-            self.query_one("#entities-list", ListView).focus()
+            entities = self.query_one("#entities-list", ListView)
+            entities.focus()
+            # Highlight the top match so space collects it, not the metric.
+            if entities.index is None and len(entities.children):
+                entities.index = 0
 
     def action_cursor_down(self) -> None:
         if isinstance(self.focused, Input):

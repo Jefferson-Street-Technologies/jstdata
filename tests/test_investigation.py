@@ -538,6 +538,7 @@ def test_home_destinations_are_five_in_order():
     assert "No recent updates available" not in recent
     assert "unified" not in recent.lower()
     assert "Start exploring" in recent
+    assert "guided tutorial" in recent
     assert "Start exploring" not in copy
 
 

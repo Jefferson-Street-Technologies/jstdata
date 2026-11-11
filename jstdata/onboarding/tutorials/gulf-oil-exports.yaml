@@ -1,0 +1,59 @@
+id: gulf-oil-exports
+title: Persian Gulf oil exports
+level: assisted
+summary: Start from the oil metrics, open one to see which countries report it, collect the Gulf producers, then chart them.
+start_action: 0
+investigation:
+  title: "Tutorial · Persian Gulf oil exports"
+  workspace:
+    id: 0
+    label: Gulf oil
+  actions:
+  - id: 0
+    type: home
+    description: Tutorial home. g always returns here.
+phases:
+  - text: |
+      Goal: find which Persian Gulf states export the most crude oil.
+      Start with the data, not the countries: search for the metric first.
+    do: '2 (Search)  →  type crude oil  →  Enter  →  Space on "Crude Oil Exports"'
+    until:
+      workspace_has_metric: crude-oil-exports
+
+  - text: |
+      Exports alone don't tell you much. Also collect production, to compare what each country pumps with what it ships.
+    do: '↓ to "Crude Oil Production"  →  Space'
+    until:
+      workspace_has_metric: crude-oil-production
+
+  - text: |
+      Which countries report crude exports? Open the metric's view and load the countries that carry it.
+    do: '↑ to "Crude Oil Exports"  →  Enter (open it)  →  r (load)'
+    until:
+      screen: MetricScreen
+      screen_flag: loaded
+
+  - text: |
+      These are the countries that report crude exports. Collect the Gulf producers: Saudi Arabia, Iraq, Kuwait, the UAE, Iran, Oman, Qatar. Is Bahrain on the list?
+    do: '/  →  type saudi  →  Enter  →  Space.  Repeat (Ctrl+U clears the filter) for at least 5 countries'
+    until:
+      workspace_entity_count: 5
+
+  - text: |
+      Turn your workspace into a saved query: every metric × every country.
+    do: 'g (Home)  →  5 (Queries)  →  Enter on "Create from workspace"'
+    until:
+      query_count: 1
+
+  - text: |
+      Run it, then chart it: who exports the most, and who ships the largest share of what they pump?
+    do: 'r (run)  →  c (chart)  →  [ / ] to flip between exports and production'
+    until:
+      screen_flag: chart
+
+  - text: |
+      Done! Bahrain never appeared: it has no crude-export data. Starting from the metric shows you who actually reports.
+      Want a leaderboard? Press :, type add rank, Enter.
+    do: 'Press :  →  type tutorial  →  Enter for the advanced Gulf tutorial, or g for Home'
+    until:
+      done: true

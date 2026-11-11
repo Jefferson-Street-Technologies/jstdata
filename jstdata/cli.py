@@ -714,6 +714,47 @@ def new_cmd(
     run_investigation_host(client)
 
 
+@cli.command("tutorial")
+@click.argument("tutorial_id", required=False)
+@click.option("--list", "list_only", is_flag=True, help="List tutorials and exit")
+def tutorial_cmd(tutorial_id: str | None, list_only: bool) -> None:
+    """Open the tutorial menu, or start TUTORIAL_ID directly.
+
+    Tutorials also live inside the TUI: press t (or :tutorial) anywhere.
+    Each runs in its own investigation; yours reopens when you leave.
+
+    \b
+    jst tutorial
+    jst tutorial gulf-oil-exports
+    jst tutorial --list
+    """
+    from .investigation import (
+        InvestigationError,
+        resume_or_create_investigation,
+        run_investigation_host,
+    )
+    from .onboarding import list_tutorials
+
+    tutorials = list_tutorials()
+    if list_only:
+        for tut in tutorials:
+            click.echo(f"{tut.id:<24} {tut.level_label:<24} {tut.title}")
+        return
+    if tutorial_id and tutorial_id not in {t.id for t in tutorials}:
+        known = ", ".join(t.id for t in tutorials)
+        click.echo(f"Error: no tutorial named {tutorial_id!r}. Available: {known}", err=True)
+        sys.exit(2)
+    try:
+        # The investigation to come back to when the tutorial ends.
+        resume_or_create_investigation()
+    except InvestigationError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(2)
+    run_investigation_host(
+        client, start_tutorial=tutorial_id, open_tutorial_menu=tutorial_id is None
+    )
+
+
 @cli.command("open")
 @click.argument("investigation_id")
 def open_cmd(investigation_id: str) -> None:

@@ -13,7 +13,7 @@ from textual.screen import ModalScreen, Screen
 from textual.timer import Timer
 from textual.widgets import Input, Label, Static
 
-from ..client import JSTDataClient
+from ..client import APP_DIR, JSTDataClient
 from ..actions.base import ActionBinding, get_action, hydrate_labels
 from ..actions.help import HelpScreen
 from .active import ActiveContext, active_path, load_active, save_active
@@ -23,6 +23,7 @@ from .api import (
     remove_action,
     remove_query,
     persist_investigation,
+    set_active,
     update_investigation,
 )
 from .bootstrap import ensure_bootstrap
@@ -40,15 +41,28 @@ from .browsers import DestinationScreen, WorkspaceBrowser
 from .home import HomeScreen
 from .nav import DEST_IDS, parse_goto
 from .search_drawer import SearchDrawer
-from .store import investigation_path, load_investigation
+from .store import investigation_path, load_investigation, save_investigation
 from .workspace_drawer import WorkspaceDrawer
 from ..actions.drill import DrillDownModal
 from ..actions.query_view import ObservationDetail
+from ..onboarding import (
+    CoachSnapshot,
+    Tutorial,
+    TutorialCoach,
+    completed_tutorials,
+    list_tutorials,
+    load_tutorial,
+    mark_completed,
+    mark_prompted,
+    should_prompt,
+)
+from ..onboarding.ui import LEAVE_TUTORIAL, CoachBar, TutorialMenu
 
 from . import home as _home  # noqa: F401
 import jstdata.actions  # noqa: F401
 
 POLL_INTERVAL = 0.4
+COACH_INTERVAL = 0.25
 
 
 class InvalidStateScreen(Screen):
@@ -234,6 +248,7 @@ class InvestigationHost(App):
         Binding("P", "parent_action", "To parent", key_display="P"),
         Binding("right", "child_action", "Into child", show=False),
         Binding("left", "parent_action", "To parent", show=False),
+        Binding("t", "tutorials", "Tutorials", key_display="t"),
         # ``dd`` is handled in on_key — Textual commas mean alternate keys, not chords.
     ]
 
@@ -245,6 +260,8 @@ class InvestigationHost(App):
         client: JSTDataClient,
         *,
         app_dir: Optional[Path] = None,
+        start_tutorial: Optional[str] = None,
+        open_tutorial_menu: bool = False,
     ) -> None:
         super().__init__()
         self.client = client
@@ -271,6 +288,14 @@ class InvestigationHost(App):
         self._nav_dest: str | None = None
         self._nav_return: str | None = None
         self._dest_index: dict[str, int] = {}
+        # Onboarding: running tutorial coach + where to return on leave.
+        self._initial_tutorial = load_tutorial(start_tutorial) if start_tutorial else None
+        self._open_tutorial_menu = open_tutorial_menu
+        self.coach: TutorialCoach | None = None
+        self._pre_tutorial: tuple[str, int] | None = None
+        self._coach_bar: CoachBar | None = None
+        self._coach_screen: Screen | None = None
+        self._coach_shown: tuple[str, str, str] | None = None
 
     def _active_file(self) -> Path:
         return active_path(app_dir=self.app_dir)
@@ -279,10 +304,24 @@ class InvestigationHost(App):
         assert self.active is not None
         return investigation_path(self.active.investigation, root=self.inv_root)
 
+    @property
+    def onboarding_dir(self) -> Path:
+        return self.app_dir or APP_DIR
+
     def on_mount(self) -> None:
         ensure_bootstrap(app_dir=self.app_dir)
         self._reload_everything(force_screen=True)
         self.set_interval(POLL_INTERVAL, self._poll_files)
+        self.set_interval(COACH_INTERVAL, self._poll_coach)
+        if self._invalid:
+            return
+        first_run = should_prompt(self.onboarding_dir)
+        if self._initial_tutorial is not None:
+            mark_prompted(self.onboarding_dir)
+            self.start_tutorial(self._initial_tutorial)
+        elif self._open_tutorial_menu or first_run:
+            mark_prompted(self.onboarding_dir)
+            self.call_after_refresh(self._open_tutorial_menu_screen, first_run)
 
     def remember_label(self, resource_id: str, label: str) -> None:
         self.labels[resource_id] = label or resource_id
@@ -837,6 +876,7 @@ class InvestigationHost(App):
         if action == "go_home" and isinstance(self.focused, Input):
             return False
         tree_actions = {
+            "tutorials",
             "command_palette",
             "next_sibling",
             "prev_sibling",
@@ -1027,6 +1067,8 @@ class InvestigationHost(App):
             self._cmd_rm(parsed, force=bool(parsed.options.get("force")))
         elif parsed.name == "rename":
             self._cmd_rename(parsed)
+        elif parsed.name == "tutorial":
+            self._open_tutorial_menu_screen(False)
 
     def _cmd_rename(self, parsed: ParsedCommand) -> None:
         if not self.investigation:
@@ -1241,10 +1283,139 @@ class InvestigationHost(App):
         self.notify(f"Deleted query {query_id}")
         self._show_front(reset=True)
 
+    # --- Onboarding: tutorials ------------------------------------------
+
+    def action_tutorials(self) -> None:
+        """Tutorial menu: start, switch, or leave a coached tutorial."""
+        self._open_tutorial_menu_screen(False)
+
+    def _open_tutorial_menu_screen(self, first_run: bool) -> None:
+        menu = TutorialMenu(
+            list_tutorials(),
+            completed_tutorials(self.onboarding_dir),
+            first_run=first_run,
+            active_id=self.coach.tutorial.id if self.coach else None,
+        )
+        # Defer until the modal has fully popped (same as command dispatch).
+        self.push_screen(menu, lambda choice: self.call_later(self._on_tutorial_choice, choice))
+
+    def _on_tutorial_choice(self, choice: str | None) -> None:
+        if choice is None:
+            return
+        if choice == LEAVE_TUTORIAL:
+            self.leave_tutorial()
+        else:
+            self.start_tutorial(load_tutorial(choice))
+
+    def _switch_investigation(self, investigation_id: str, action: int) -> None:
+        self._persist_workspace_if_dirty()
+        set_active(investigation_id, action=action, app_dir=self.app_dir)
+        self._nav_dest = None
+        self._reload_everything(force_screen=True)
+
+    def start_tutorial(self, tutorial: Tutorial) -> None:
+        """Install the tutorial investigation fresh and switch to it."""
+        if self.coach is None and self.active is not None:
+            self._pre_tutorial = (self.active.investigation, self.active.action)
+        save_investigation(tutorial.build_investigation(), root=self.inv_root)
+        self.coach = TutorialCoach(tutorial)
+        self._switch_investigation(tutorial.investigation_id, tutorial.start_action)
+
+    def leave_tutorial(self) -> None:
+        """Reopen the investigation that was active before the tutorial."""
+        self.coach = None
+        back, self._pre_tutorial = self._pre_tutorial, None
+        self._sync_coach_bar()
+        if back is not None:
+            try:
+                load_investigation(back[0], root=self.inv_root)
+            except (InvestigationError, OSError):
+                back = None
+        if back is not None:
+            self._switch_investigation(*back)
+        else:
+            self.action_go_home()
+
+    def coach_snapshot(self) -> CoachSnapshot:
+        focus_ids: set[str] = set()
+        node = self.focused
+        while node is not None:
+            if getattr(node, "id", None):
+                focus_ids.add(node.id)
+            node = getattr(node, "parent", None)
+        screen = self.screen
+        flags = getattr(screen, "coach_flags", None)
+        return CoachSnapshot(
+            metrics=tuple(self.workspace.metric),
+            entities=tuple(self.workspace.entity),
+            query_count=len(self.investigation.queries) if self.investigation else 0,
+            active_action=self.active.action if self.active else None,
+            focus_ids=frozenset(focus_ids),
+            focus_in_input=isinstance(self.focused, Input),
+            screen=type(screen).__name__,
+            home_dest=self._nav_dest,
+            screen_flags=frozenset(flags() if callable(flags) else ()),
+        )
+
+    def _poll_coach(self) -> None:
+        if self.coach is None:
+            return
+        if self.active is None or (
+            self.active.investigation != self.coach.tutorial.investigation_id
+        ):
+            # The user opened another investigation; the tutorial is over.
+            self.coach = None
+            self._pre_tutorial = None
+            self._sync_coach_bar()
+            return
+        snap = self.coach_snapshot()
+        if self.coach.advance(snap) and self.coach.is_finished:
+            mark_completed(self.onboarding_dir, self.coach.tutorial.id)
+        self._sync_coach_bar(snap)
+
+    def _sync_coach_bar(self, snap: CoachSnapshot | None = None) -> None:
+        """Keep the coach docked on the current action screen (or remove it).
+
+        Action screens are swapped with ``switch_screen``, so the bar is
+        remounted whenever the front screen changes. It follows the user into
+        the drawers and the palette (tutorial steps happen there); other
+        modals leave it on the screen beneath.
+        """
+        screen = self.screen
+        if isinstance(screen, ModalScreen) and not isinstance(
+            screen, (WorkspaceDrawer, SearchDrawer, CommandPalette)
+        ):
+            screen = self._coach_screen
+        bar = self._coach_bar
+        if bar is not None and (self.coach is None or self._coach_screen is not screen):
+            if bar.is_attached:
+                bar.remove()
+            self._coach_bar = self._coach_screen = None
+            self._coach_shown = None
+        if self.coach is None or screen is None or self._invalid:
+            return
+        text = self.coach.render(snap or self.coach_snapshot())
+        if self._coach_bar is None:
+            self._coach_bar = CoachBar(*text)
+            self._coach_screen = screen
+            screen.mount(self._coach_bar)
+        elif text != self._coach_shown:
+            self._coach_bar.update_text(*text)
+        self._coach_shown = text
+
 
 def run_investigation_host(
-    client: JSTDataClient, *, app_dir: Optional[Path] = None
+    client: JSTDataClient,
+    *,
+    app_dir: Optional[Path] = None,
+    start_tutorial: Optional[str] = None,
+    open_tutorial_menu: bool = False,
 ) -> None:
     """Launch the investigation TUI (after create/load has set active)."""
     ensure_bootstrap(app_dir=app_dir)
-    InvestigationHost(client, app_dir=app_dir).run()
+    InvestigationHost(
+        client,
+        app_dir=app_dir,
+        start_tutorial=start_tutorial,
+        open_tutorial_menu=open_tutorial_menu,
+    ).run()

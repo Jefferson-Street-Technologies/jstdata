@@ -1,0 +1,70 @@
+id: first-investigation
+title: Your first investigation
+level: guided
+summary: Compare Apple, Microsoft, and Amazon. Learn Home, Search, the workspace, metric views, and queries.
+start_action: 0
+investigation:
+  title: "Tutorial · Your first investigation"
+  workspace:
+    id: 0
+    label: Big tech
+  actions:
+  - id: 0
+    type: home
+    description: Tutorial home. g always returns here.
+phases:
+  - text: |
+      Goal: compare Apple, Microsoft, and Amazon. This is Home, where every investigation starts. The left column lists five destinations; Search (2) finds companies, metrics, and data series.
+    do: 'Press 2'
+    until:
+      home_dest: search
+
+  - text: |
+      Type to search. Results are grouped by type, and Space collects the highlighted row into your workspace (your working set).
+    do: 'Type apple  →  Enter (jump to the results)  →  check "Apple Inc." is highlighted  →  Space to collect it'
+    until:
+      workspace_has_entity: cik:320193
+
+  - text: |
+      Apple is collected. Do the same for Microsoft and Amazon.
+    do: '/  →  Ctrl+U (clear)  →  type microsoft  →  Enter  →  Space,  then the same for amazon'
+    until:
+      workspace_has_entity: [cik:789019, cik:1018724]
+
+  - text: |
+      Now a metric to compare them on. Metrics are things that get measured, like gross profit.
+    do: '/  →  Ctrl+U  →  type gross profit  →  Enter  →  Space on "Gross Profit"'
+    until:
+      workspace_has_metric: gross-profit
+
+  - text: |
+      Enter opens a view of the highlighted result. A metric view shows what the metric means and which entities report it.
+    do: 'With "Gross Profit" highlighted, press Enter  →  then r to load its details'
+    until:
+      screen: MetricScreen
+      screen_flag: loaded
+
+  - text: |
+      Views open as branches of your investigation. g always brings you back Home; destination 4 is your workspace.
+    do: 'Press g  →  4'
+    until:
+      home_dest: workspace
+
+  - text: |
+      Your workspace holds 3 companies and 1 metric. A query turns it into data: every metric × every company.
+    do: 'Esc  →  5 (Queries)  →  Enter on "Create from workspace"'
+    until:
+      query_count: 1
+
+  - text: |
+      This is your saved query. Run it to fetch the numbers, then switch to the chart.
+    do: 'Press r (run)  →  c (chart)'
+    until:
+      screen: QueryScreen
+      screen_flag: loaded
+
+  - text: |
+      Done! That's the whole loop: Search → collect → Workspace → Query. Re-run it from your shell any time: jst query run 1
+    do: 'Press :  →  type tutorial  →  Enter for the next tutorial, or g for Home'
+    until:
+      done: true

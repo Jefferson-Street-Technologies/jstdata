@@ -95,15 +95,35 @@ jst action show rank --json
 Inside the TUI: `g` returns Home (Recent / Search / Actions / Workspace /
 Queries). `esc` goes back one level. `:` opens the command palette (fuzzy
 destinations and saved queries, plus `:workspace`, `:search metric gdp`,
-`:query`, `:rename`, `:add`, `:rm`) · `n`/`p` (↑/↓) siblings · `N`/`P` (→/←) depth ·
-space collects into the workspace · `?` help · `q` quit.
+`:query`, `:rename`, `:add`, `:rm`, `:tutorial`) · `n`/`p` (↑/↓) siblings ·
+`N`/`P` (→/←) depth · space collects into the workspace · `t` tutorials ·
+`?` help · `q` quit.
 
 Active context lives in `~/.jstdata/.active.yaml`.
 
-### Tutorial
+### Tutorials
 
-First `jst` / `jst new` / `jst open` bootstraps bundled `tutorial` and
-`plain-bagel` investigations when none exist.
+The first time you open the TUI, a tutorial menu appears. Pick one, or press
+`esc` to explore on your own; `t` (or `:tutorial`) brings the menu back any
+time. A coach bar docked at the top explains each step and names the exact
+keys to press, and advances as you do them. Each tutorial runs in its own
+investigation (`tutorial-<id>`); leaving it reopens yours.
+
+| Tutorial | Level | What you do |
+|----------|-------|-------------|
+| `first-investigation` | Beginner · guided | Compare Apple, Microsoft, Amazon: Home → Search → collect → metric view → Workspace → Query → chart |
+| `gulf-oil-exports` | Intermediate · assisted | Metric-first: collect the oil metrics, open one to see which countries report it, collect the Gulf, chart the query |
+| `gulf-fiscal-breakeven` | Advanced · open | Research question on fiscal breakeven oil prices; the coach only checks progress |
+
+```bash
+jst tutorial                    # open the TUI with the tutorial menu
+jst tutorial gulf-oil-exports   # start one directly
+jst tutorial --list
+```
+
+Progress (menu seen, tutorials completed) lives in `~/.jstdata/onboarding.json`.
+First `jst` / `jst new` / `jst open` also bootstraps the bundled `tutorial`
+(welcome) and `plain-bagel` demo investigations when none exist.
 
 ### Agents
 
