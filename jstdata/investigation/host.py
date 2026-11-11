@@ -261,7 +261,6 @@ class InvestigationHost(App):
         *,
         app_dir: Optional[Path] = None,
         start_tutorial: Optional[str] = None,
-        open_tutorial_menu: bool = False,
     ) -> None:
         super().__init__()
         self.client = client
@@ -290,7 +289,6 @@ class InvestigationHost(App):
         self._dest_index: dict[str, int] = {}
         # Onboarding: running tutorial coach + where to return on leave.
         self._initial_tutorial = load_tutorial(start_tutorial) if start_tutorial else None
-        self._open_tutorial_menu = open_tutorial_menu
         self.coach: TutorialCoach | None = None
         self._pre_tutorial: tuple[str, int] | None = None
         self._coach_bar: CoachBar | None = None
@@ -319,7 +317,7 @@ class InvestigationHost(App):
         if self._initial_tutorial is not None:
             mark_prompted(self.onboarding_dir)
             self.start_tutorial(self._initial_tutorial)
-        elif self._open_tutorial_menu or first_run:
+        elif first_run:
             mark_prompted(self.onboarding_dir)
             self.call_after_refresh(self._open_tutorial_menu_screen, first_run)
 
@@ -1405,17 +1403,8 @@ class InvestigationHost(App):
 
 
 def run_investigation_host(
-    client: JSTDataClient,
-    *,
-    app_dir: Optional[Path] = None,
-    start_tutorial: Optional[str] = None,
-    open_tutorial_menu: bool = False,
+    client: JSTDataClient, *, app_dir: Optional[Path] = None
 ) -> None:
     """Launch the investigation TUI (after create/load has set active)."""
     ensure_bootstrap(app_dir=app_dir)
-    InvestigationHost(
-        client,
-        app_dir=app_dir,
-        start_tutorial=start_tutorial,
-        open_tutorial_menu=open_tutorial_menu,
-    ).run()
+    InvestigationHost(client, app_dir=app_dir).run()

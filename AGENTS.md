@@ -169,7 +169,7 @@ Seed args go on `arguments`. They configure the TUI via
 | Remove action | `jst action rm <action-id> --force` |
 | Resolve resources | `jst api metric search …` / `jst api entity search …` |
 | Query / observations | `jst api query …` / `jst api series observations …` |
-| Tutorials | `t` / `:tutorial` in the TUI · `jst tutorial [ID]` · `jst tutorial --list` |
+| Tutorials | `t` / `:tutorial` in the TUI (first run opens the menu) |
 | Agent bootstrap | `jst agent-guide` / `jst agent install` |
 | Inside the TUI | `g` home · `esc` back · `:` palette · `n`/`p` siblings · `N`/`P` depth · `:workspace` · space collect · `t` tutorials · `?` · `q` |
 

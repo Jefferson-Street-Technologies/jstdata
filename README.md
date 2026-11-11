@@ -115,12 +115,6 @@ investigation (`tutorial-<id>`); leaving it reopens yours.
 | `gulf-oil-exports` | Intermediate · assisted | Metric-first: collect the oil metrics, open one to see which countries report it, collect the Gulf, chart the query |
 | `gulf-fiscal-breakeven` | Advanced · open | Research question on fiscal breakeven oil prices; the coach only checks progress |
 
-```bash
-jst tutorial                    # open the TUI with the tutorial menu
-jst tutorial gulf-oil-exports   # start one directly
-jst tutorial --list
-```
-
 Progress (menu seen, tutorials completed) lives in `~/.jstdata/onboarding.json`.
 First `jst` / `jst new` / `jst open` also bootstraps the bundled `tutorial`
 (welcome) and `plain-bagel` demo investigations when none exist.

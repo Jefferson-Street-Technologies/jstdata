@@ -1,11 +1,9 @@
-"""Tests for coached tutorials (catalog, coach, state, CLI, and host)."""
+"""Tests for coached tutorials (catalog, coach, state, and host)."""
 
 import asyncio
 
 import pytest
-from click.testing import CliRunner
 
-from jstdata.cli import cli
 from jstdata.onboarding import (
     LEVELS,
     CoachSnapshot,
@@ -121,39 +119,6 @@ def test_state_round_trip(tmp_path):
     assert completed_tutorials(tmp_path) == {"gulf-oil-exports"}
     (tmp_path / "onboarding.json").write_text("not json")
     assert should_prompt(tmp_path)  # corrupt state degrades to defaults
-
-
-# --- CLI ---------------------------------------------------------------
-
-
-def test_cli_tutorial_list():
-    result = CliRunner().invoke(cli, ["tutorial", "--list"])
-    assert result.exit_code == 0, result.output
-    assert "gulf-oil-exports" in result.output
-    assert "ADVANCED" in result.output
-
-
-def test_cli_tutorial_unknown_id():
-    result = CliRunner().invoke(cli, ["tutorial", "nope"])
-    assert result.exit_code == 2
-    assert "big-tech-gross-profit" in result.output
-
-
-def test_cli_tutorial_launches_host(monkeypatch):
-    import jstdata.investigation as inv_pkg
-
-    called = {}
-    monkeypatch.setattr(inv_pkg, "resume_or_create_investigation", lambda: None)
-    monkeypatch.setattr(
-        inv_pkg,
-        "run_investigation_host",
-        lambda client, **kw: called.update(kw),
-    )
-    result = CliRunner().invoke(cli, ["tutorial", "gulf-oil-exports"])
-    assert result.exit_code == 0, result.output
-    assert called == {"start_tutorial": "gulf-oil-exports", "open_tutorial_menu": False}
-    result = CliRunner().invoke(cli, ["tutorial"])
-    assert called == {"start_tutorial": None, "open_tutorial_menu": True}
 
 
 # --- Host --------------------------------------------------------------
