@@ -895,7 +895,16 @@ def query_run(query_id: int, format: str) -> None:
 
 @query_group.command("add")
 @click.option("--name", default=None, help="Display name")
-@click.option("--notes", default=None, help="Freeform notes")
+@click.option(
+    "--annotations",
+    default=None,
+    help="Freeform annotations (researcher commentary)",
+)
+@click.option(
+    "--notes",
+    default=None,
+    help="Legacy alias for --annotations",
+)
 @click.option("--metric", multiple=True, help="Metric ID. Repeatable.")
 @click.option("--entity", multiple=True, help="Entity ID. Repeatable.")
 @click.option("--series", multiple=True, help="Series ID. Repeatable.")
@@ -926,6 +935,7 @@ def query_run(query_id: int, format: str) -> None:
 )
 def query_add(
     name: str | None,
+    annotations: str | None,
     notes: str | None,
     metric: tuple[str, ...],
     entity: tuple[str, ...],
@@ -959,6 +969,7 @@ def query_add(
         query = add_query(
             inv,
             name=name,
+            annotations=annotations,
             notes=notes,
             metric=list(metric) or None,
             entity=list(entity) or None,

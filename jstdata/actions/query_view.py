@@ -27,6 +27,7 @@ from textual_plotext import PlotextPlot
 
 from ..client import JSTDataClient
 from ..investigation.model import Query, Workspace
+from ..investigation.nav import annotations_panel
 from ..models import TimeSeries
 from .base import (
     ActionArgument,
@@ -661,6 +662,7 @@ class QueryScreen(BaseScreen):
 
     BINDINGS = [
         Binding("r", "load", "Run query", key_display="r"),
+        Binding("a", "annotate", "Annotate", show=False),
         Binding("t", "mode_table", "Table", show=False),
         Binding("c", "mode_chart", "Chart", show=False),
         Binding("v", "mode_raw", "Raw JSON", show=False),
@@ -692,6 +694,12 @@ class QueryScreen(BaseScreen):
     #query-kicker { color: #4ade80; text-style: bold; height: 1; }
     #query-title { color: #e0e0e0; text-style: bold; height: 1; }
     #query-spec { color: #888; height: 1; }
+    #query-annotations {
+        color: #c0c0c0;
+        height: auto;
+        max-height: 6;
+        margin-bottom: 1;
+    }
     #query-status { color: #888; height: 1; margin-bottom: 1; }
     #query-summary {
         height: 7;
@@ -790,6 +798,7 @@ class QueryScreen(BaseScreen):
             yield Label("QUERY", id="query-kicker")
             yield Label("", id="query-title")
             yield Static("", id="query-spec")
+            yield Static("", id="query-annotations", markup=True)
             yield Static(
                 "Idle — press [bold]r[/bold] to run",
                 id="query-status",
@@ -839,7 +848,10 @@ class QueryScreen(BaseScreen):
         return []
 
     def footer_action_keys(self) -> list[str]:
-        keys = ["[bold #e0e0e0]r[/] [#888]run[/]"]
+        keys = [
+            "[bold #e0e0e0]r[/] [#888]run[/]",
+            "[bold #e0e0e0]a[/] [#888]annotate[/]",
+        ]
         if self._loaded:
             keys.extend(
                 [
@@ -894,8 +906,37 @@ class QueryScreen(BaseScreen):
         self.query_one("#query-kicker", Label).update(f"QUERY / {tag}")
         self.query_one("#query-title", Label).update(title)
         self.query_one("#query-spec", Static).update(query_spec_line(query))
+        self._render_annotations(query)
         self.query_one("#query-summary").display = False
         self.query_one("#query-cursor").display = False
+
+    def _render_annotations(self, query: Query) -> None:
+        panel = self.query_one("#query-annotations", Static)
+        if query.id:
+            panel.update(annotations_panel(query.annotations))
+            panel.display = True
+        else:
+            panel.update("")
+            panel.display = False
+
+    def refresh_annotations(self) -> None:
+        """Host hook after annotation edits."""
+        try:
+            query = self._resolve_query()
+        except Exception:
+            return
+        self._render_annotations(query)
+
+    def action_annotate(self) -> None:
+        if self.query_id is None:
+            self.notify(
+                "Save as a query first to attach annotations",
+                severity="warning",
+            )
+            return
+        edit = getattr(self.app, "edit_query_annotations", None)
+        if callable(edit):
+            edit(self.query_id)
 
     def action_load(self) -> None:
         try:
@@ -1396,6 +1437,7 @@ QUERY_VIEW = register(
         ),
         bindings=(
             ActionBinding("r", "load", "Execute GET /query"),
+            ActionBinding("a", "annotate", "Edit query annotations"),
             ActionBinding("t / c / v", "mode", "Table, chart, or raw JSON"),
             ActionBinding("h / l", "obs", "Move the observation cursor (chart)"),
             ActionBinding("x", "toggle_series", "Hide or show a series on the chart"),

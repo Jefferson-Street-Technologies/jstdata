@@ -122,13 +122,14 @@ def update_investigation(
     *,
     title: Optional[str] = None,
     notes: Optional[str] = None,
+    annotations: Optional[str] = None,
     app_dir: Optional[Path] = None,
     persist: bool = True,
 ) -> Investigation:
-    """Set investigation title and/or description (``notes``).
+    """Set investigation title, description (``notes``), and/or annotations.
 
-    ``title`` must be non-empty when provided. ``notes=""`` clears the
-    description; ``notes=None`` leaves it unchanged.
+    ``title`` must be non-empty when provided. ``notes=""`` / ``annotations=""``
+    clear those fields; ``None`` leaves them unchanged.
     """
     if title is not None:
         title = title.strip()
@@ -138,9 +139,37 @@ def update_investigation(
     if notes is not None:
         stripped = notes.strip()
         inv.notes = stripped or None
+    if annotations is not None:
+        stripped = annotations.strip()
+        inv.annotations = stripped or None
     if persist:
         persist_investigation(inv, app_dir=app_dir)
     return inv
+
+
+def update_query(
+    inv: Investigation,
+    query_id: int,
+    *,
+    name: Optional[str] = None,
+    annotations: Optional[str] = None,
+    app_dir: Optional[Path] = None,
+    persist: bool = True,
+) -> Query:
+    """Patch a saved query's display name and/or annotations.
+
+    ``annotations=""`` clears; ``annotations=None`` leaves unchanged.
+    """
+    query = inv.get_query(query_id)
+    if name is not None:
+        stripped = name.strip()
+        query.name = stripped or None
+    if annotations is not None:
+        stripped = annotations.strip()
+        query.annotations = stripped or None
+    if persist:
+        persist_investigation(inv, app_dir=app_dir)
+    return query
 
 
 def get_active(*, app_dir: Optional[Path] = None) -> ActiveContext:
@@ -262,6 +291,7 @@ def add_query(
     inv: Investigation,
     *,
     name: Optional[str] = None,
+    annotations: Optional[str] = None,
     notes: Optional[str] = None,
     metric: Optional[list[str]] = None,
     entity: Optional[list[str]] = None,
@@ -280,10 +310,15 @@ def add_query(
     app_dir: Optional[Path] = None,
     persist: bool = True,
 ) -> Query:
-    """Add a saved query to the investigation (cartesian metric × entity)."""
+    """Add a saved query to the investigation (cartesian metric × entity).
+
+    ``notes`` is accepted as a legacy alias for ``annotations``.
+    """
+    if annotations is None and notes is not None:
+        annotations = notes
     query = inv.add_query(
         name=name,
-        notes=notes,
+        annotations=annotations,
         metric=metric,
         entity=entity,
         series=series,
@@ -436,5 +471,7 @@ __all__ = [
     "resume_or_create_investigation",
     "run_query",
     "set_active",
+    "update_investigation",
+    "update_query",
     "validate_action_type",
 ]

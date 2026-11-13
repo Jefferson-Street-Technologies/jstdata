@@ -103,7 +103,8 @@ _DATA_MODEL = """\
 - **Taxonomy** — a named population of entities (e.g. `country`, `us-county`,
   `sec-central-index-key`). Use it to scope search, query, and ranking.
 - **Series** — one concrete time series: a metric observed for an entity (at a frequency).
-- **Investigation** — the durable research artifact: title, notes, one workspace,
+- **Investigation** — the durable research artifact: title, notes, annotations,
+  one workspace,
   saved queries, and an action tree.
 - **Workspace** — the **global** bag of staged resource ids inside an
   investigation (no observations). Mutated by `:search` / `:workspace` and staging

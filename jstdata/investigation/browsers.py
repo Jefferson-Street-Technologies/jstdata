@@ -24,6 +24,7 @@ from .nav import (
     DEST_WORKSPACE,
     ActionTreeRow,
     action_tree_rows,
+    annotations_panel,
     get_destination,
     tree_row_height,
     workspace_counts_line,
@@ -858,6 +859,7 @@ class QueriesBrowser(DestinationScreen):
         Binding("backspace", "delete_query", "Delete"),
         Binding("delete", "delete_query", "Delete", show=False),
         Binding("n", "create", "New from workspace", show=False),
+        Binding("a", "annotate", "Annotate", show=False),
     ]
 
     DEFAULT_CSS = """
@@ -911,6 +913,7 @@ class QueriesBrowser(DestinationScreen):
         return [
             "[bold]enter[/bold] open",
             "[bold]n[/bold] from workspace",
+            "[bold]a[/bold] annotate",
             "[bold]backspace[/bold] delete",
         ]
 
@@ -918,6 +921,7 @@ class QueriesBrowser(DestinationScreen):
         return [
             ("enter", "Open the highlighted query (or create)"),
             ("n", "Create from the workspace bag"),
+            ("a", "Edit annotations on the highlighted query"),
             ("backspace", "Delete the highlighted query"),
             ("esc", "Back to Home"),
         ]
@@ -957,15 +961,18 @@ class QueriesBrowser(DestinationScreen):
             return
         q = item.query
         assert q is not None
+        live = self.investigation.queries.get(q.id, q)
         self.query_one("#queries-inspector", Static).update(
-            f"{q.name or f'Query {q.id}'}\n"
-            f"Q{q.id}  ·  SAVED\n\n"
-            f"{len(q.metric)} metrics · {len(q.entity)} entities · "
-            f"{len(q.series)} series\n"
-            f"Frequency: {q.frequency or 'Any'}  ·  Source: {q.source or 'Any'}\n"
-            f"Units: {q.units or 'Native'}\n\n"
+            f"{live.name or f'Query {live.id}'}\n"
+            f"Q{live.id}  ·  SAVED\n\n"
+            f"{len(live.metric)} metrics · {len(live.entity)} entities · "
+            f"{len(live.series)} series\n"
+            f"Frequency: {live.frequency or 'Any'}  ·  "
+            f"Source: {live.source or 'Any'}\n"
+            f"Units: {live.units or 'Native'}\n\n"
+            f"{annotations_panel(live.annotations)}\n\n"
             "Enter opens the JSON results view.\n"
-            "Backspace deletes (confirm). No edit in this pass."
+            "a edits annotations · Backspace deletes."
         )
 
     @on(ListView.Highlighted, "#queries-list")
@@ -984,6 +991,21 @@ class QueriesBrowser(DestinationScreen):
         create = getattr(self.app, "query_from_workspace", None)
         if callable(create):
             create()
+
+    def action_annotate(self) -> None:
+        item = self._highlighted()
+        if item is None or item.kind != "query" or item.query is None:
+            return
+        edit = getattr(self.app, "edit_query_annotations", None)
+        if callable(edit):
+            edit(item.query.id)
+
+    def refresh_annotations(self) -> None:
+        """Host hook after annotation edits."""
+        inv = getattr(self.app, "investigation", None)
+        if isinstance(inv, Investigation):
+            self.investigation = inv
+        self._refresh_inspector()
 
     def action_confirm(self) -> None:
         item = self._highlighted()

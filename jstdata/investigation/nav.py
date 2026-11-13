@@ -94,6 +94,18 @@ def get_destination(dest_id: str) -> Destination:
         raise KeyError(f"Unknown destination {dest_id!r}") from exc
 
 
+def annotations_panel(
+    text: str | None,
+    *,
+    empty_hint: str = "Press a to add.",
+) -> str:
+    """Inspector block for investigation / query annotations."""
+    body = (text or "").strip()
+    if not body:
+        return f"[#888]No annotations. {empty_hint}[/]"
+    return f"[bold #888]ANNOTATIONS[/]\n{body}"
+
+
 def workspace_counts_line(inv: Investigation) -> str:
     """Compact bag + query counts for the Home header (3M · 4E · 1Q)."""
     ws = inv.workspace
@@ -160,6 +172,10 @@ def inspector_copy(dest: Destination, inv: Investigation) -> str:
             f"{nq} {label}                      Enter to open\n"
             "Create from workspace"
         )
+
+    body += "\n\n" + annotations_panel(
+        inv.annotations, empty_hint="Press a to annotate this investigation."
+    )
 
     if is_fresh_investigation(inv):
         body += (

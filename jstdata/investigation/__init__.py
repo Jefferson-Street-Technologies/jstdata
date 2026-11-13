@@ -13,6 +13,7 @@ from .api import (
     persist_investigation,
     remove_action,
     update_investigation,
+    update_query,
     remove_query,
     require_active_investigation,
     resume_or_create_investigation,
@@ -97,6 +98,7 @@ __all__ = [
     "save_investigation",
     "set_active",
     "update_investigation",
+    "update_query",
     "validate_action_type",
     "validate_investigation_id",
 ]

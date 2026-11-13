@@ -253,18 +253,44 @@ class Workspace:
         )
 
 
+_MISSING = object()
+
+
+def _normalize_text(value: Optional[str]) -> Optional[str]:
+    """Strip; empty becomes ``None``."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise InvestigationError("Expected a string.")
+    stripped = value.strip()
+    return stripped or None
+
+
+def _load_annotations(data: Mapping[str, Any], *, label: str) -> Optional[str]:
+    """Read ``annotations``, falling back to legacy ``notes``."""
+    raw = data.get("annotations", _MISSING)
+    if raw is _MISSING:
+        raw = data.get("notes")
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise InvestigationError(f"{label} annotations must be a string.")
+    return _normalize_text(raw)
+
+
 @dataclass
 class Query:
     """A saved ``/query`` spec. Metric × entity is a cartesian product.
 
     Optional ``units`` / ``source`` / ``seasonal_adjustment`` are persisted for
     later filtering; ``execute`` currently forwards the fields ``GET /query``
-    already accepts.
+    already accepts. ``annotations`` is freeform researcher commentary
+    (YAML key ``annotations``; legacy ``notes`` still loads).
     """
 
     id: int
     name: Optional[str] = None
-    notes: Optional[str] = None
+    annotations: Optional[str] = None
     metric: list[str] = field(default_factory=list)
     entity: list[str] = field(default_factory=list)
     series: list[str] = field(default_factory=list)
@@ -388,13 +414,13 @@ class Query:
         *,
         query_id: int,
         name: Optional[str] = None,
-        notes: Optional[str] = None,
+        annotations: Optional[str] = None,
     ) -> Query:
         """Snapshot a workspace basket into a saved query."""
         return cls(
             id=query_id,
             name=name,
-            notes=notes,
+            annotations=_normalize_text(annotations),
             metric=list(workspace.metric),
             entity=list(workspace.entity),
             series=list(workspace.series),
@@ -431,7 +457,7 @@ class Query:
         return cls(
             id=qid,
             name=data.get("name"),
-            notes=data.get("notes"),
+            annotations=_load_annotations(data, label=f"Query {qid}"),
             metric=list(metric),
             entity=list(entity),
             series=list(series),
@@ -646,11 +672,16 @@ class Action:
 
 @dataclass
 class Investigation:
-    """Persistent mutable research artifact."""
+    """Persistent mutable research artifact.
+
+    ``notes`` is the short description (Home subtitle / ``:rename``).
+    ``annotations`` is longer freeform researcher commentary.
+    """
 
     id: str
     title: str
     notes: Optional[str] = None
+    annotations: Optional[str] = None
     workspace: Workspace = field(default_factory=Workspace)
     queries: dict[int, Query] = field(default_factory=dict)
     actions: dict[int, Action] = field(default_factory=dict)
@@ -807,7 +838,7 @@ class Investigation:
         self,
         *,
         name: Optional[str] = None,
-        notes: Optional[str] = None,
+        annotations: Optional[str] = None,
         metric: Optional[list[str]] = None,
         entity: Optional[list[str]] = None,
         series: Optional[list[str]] = None,
@@ -830,13 +861,16 @@ class Investigation:
             raise InvestigationError(f"Query id {qid} already exists.")
         if from_workspace:
             query = Query.from_workspace(
-                self.workspace, query_id=qid, name=name, notes=notes
+                self.workspace,
+                query_id=qid,
+                name=name,
+                annotations=annotations,
             )
         else:
             query = Query(
                 id=qid,
                 name=name,
-                notes=notes,
+                annotations=_normalize_text(annotations),
                 metric=list(metric or []),
                 entity=list(entity or []),
                 series=list(series or []),
@@ -891,6 +925,8 @@ class Investigation:
         }
         if self.notes:
             data["notes"] = self.notes
+        if self.annotations:
+            data["annotations"] = self.annotations
         data["workspace"] = self.workspace.to_dict()
         if self.queries:
             data["queries"] = [
@@ -914,6 +950,17 @@ class Investigation:
         notes = data.get("notes")
         if notes is not None and not isinstance(notes, str):
             raise InvestigationError("Investigation 'notes' must be a string.")
+        # Investigation ``notes`` is the short description; do not treat it as
+        # annotations. Only the ``annotations`` key loads here.
+        raw_ann = data.get("annotations")
+        if raw_ann is None:
+            annotations = None
+        elif not isinstance(raw_ann, str):
+            raise InvestigationError(
+                f"Investigation {inv_id!r} annotations must be a string."
+            )
+        else:
+            annotations = _normalize_text(raw_ann)
 
         workspace = _load_workspace(data, inv_id)
         queries = _load_queries(data, inv_id)
@@ -933,7 +980,8 @@ class Investigation:
         inv = cls(
             id=inv_id,
             title=title,
-            notes=notes,
+            notes=_normalize_text(notes) if notes is not None else None,
+            annotations=annotations,
             workspace=workspace,
             queries=queries,
             actions=actions,
@@ -948,6 +996,7 @@ class Investigation:
         *,
         title: Optional[str] = None,
         notes: Optional[str] = None,
+        annotations: Optional[str] = None,
         root_type: str = "home",
         root_description: Optional[str] = None,
         root_args: Optional[dict[str, Any]] = None,
@@ -958,7 +1007,8 @@ class Investigation:
         inv = cls(
             id=investigation_id,
             title=title if title is not None else investigation_id,
-            notes=notes,
+            notes=_normalize_text(notes),
+            annotations=_normalize_text(annotations),
             workspace=Workspace(
                 id=DEFAULT_WORKSPACE_ID,
                 label=workspace_label,
