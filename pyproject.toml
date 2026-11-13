@@ -33,13 +33,19 @@ pyyaml = "^6.0.3"
 requests = "^2.31.0"
 # Pin past emSign root CA compromise in certifi's CA bundle (CVE via requests).
 certifi = ">=2026.10.19"
+# Pin past urllib3 streaming / chunked-response DoS issues (via requests).
+urllib3 = ">=2.8.0"
+# Pin past incomplete idna DoS fix (via requests).
+idna = ">=3.15"
 textual-plotext = "^1.0.1"
 
 [tool.poetry.group.dev.dependencies]
-pytest = "^8.3.5"
+pytest = "^9.0.3"
 requests-mock = "^1.12.1"
 pytest-cov = "^6.1.1"
-black = "^25.1.0"
+black = "^26.10.1"
+# Pin past pygments AdlLexer ReDoS (transitive via pytest/black tooling).
+pygments = ">=2.20.0"
 isort = "^6.0.1"
 flake8 = "^7.2.0"
 mypy = "^1.15.0"
