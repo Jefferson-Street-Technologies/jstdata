@@ -22,6 +22,7 @@ def test_list_suggestions_filters_prefix():
         "search",
         "query",
         "rename",
+        "annotate",
         "add",
         "rm",
     }
@@ -33,11 +34,12 @@ def test_complete_command_names():
         "search",
         "query",
         "rename",
+        "annotate",
         "add",
         "rm",
     ]
     assert complete_command_line("se") == ["search"]
-    assert complete_command_line(":a") == ["add"]
+    assert complete_command_line(":a") == ["annotate", "add"]
     # Exact command name offers next-token completions (action types for add).
     add_next = complete_command_line("add")
     assert "add console" in add_next
@@ -234,6 +236,16 @@ def test_parse_add_defaults_activate():
 
     with pytest.raises(CommandError, match="Unexpected"):
         parse_command_line("add console --description nope")
+
+
+def test_parse_annotate():
+    parsed = parse_command_line("annotate")
+    assert parsed.name == "annotate"
+    assert parsed.options == {}
+    parsed = parse_command_line("annotate 3")
+    assert parsed.options["query_id"] == 3
+    with pytest.raises(CommandError, match="integer"):
+        parse_command_line("annotate nope")
 
 
 def test_parse_rename():

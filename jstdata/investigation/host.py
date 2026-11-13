@@ -11,7 +11,7 @@ from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import ModalScreen, Screen
 from textual.timer import Timer
-from textual.widgets import Input, Label, Static
+from textual.widgets import Input, Label, Static, TextArea
 
 from ..client import JSTDataClient
 from ..actions.base import ActionBinding, get_action, hydrate_labels
@@ -24,6 +24,7 @@ from .api import (
     remove_query,
     persist_investigation,
     update_investigation,
+    update_query,
 )
 from .bootstrap import ensure_bootstrap
 from .command_palette import CommandPalette
@@ -203,6 +204,63 @@ class RenameModal(ModalScreen[tuple[str, str] | None]):
             return
         notes = self.query_one("#rename-notes", Input).value.strip()
         self.dismiss((title, notes))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class AnnotationModal(ModalScreen[str | None]):
+    """Edit freeform annotations (investigation or query)."""
+
+    DEFAULT_CSS = """
+    AnnotationModal {
+        align: center middle;
+        background: rgba(0, 0, 0, 0.35);
+    }
+    #anno-box {
+        width: 72;
+        height: 22;
+        border: tall #4ade80;
+        background: #111111;
+        padding: 1 2;
+    }
+    #anno-kicker { color: #4ade80; text-style: bold; height: 1; margin-bottom: 1; }
+    #anno-body {
+        width: 100%;
+        height: 1fr;
+        background: #0a0a0a;
+        border: solid #333;
+        margin-bottom: 1;
+    }
+    #anno-hint { color: #888; height: 1; }
+    """
+
+    BINDINGS = [
+        Binding("ctrl+s", "save", "Save", show=False),
+        Binding("escape", "cancel", "Cancel", show=False),
+    ]
+
+    def __init__(self, *, title: str, text: str = "") -> None:
+        super().__init__()
+        self._title = title
+        self._text = text
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="anno-box"):
+            yield Label(self._title, id="anno-kicker")
+            yield TextArea(self._text, id="anno-body")
+            yield Label(
+                "[bold]ctrl+s[/bold] save  ·  [bold]esc[/bold] cancel",
+                id="anno-hint",
+                markup=True,
+            )
+
+    def on_mount(self) -> None:
+        self.query_one("#anno-body", TextArea).focus()
+
+    def action_save(self) -> None:
+        text = self.query_one("#anno-body", TextArea).text
+        self.dismiss(text)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -1027,6 +1085,15 @@ class InvestigationHost(App):
             self._cmd_rm(parsed, force=bool(parsed.options.get("force")))
         elif parsed.name == "rename":
             self._cmd_rename(parsed)
+        elif parsed.name == "annotate":
+            self._cmd_annotate(parsed)
+
+    def _cmd_annotate(self, parsed: ParsedCommand) -> None:
+        qid = parsed.options.get("query_id")
+        if qid is None:
+            self.edit_investigation_annotations()
+        else:
+            self.edit_query_annotations(int(qid))
 
     def _cmd_rename(self, parsed: ParsedCommand) -> None:
         if not self.investigation:
@@ -1083,6 +1150,104 @@ class InvestigationHost(App):
         if notes is not None:
             bits.append("description updated" if notes.strip() else "description cleared")
         self.notify("Renamed: " + ", ".join(bits) if bits else "Saved")
+
+    def edit_investigation_annotations(self) -> None:
+        """Open the annotation editor for the investigation."""
+        if not self.investigation:
+            self.notify("No investigation loaded", severity="error")
+            return
+        self.push_screen(
+            AnnotationModal(
+                title="INVESTIGATION ANNOTATIONS",
+                text=self.investigation.annotations or "",
+            ),
+            self._on_investigation_annotations_submitted,
+        )
+
+    def _on_investigation_annotations_submitted(self, result: str | None) -> None:
+        if result is None or not self.investigation:
+            return
+        self._suppress_poll = True
+        try:
+            update_investigation(
+                self.investigation,
+                annotations=result,
+                app_dir=self.app_dir,
+            )
+            try:
+                self._inv_mtime = self._inv_file().stat().st_mtime
+            except OSError:
+                pass
+        finally:
+            self._suppress_poll = False
+        self._refresh_annotation_surfaces()
+        cleared = not result.strip()
+        self.notify(
+            "Investigation annotations cleared"
+            if cleared
+            else "Investigation annotations saved"
+        )
+
+    def edit_query_annotations(self, query_id: int) -> None:
+        """Open the annotation editor for a saved query."""
+        if not self.investigation:
+            self.notify("No investigation loaded", severity="error")
+            return
+        try:
+            query = self.investigation.get_query(query_id)
+        except InvestigationError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        label = query.name or f"Q{query.id}"
+        self.push_screen(
+            AnnotationModal(
+                title=f"QUERY ANNOTATIONS · {label}".upper(),
+                text=query.annotations or "",
+            ),
+            lambda result, qid=query_id: self._on_query_annotations_submitted(
+                qid, result
+            ),
+        )
+
+    def _on_query_annotations_submitted(
+        self, query_id: int, result: str | None
+    ) -> None:
+        if result is None or not self.investigation:
+            return
+        self._suppress_poll = True
+        try:
+            try:
+                update_query(
+                    self.investigation,
+                    query_id,
+                    annotations=result,
+                    app_dir=self.app_dir,
+                )
+            except InvestigationError as exc:
+                self.notify(str(exc), severity="error")
+                return
+            try:
+                self._inv_mtime = self._inv_file().stat().st_mtime
+            except OSError:
+                pass
+        finally:
+            self._suppress_poll = False
+        self._refresh_annotation_surfaces()
+        cleared = not result.strip()
+        self.notify(
+            f"Q{query_id} annotations cleared"
+            if cleared
+            else f"Q{query_id} annotations saved"
+        )
+
+    def _refresh_annotation_surfaces(self) -> None:
+        """Repaint Home / query browsers after annotation edits."""
+        for screen in self.screen_stack:
+            if isinstance(screen, HomeScreen):
+                screen.refresh_live()
+            refresh = getattr(screen, "refresh_annotations", None)
+            if callable(refresh):
+                refresh()
 
     def _open_workspace_drawer(self) -> None:
         # If already open, focus it by pushing a fresh one on top (dismiss old?).

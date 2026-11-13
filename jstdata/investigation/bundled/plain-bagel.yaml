@@ -20,7 +20,7 @@ workspace:
 queries:
 - id: 1
   name: Latest hyperscaler debt
-  notes: >-
+  annotations: >-
     Cartesian metric × entity against GET /query. Four metrics × four
     CIKs; tail=1 for latest value only.
   metric:

@@ -30,6 +30,7 @@ from .nav import (
     DESTINATIONS,
     Destination,
     action_tree_rows,
+    annotations_panel,
     inspector_copy,
     render_action_graph,
     tree_row_height,
@@ -97,6 +98,7 @@ class HomeScreen(BaseScreen):
         Binding("delete", "remove", "Remove", show=False),
         Binding("c", "create_query", "Query from workspace", show=False),
         Binding("n", "create_query", "Query from workspace", show=False),
+        Binding("a", "annotate", "Annotate", show=False),
         Binding("pagedown", "page_down", "Page down", show=False),
         Binding("pageup", "page_up", "Page up", show=False),
     ]
@@ -340,6 +342,19 @@ class HomeScreen(BaseScreen):
             return dest in ("workspace", "queries")
         if action == "create_query":
             return dest in ("workspace", "queries")
+        if action == "annotate":
+            if isinstance(self.focused, Input):
+                return False
+            if dest is None:
+                return True
+            if dest == "queries":
+                child = self._highlighted()
+                return (
+                    isinstance(child, QueryListItem)
+                    and child.kind == "query"
+                    and child.query is not None
+                )
+            return False
         if action == "leave_filter":
             return isinstance(self.focused, Input)
         if action in ("page_down", "page_up"):
@@ -352,6 +367,7 @@ class HomeScreen(BaseScreen):
             return [
                 "[bold #e0e0e0]j[/]/[bold #e0e0e0]k[/] [#888]navigate[/]",
                 "[bold #e0e0e0]↵[/] [#888]open[/]",
+                "[bold #e0e0e0]a[/] [#888]annotate[/]",
                 "[bold #e0e0e0]1[/]–[bold #e0e0e0]5[/] [#888]jump[/]",
             ]
         keys = [
@@ -377,6 +393,7 @@ class HomeScreen(BaseScreen):
             keys.extend(
                 [
                     "[bold #e0e0e0]n[/] [#888]from workspace[/]",
+                    "[bold #e0e0e0]a[/] [#888]annotate[/]",
                     "[bold #e0e0e0]backspace[/] [#888]delete[/]",
                 ]
             )
@@ -457,15 +474,19 @@ class HomeScreen(BaseScreen):
         )
 
     def refresh_live(self) -> None:
-        """Host calls this after workspace/label mutations."""
+        """Host calls this after workspace/label/annotation mutations."""
         if not self._chrome_ready():
             return
         self._refresh_header()
         self._refresh_graph()
         if self._dest == "workspace":
             self._rebuild_list()
+        elif self._dest == "queries":
+            self._rebuild_list()
         elif self._dest is None:
             self._apply_menu_selection()
+        elif self._dest is not None:
+            self._refresh_data_pane()
         self.refresh_footer()
 
     def enter_destination(self, dest: str) -> None:
@@ -638,16 +659,20 @@ class HomeScreen(BaseScreen):
         if dest == "queries":
             if isinstance(child, QueryListItem) and child.kind == "query" and child.query:
                 q = child.query
-                kicker.update((q.name or f"Q{q.id}").upper()[:40])
+                # Prefer live object from the investigation (annotations may
+                # have been edited since the list item was built).
+                live = self._investigation().queries.get(q.id, q)
+                kicker.update((live.name or f"Q{live.id}").upper()[:40])
                 body.update(
-                    f"Q{q.id}  ·  saved\n\n"
-                    f"{len(q.metric)} metrics · {len(q.entity)} entities · "
-                    f"{len(q.series)} series\n"
-                    f"Frequency: {q.frequency or 'Any'}  ·  "
-                    f"Source: {q.source or 'Any'}\n"
-                    f"Units: {q.units or 'Native'}\n\n"
+                    f"Q{live.id}  ·  saved\n\n"
+                    f"{len(live.metric)} metrics · {len(live.entity)} entities · "
+                    f"{len(live.series)} series\n"
+                    f"Frequency: {live.frequency or 'Any'}  ·  "
+                    f"Source: {live.source or 'Any'}\n"
+                    f"Units: {live.units or 'Native'}\n\n"
+                    f"{annotations_panel(live.annotations)}\n\n"
                     "Enter opens JSON results.\n"
-                    "Backspace deletes. No edit in this pass."
+                    "a edits annotations · Backspace deletes."
                 )
             else:
                 ws = self.workspace
@@ -894,6 +919,23 @@ class HomeScreen(BaseScreen):
         if callable(create):
             create()
 
+    def action_annotate(self) -> None:
+        if self._dest is None:
+            edit = getattr(self.app, "edit_investigation_annotations", None)
+            if callable(edit):
+                edit()
+            return
+        if self._dest == "queries":
+            child = self._highlighted()
+            if (
+                isinstance(child, QueryListItem)
+                and child.kind == "query"
+                and child.query is not None
+            ):
+                edit = getattr(self.app, "edit_query_annotations", None)
+                if callable(edit):
+                    edit(child.query.id)
+
     def _kick_search(self) -> None:
         query = self.query_one("#search-input", Input).value.strip()
         if self._search_task:
@@ -1065,6 +1107,7 @@ HOME = register(
         bindings=(
             ActionBinding("j / k", "cursor", "Move in the current options list"),
             ActionBinding("enter", "confirm", "Open the highlighted option"),
+            ActionBinding("a", "annotate", "Edit investigation or query annotations"),
             ActionBinding("1–5", "jump", "Jump to Recent / Search / Actions / Workspace / Queries"),
             ActionBinding("esc", "back", "Previous navigation level"),
             ActionBinding("g", "go_home", "Return to home"),

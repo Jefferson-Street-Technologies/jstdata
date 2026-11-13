@@ -21,6 +21,7 @@ from jstdata.investigation import (
     TUTORIAL_ID,
     Workspace,
     add_action,
+    add_query,
     create_investigation,
     ensure_bootstrap,
     focus_replace_context,
@@ -360,6 +361,65 @@ def test_update_investigation_title_and_notes(tmp_path: Path):
     assert get_investigation("meta", app_dir=tmp_path).notes is None
     with pytest.raises(InvestigationError, match="empty"):
         update_investigation(inv, title="  ", app_dir=tmp_path)
+
+
+def test_investigation_and_query_annotations(tmp_path: Path):
+    from jstdata.investigation import update_query
+    from jstdata.investigation.store import save_investigation
+
+    ensure_bootstrap(app_dir=tmp_path)
+    inv = create_investigation("anno", title="Anno", app_dir=tmp_path)
+    update_investigation(
+        inv,
+        annotations="Thesis: hyperscaler debt is rising.",
+        app_dir=tmp_path,
+    )
+    inv.workspace.add_metric("gdp")
+    inv.workspace.add_entity("usa")
+    q = add_query(
+        inv,
+        from_workspace=True,
+        name="US GDP",
+        annotations="Tail=1 later.",
+        app_dir=tmp_path,
+    )
+    loaded = get_investigation("anno", app_dir=tmp_path)
+    assert loaded.annotations == "Thesis: hyperscaler debt is rising."
+    assert loaded.get_query(q.id).annotations == "Tail=1 later."
+
+    update_query(loaded, q.id, annotations="", app_dir=tmp_path)
+    assert get_investigation("anno", app_dir=tmp_path).get_query(q.id).annotations is None
+
+    # Legacy query ``notes`` still loads as annotations.
+    root = tmp_path / "investigations"
+    path = root / "legacy-notes.yaml"
+    path.write_text(
+        "id: legacy-notes\n"
+        "title: legacy-notes\n"
+        "workspace:\n"
+        "  id: 0\n"
+        "  metric:\n"
+        "  - cpi\n"
+        "queries:\n"
+        "- id: 1\n"
+        "  name: old\n"
+        "  notes: from legacy notes\n"
+        "  metric:\n"
+        "  - cpi\n"
+        "  entity:\n"
+        "  - usa\n"
+        "actions:\n"
+        "- id: 0\n"
+        "  type: home\n"
+        "  args: {}\n",
+        encoding="utf-8",
+    )
+    migrated = get_investigation("legacy-notes", app_dir=tmp_path)
+    assert migrated.get_query(1).annotations == "from legacy notes"
+    save_investigation(migrated, root=root)
+    dumped = path.read_text(encoding="utf-8")
+    assert "annotations: from legacy notes" in dumped
+    assert "notes:" not in dumped
 
 
 def test_remove_requires_force_for_active_and_children(tmp_path: Path):
