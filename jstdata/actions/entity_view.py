@@ -1,6 +1,7 @@
 """Entity View — metadata, associated metrics, and relationship edges.
 
 No network until the user presses ``r`` (load). ``/`` searches metrics.
+j/k on the last metrics row fetches the next page.
 """
 
 from __future__ import annotations
@@ -22,10 +23,11 @@ from ..investigation.model import (
 )
 from ..models import EntityRelationship, Metric
 from .base import ActionBinding, ActionSpec, label_for, register, stage_ids
+from .pagination import page_fetch_limit, take_page
 from .screen import BaseScreen
 
-RELATIONS_PAGE = 20
-ASSOCIATES_PAGE = 20
+RELATIONS_PAGE = 50
+ASSOCIATES_PAGE = 50
 SEARCH_DEBOUNCE_S = 0.3
 
 Pane = Literal["metrics", "relations"]
@@ -165,6 +167,9 @@ class EntityScreen(BaseScreen):
         self._filter_query = ""
         self._search_task: asyncio.Task | None = None
         self._entity_meta_loaded = False
+        self.page_offset = 0
+        self.has_more = False
+        self.loading_more = False
 
     def _resolved_input_context(self) -> ResearchContext:
         if self._input_context is not None:
@@ -265,7 +270,7 @@ class EntityScreen(BaseScreen):
             return
         self._filter_query = ""
         self.query_one("#assoc-filter", Input).value = ""
-        self.load_entity(reset_meta=True)
+        self.load_entity(reset=True, reset_meta=True)
 
     def action_focus_filter(self) -> None:
         if not self._loaded:
@@ -394,6 +399,20 @@ class EntityScreen(BaseScreen):
             self._pane = "metrics"
             self.action_confirm()
 
+    @on(ListView.Highlighted, "#metrics-list")
+    def on_metric_highlighted(self, event: ListView.Highlighted) -> None:
+        if self.loading_more or not self.has_more:
+            return
+        list_view = self.query_one("#metrics-list", ListView)
+        if event.item is None:
+            return
+        index = list_view.index
+        if index is None or index < len(self._metrics) - 1:
+            return
+        self.loading_more = True
+        self.page_offset = len(self._metrics)
+        self.load_entity(reset=False, reset_meta=False)
+
     @on(Input.Changed, "#assoc-filter")
     def on_filter_changed(self, event: Input.Changed) -> None:
         if not self._loaded:
@@ -410,15 +429,13 @@ class EntityScreen(BaseScreen):
     async def _debounced_search(self) -> None:
         try:
             await asyncio.sleep(SEARCH_DEBOUNCE_S)
-            self.load_entity(reset_meta=False)
+            self.load_entity(reset=True, reset_meta=False)
         except asyncio.CancelledError:
             pass
 
-    def _show_metrics(self, metrics: list[Metric]) -> None:
-        self._metrics = list(metrics)
+    def _append_metrics(self, metrics: list[Metric]) -> None:
         metrics_list = self.query_one("#metrics-list", ListView)
-        metrics_list.clear()
-        for metric in self._metrics:
+        for metric in metrics:
             if hasattr(self.app, "remember_label"):
                 self.app.remember_label(metric.id, metric.name or metric.id)
             metrics_list.append(MetricAssocRow(metric))
@@ -430,17 +447,35 @@ class EntityScreen(BaseScreen):
         for rel in self._relations:
             rel_list.append(RelationRow(rel))
 
+    def _update_status(self, query: str | None) -> None:
+        status = self.query_one("#entity-status", Static)
+        m_extra = "+" if self.has_more else ""
+        r_extra = "+" if len(self._relations) >= RELATIONS_PAGE else ""
+        qbit = f" · “{query}”" if query else ""
+        status.update(
+            f"{len(self._metrics)}{m_extra} metric(s){qbit} · "
+            f"{len(self._relations)}{r_extra} relationship(s)"
+        )
+
     @work(exclusive=True, group="entity-view")
-    async def load_entity(self, *, reset_meta: bool = True) -> None:
+    async def load_entity(
+        self, *, reset: bool = True, reset_meta: bool = True
+    ) -> None:
         entity_id = self._entity_id
         if not entity_id:
+            self.loading_more = False
             return
+        if reset:
+            self.page_offset = 0
+            self.has_more = False
+            self.loading_more = False
         status = self.query_one("#entity-status", Static)
-        status.update("Loading…")
+        status.update("Loading…" if reset or not self._loaded else "Loading more…")
         query = self._filter_query.strip() or None
+        fetch_limit = page_fetch_limit(ASSOCIATES_PAGE)
         try:
             if reset_meta or not self._entity_meta_loaded:
-                entity, relations, metrics = await asyncio.gather(
+                entity, relations, raw = await asyncio.gather(
                     asyncio.to_thread(self.client.get_entity, entity_id),
                     asyncio.to_thread(
                         self.client.get_entity_relations,
@@ -452,11 +487,12 @@ class EntityScreen(BaseScreen):
                         self.client.search_metrics,
                         query,
                         entity=entity_id,
-                        limit=ASSOCIATES_PAGE,
-                        offset=0,
+                        limit=fetch_limit,
+                        offset=self.page_offset,
                     ),
                 )
                 if entity_id != self._entity_id:
+                    self.loading_more = False
                     return
                 self._label = entity.label or entity.id
                 if hasattr(self.app, "remember_label"):
@@ -472,28 +508,31 @@ class EntityScreen(BaseScreen):
                 self._show_relations(list(relations))
                 self._entity_meta_loaded = True
             else:
-                metrics = await asyncio.to_thread(
+                raw = await asyncio.to_thread(
                     self.client.search_metrics,
                     query,
                     entity=entity_id,
-                    limit=ASSOCIATES_PAGE,
-                    offset=0,
+                    limit=fetch_limit,
+                    offset=self.page_offset,
                 )
                 if entity_id != self._entity_id:
+                    self.loading_more = False
                     return
+            metrics, has_more = take_page(raw, ASSOCIATES_PAGE)
         except Exception as exc:
             status.update(f"Could not load entity: {exc}")
+            self.loading_more = False
             return
 
+        if reset:
+            self._metrics = []
+            self.query_one("#metrics-list", ListView).clear()
+        self._metrics.extend(metrics)
+        self.has_more = has_more
         self._loaded = True
-        self._show_metrics(list(metrics))
-        m_extra = "+" if len(self._metrics) >= ASSOCIATES_PAGE else ""
-        r_extra = "+" if len(self._relations) >= RELATIONS_PAGE else ""
-        qbit = f" · “{query}”" if query else ""
-        status.update(
-            f"{len(self._metrics)}{m_extra} metric(s){qbit} · "
-            f"{len(self._relations)}{r_extra} relationship(s)"
-        )
+        self.loading_more = False
+        self._append_metrics(metrics)
+        self._update_status(query)
         self.refresh_footer()
 
 
@@ -515,7 +554,11 @@ ENTITY_VIEW = register(
             ActionBinding("r", "load", "Load entity details, metrics, and relations"),
             ActionBinding("/", "focus_filter", "Search metrics for this entity"),
             ActionBinding("tab", "cycle_pane", "Switch metrics / relationships lists"),
-            ActionBinding("j / k", "cursor", "Move in the active list"),
+            ActionBinding(
+                "j / k",
+                "cursor",
+                "Move in the active list (loads more metrics at the bottom)",
+            ),
             ActionBinding(
                 "enter",
                 "confirm",
