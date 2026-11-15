@@ -746,7 +746,6 @@ def render_html(model: PreviewModel) -> str:
       border-top: 1px solid var(--divider);
       font-size: 13px;
     }}
-    .detail-row:last-child {{ border-bottom: 1px solid var(--divider); }}
     .detail-key {{ color: var(--text); font-weight: 500; }}
     .detail-val {{ color: var(--muted); text-align: right; }}
     .provenance {{

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, Sequence
+from typing import TYPE_CHECKING, Callable, Optional, Sequence
 
 from ..investigation.model import Investigation, InvestigationError, Query
 from ..investigation.store import (
@@ -18,6 +18,13 @@ from ..models import Observation, Series
 
 if TYPE_CHECKING:
     from ..client import JSTDataClient
+
+ProgressFn = Callable[[str], None]
+
+
+def _emit(progress: Optional[ProgressFn], message: str) -> None:
+    if progress is not None:
+        progress(message)
 
 HISTORY_START = "2000-01-01"
 OBS_PAGE = 500
@@ -315,7 +322,9 @@ def _build_chart_model(
     series_ids: Sequence[str],
     obs_cache: dict[str, list[Observation]],
     metric_name_cache: dict[str, str],
+    progress: Optional[ProgressFn] = None,
 ) -> Optional[ChartModel]:
+    _emit(progress, f"Resolving series for {metric_id}…")
     series_records = _resolve_series_records(
         client,
         metric=[metric_id],
@@ -339,10 +348,16 @@ def _build_chart_model(
     metric_name = metric_name_cache[metric_id]
 
     lines: list[SeriesLine] = []
-    for series in series_records:
+    total = len(series_records)
+    for idx, series in enumerate(series_records, start=1):
         ent = series.entities[0] if series.entities else None
         entity_id = ent.id if ent else series.id
         entity_label = ent.label if ent else series.label or series.id
+        if series.id not in obs_cache:
+            _emit(
+                progress,
+                f"Fetching observations {idx}/{total}: {entity_label}…",
+            )
         obs = _fetch_observations(client, series.id, cache=obs_cache)
         points = [
             (o.observation_timestamp, float(o.value))
@@ -381,6 +396,7 @@ def _build_query_panel(
     fallback_series: Sequence[str],
     obs_cache: dict[str, list[Observation]],
     metric_name_cache: dict[str, str],
+    progress: Optional[ProgressFn] = None,
 ) -> Optional[QueryPanel]:
     series_ids = list(query.series) or list(fallback_series)
     charts: list[ChartModel] = []
@@ -392,6 +408,7 @@ def _build_query_panel(
             series_ids=series_ids,
             obs_cache=obs_cache,
             metric_name_cache=metric_name_cache,
+            progress=progress,
         )
         if chart is not None:
             charts.append(chart)
@@ -411,6 +428,7 @@ def _workspace_panel(
     *,
     obs_cache: dict[str, list[Observation]],
     metric_name_cache: dict[str, str],
+    progress: Optional[ProgressFn] = None,
 ) -> Optional[QueryPanel]:
     ws = inv.workspace
     if not (ws.metric and ws.entity):
@@ -424,6 +442,7 @@ def _workspace_panel(
             series_ids=ws.series,
             obs_cache=obs_cache,
             metric_name_cache=metric_name_cache,
+            progress=progress,
         )
         if chart is not None:
             charts.append(chart)
@@ -442,35 +461,44 @@ def build_preview_model(
     investigation_id: Optional[str] = None,
     *,
     root: Optional[Path] = None,
+    progress: Optional[ProgressFn] = None,
 ) -> PreviewModel:
     """Load investigation, fetch history for each query, return a render model."""
+    _emit(progress, "Resolving investigation…")
     inv_id = resolve_investigation_id(investigation_id, root=root)
     inv = load_investigation(inv_id, root=root)
     path = investigation_path(inv_id, root=root)
     published = datetime.fromtimestamp(path.stat().st_mtime)
+    _emit(progress, f"Loaded {inv.id!r} ({inv.title})")
 
     obs_cache: dict[str, list[Observation]] = {}
     metric_name_cache: dict[str, str] = {}
     panels: list[QueryPanel] = []
 
     queries = list_previewable_queries(inv)
-    for query in queries:
+    total = len(queries)
+    for i, query in enumerate(queries, start=1):
+        label = _query_label(query)
+        _emit(progress, f"Building query {i}/{total}: {label}…")
         panel = _build_query_panel(
             client,
             query,
             fallback_series=inv.workspace.series,
             obs_cache=obs_cache,
             metric_name_cache=metric_name_cache,
+            progress=progress,
         )
         if panel is not None:
             panels.append(panel)
 
     if not panels:
+        _emit(progress, "Falling back to workspace basket…")
         workspace = _workspace_panel(
             client,
             inv,
             obs_cache=obs_cache,
             metric_name_cache=metric_name_cache,
+            progress=progress,
         )
         if workspace is not None:
             panels.append(workspace)

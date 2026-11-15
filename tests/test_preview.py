@@ -325,3 +325,51 @@ def test_cli_help_lists_preview():
     result = runner.invoke(cli, ["--help"])
     assert result.exit_code == 0
     assert "preview" in result.output
+
+
+def test_progress_spinner_updates_without_tty(capsys):
+    from jstdata.preview.progress import ProgressSpinner
+
+    with ProgressSpinner(enabled=False) as progress:
+        progress.update("Resolving investigation…")
+        progress.update("Fetching observations 1/2…")
+        progress.succeed("Wrote preview.html")
+    out = capsys.readouterr().err
+    assert "Resolving investigation…" in out
+    assert "Fetching observations 1/2…" in out
+    assert "Wrote preview.html" in out
+    assert "✓" in out
+
+
+def test_preview_investigation_reports_progress(tmp_path: Path, monkeypatch):
+    from jstdata.client import JSTDataClient
+    from jstdata.preview import preview_investigation
+
+    inv_root = tmp_path / "investigations"
+    export_dir = tmp_path / "exports" / "preview"
+    inv = Investigation.new("progress-demo", title="Progress Demo")
+    inv.add_query(metric=["m1"], entity=["e1"])
+    save_investigation(inv, root=inv_root)
+
+    series = _series("S1", "e1", "Entity One", metric_id="m1")
+    client = MagicMock(spec=JSTDataClient)
+    client.preview.return_value = []
+    client.query.return_value = [MagicMock(series=series)]
+    client.get_metric.return_value = Metric(id="m1", name="Metric One")
+    client.get_series_observations.return_value = [_obs("S1", 2010, 1.0)]
+    monkeypatch.setattr("jstdata.preview.webbrowser.open", lambda url: None)
+
+    messages: list[str] = []
+    path = preview_investigation(
+        client,
+        "progress-demo",
+        root=inv_root,
+        export_dir=export_dir,
+        open_browser=False,
+        progress=messages.append,
+    )
+    assert path.exists()
+    joined = " | ".join(messages)
+    assert "Resolving investigation" in joined
+    assert "Building query" in joined
+    assert "Rendering HTML" in joined

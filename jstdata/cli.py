@@ -756,21 +756,25 @@ def preview_cmd(investigation_id: str | None, no_open: bool) -> None:
     jst preview inv-1794531175
     """
     from .investigation import InvestigationError
-    from .preview import preview_investigation
+    from .preview import ProgressSpinner, preview_investigation
 
-    try:
-        path = preview_investigation(
-            client,
-            investigation_id,
-            open_browser=not no_open,
-        )
-    except InvestigationError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(2)
-    except Exception as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
-    click.echo(f"Wrote {path}")
+    with ProgressSpinner() as progress:
+        try:
+            path = preview_investigation(
+                client,
+                investigation_id,
+                open_browser=not no_open,
+                progress=progress.update,
+            )
+        except InvestigationError as e:
+            progress.fail(str(e))
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(2)
+        except Exception as e:
+            progress.fail(str(e))
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+        progress.succeed(f"Wrote {path}")
 
 
 @cli.command("ls")
