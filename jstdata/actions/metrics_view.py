@@ -34,7 +34,7 @@ from .base import (
 from .pagination import page_fetch_limit, take_page
 from .screen import BaseScreen
 
-PAGE_SIZE = 20
+PAGE_SIZE = 50
 SEARCH_DEBOUNCE_S = 0.3
 MODES = ("union", "intersect")
 

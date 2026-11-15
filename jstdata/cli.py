@@ -739,6 +739,44 @@ def open_cmd(investigation_id: str) -> None:
     run_investigation_host(client)
 
 
+@cli.command("preview")
+@click.argument("investigation_id", required=False, default=None)
+@click.option(
+    "--no-open",
+    is_flag=True,
+    help="Write the HTML file without opening a browser",
+)
+def preview_cmd(investigation_id: str | None, no_open: bool) -> None:
+    """Render a static HTML preview of an investigation (Bokeh).
+
+    Defaults to the most recently modified investigation.
+
+    \b
+    jst preview
+    jst preview inv-1794531175
+    """
+    from .investigation import InvestigationError
+    from .preview import ProgressSpinner, preview_investigation
+
+    with ProgressSpinner() as progress:
+        try:
+            path = preview_investigation(
+                client,
+                investigation_id,
+                open_browser=not no_open,
+                progress=progress.update,
+            )
+        except InvestigationError as e:
+            progress.fail(str(e))
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(2)
+        except Exception as e:
+            progress.fail(str(e))
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+        progress.succeed(f"Wrote {path}")
+
+
 @cli.command("ls")
 def ls_cmd() -> None:
     """List investigations on disk (active marked with *).

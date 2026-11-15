@@ -26,7 +26,7 @@ from .base import ActionBinding, ActionSpec, label_for, register, stage_ids
 from .pagination import page_fetch_limit, take_page
 from .screen import BaseScreen
 
-ASSOCIATES_PAGE = 20
+ASSOCIATES_PAGE = 50
 TAXONOMIES_PAGE = 12
 SEARCH_DEBOUNCE_S = 0.3
 

@@ -89,7 +89,28 @@ def test_metric_view_pagination_state():
     assert isinstance(screen, MetricScreen)
     assert screen.page_offset == 0
     assert screen.has_more is False
-    assert ASSOCIATES_PAGE == 20
+    assert ASSOCIATES_PAGE == 50
+    page, more = take_page(list(range(page_fetch_limit(ASSOCIATES_PAGE))), ASSOCIATES_PAGE)
+    assert len(page) == ASSOCIATES_PAGE
+    assert more is True
+
+
+def test_entity_view_pagination_state():
+    from unittest.mock import MagicMock
+
+    from jstdata.actions.entity_view import ASSOCIATES_PAGE, EntityScreen, create_entity_screen
+    from jstdata.actions.pagination import page_fetch_limit, take_page
+    from jstdata.investigation.model import ResearchContext, Workspace
+
+    screen = create_entity_screen(
+        MagicMock(),
+        Workspace(entity=["united-states"]),
+        input_context=ResearchContext(entity=["united-states"]),
+    )
+    assert isinstance(screen, EntityScreen)
+    assert screen.page_offset == 0
+    assert screen.has_more is False
+    assert ASSOCIATES_PAGE == 50
     page, more = take_page(list(range(page_fetch_limit(ASSOCIATES_PAGE))), ASSOCIATES_PAGE)
     assert len(page) == ASSOCIATES_PAGE
     assert more is True
@@ -111,7 +132,7 @@ def test_metrics_view_pagination_state():
     assert isinstance(screen, MetricsScreen)
     assert screen.page_offset == 0
     assert screen.has_more is False
-    assert PAGE_SIZE == 20
+    assert PAGE_SIZE == 50
     page, more = take_page(list(range(page_fetch_limit(PAGE_SIZE))), PAGE_SIZE)
     assert len(page) == PAGE_SIZE
     assert more is True
