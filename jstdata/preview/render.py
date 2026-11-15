@@ -363,6 +363,10 @@ def _details_html(chart: Optional[ChartModel]) -> str:
           <div class="detail-val" data-detail="series">{_esc(chart.series_id or "—")}</div>
         </div>
         <div class="detail-row">
+          <div class="detail-key">Units</div>
+          <div class="detail-val" data-detail="units">{_esc(chart.units or "—")}</div>
+        </div>
+        <div class="detail-row">
           <div class="detail-key">Source</div>
           <div class="detail-val" data-detail="source">{_esc(chart.source)}</div>
         </div>
@@ -414,6 +418,7 @@ def render_html(model: PreviewModel) -> str:
         str(p.query_id): {
             "metric": (p.primary_chart.metric_name if p.primary_chart else ""),
             "series": (p.primary_chart.series_id or "—") if p.primary_chart else "—",
+            "units": (p.primary_chart.units or "—") if p.primary_chart else "—",
             "source": (p.primary_chart.source if p.primary_chart else "—"),
             "period": (p.primary_chart.period_label if p.primary_chart else "—"),
             "entities": p.entity_count,
@@ -867,6 +872,7 @@ def render_html(model: PreviewModel) -> str:
         var map = {{
           metric: info.metric,
           series: info.series,
+          units: info.units,
           source: info.source,
           period: info.period
         }};

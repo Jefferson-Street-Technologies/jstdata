@@ -64,6 +64,7 @@ def _chart(**kwargs) -> ChartModel:
         source="World Bank, Global Financial Development Database",
         source_display="World Bank (S1)",
         entity_count=2,
+        units="Percent",
         lines=[
             SeriesLine(
                 entity_id="b",
@@ -242,6 +243,8 @@ def test_render_html_legend_sorted_by_value():
     assert "Jefferson Street" not in html
     assert "chart-source" in html
     assert "World Bank (S1)" in html
+    assert 'data-detail="units"' in html
+    assert "Percent" in html
     assert "Author observation" in html
     assert "chart-q1-m0" in html
     assert "chart-plot-night" in html

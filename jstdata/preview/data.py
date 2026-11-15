@@ -56,6 +56,7 @@ class ChartModel:
     source: str
     source_display: str
     entity_count: int
+    units: Optional[str] = None
     lines: list[SeriesLine] = field(default_factory=list)
 
     @property
@@ -374,10 +375,12 @@ def _build_chart_model(
         )
 
     display_series = series_ids[0] if series_ids else lines[0].series_id
-    source = next(
-        (s.source for s in series_records if s.id == display_series),
-        series_records[0].source,
+    display_record = next(
+        (s for s in series_records if s.id == display_series),
+        series_records[0],
     )
+    source = display_record.source
+    units = (display_record.units or "").strip() or None
     return ChartModel(
         metric_id=metric_id,
         metric_name=metric_name,
@@ -385,6 +388,7 @@ def _build_chart_model(
         source=_details_source(source),
         source_display=_source_display(source, display_series),
         entity_count=len(entities) if entities else len(lines),
+        units=units,
         lines=lines,
     )
 
