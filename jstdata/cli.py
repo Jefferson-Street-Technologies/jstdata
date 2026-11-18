@@ -71,6 +71,7 @@ def config_show(verbose):
     """
     if verbose:
         click.echo(f"Base URL: {client.base_url}")
+        click.echo(f"Site URL: {_site_url()}")
     
     try:
         key = client.api_key
@@ -80,11 +81,12 @@ def config_show(verbose):
         click.echo("API Key: Not set")
 
 @config.command("set")
-@click.argument("key", type=click.Choice(["api_key", "base_url"]))
+@click.argument("key", type=click.Choice(["api_key", "base_url", "site_url"]))
 @click.argument("value")
 def config_set(key, value):
     """
-    Update a configuration value. Valid keys are "api_key" and "base_url".
+    Update a configuration value. Valid keys are "api_key", "base_url" and
+    "site_url" (the website `jst publish` and `jst clone` use).
     """
     client._cfg.write(**{key: value})
     click.echo(f"Set {key} to {value}")
@@ -737,6 +739,101 @@ def open_cmd(investigation_id: str) -> None:
         sys.exit(2)
     click.echo(f"Opened investigation {inv.id!r} ({inv.title})")
     run_investigation_host(client)
+
+
+def _site_url() -> str:
+    """Website for publish/clone: JSTDATA_SITE_URL > config site_url > default."""
+    import os
+    from .publish import DEFAULT_SITE_URL
+
+    try:
+        configured = client._cfg.read().get("site_url")
+    except Exception:
+        configured = None
+    return os.environ.get("JSTDATA_SITE_URL") or configured or DEFAULT_SITE_URL
+
+
+@cli.command("publish")
+@click.argument("investigation_id", required=False, default=None)
+@click.option("--name", "publisher_name", help="Name shown as the publisher (default: from your account email)")
+@click.option("--yes", "-y", is_flag=True, help="Publish without asking for confirmation")
+def publish_cmd(investigation_id: str | None, publisher_name: str | None, yes: bool) -> None:
+    """Publish an investigation as a shareable web page.
+
+    Defaults to the active investigation. The website runs its queries with
+    your API key and returns a link. Anyone with the link can see the queries,
+    annotations and results, so check there's nothing private in them.
+    Publishing again creates a new link; earlier ones don't change.
+
+    \b
+    jst publish
+    jst publish plain-bagel --yes
+    """
+    from .investigation import InvestigationError, get_investigation
+    from .investigation.active import try_load_active
+    from .publish import PublishError, publish_investigation
+
+    try:
+        if investigation_id is None:
+            ctx = try_load_active()
+            if ctx is None:
+                click.echo("Error: no active investigation. Name one: jst publish <id>", err=True)
+                sys.exit(2)
+            investigation_id = ctx.investigation
+        inv = get_investigation(investigation_id)
+        api_key = client.api_key
+    except InvestigationError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(2)
+    except ApiKeyNotSetError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(2)
+
+    queries = sorted(inv.queries.values(), key=lambda q: q.id)
+    click.echo(f"Publishing {inv.title!r} ({inv.id}) with {len(queries)} quer{'y' if len(queries) == 1 else 'ies'}:")
+    for q in queries:
+        click.echo(f"  {q.id}. {q.name or 'Query ' + str(q.id)}")
+    click.echo("Anyone with the link will see these queries, their annotations and results.")
+    if not yes and not click.confirm("Publish?", default=True):
+        click.echo("Not published.")
+        return
+
+    site = _site_url()
+    click.echo("Running the queries…")
+    try:
+        result = publish_investigation(inv, api_key=api_key, site_url=site, publisher_name=publisher_name)
+    except PublishError as e:
+        click.secho(f"Error: {e}", fg="red", err=True)
+        sys.exit(1)
+    click.secho("Published.", fg="green")
+    click.echo(result["url"])
+
+
+@cli.command("clone")
+@click.argument("url")
+@click.option("--as", "new_id", help="Save under this investigation id instead of the published one")
+def clone_cmd(url: str, new_id: str | None) -> None:
+    """Copy a published investigation into your own environment.
+
+    Saves the published queries and annotations as a new local investigation
+    and makes it active. Your copy is independent of the publication. No API
+    key is needed; running the queries afterwards uses yours.
+
+    \b
+    jst clone https://www.jeffersonst.io/p/AbCdEf1234
+    jst clone AbCdEf1234 --as my-copy
+    """
+    from .investigation import InvestigationError, set_active
+    from .publish import PublishError, clone_publication
+
+    try:
+        inv = clone_publication(url, site_url=_site_url(), new_id=new_id)
+    except (PublishError, InvestigationError) as e:
+        click.secho(f"Error: {e}", fg="red", err=True)
+        sys.exit(1)
+    set_active(inv.id)
+    click.secho(f"Cloned {inv.title!r} as {inv.id!r}.", fg="green")
+    click.echo(f"It's now active. Run `jst` to open it, or `jst query run 1` to rerun a query.")
 
 
 @cli.command("preview")

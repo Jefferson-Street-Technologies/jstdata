@@ -119,6 +119,10 @@ class JSTDataClientConfig:
         current["base_url"] = (
             kwargs.get("base_url") or current.get("base_url") or self.base_url
         )
+        # Other settings (e.g. site_url for jst publish) are stored as given.
+        for key, value in kwargs.items():
+            if key not in ("api_key", "base_url") and value:
+                current[key] = value
 
         with open(CONFIG_FILE, "w") as f:
             json.dump(current, f, indent=2)
