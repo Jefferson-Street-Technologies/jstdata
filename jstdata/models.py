@@ -23,8 +23,12 @@ def _parse_datetime(value: Any) -> datetime:
     if isinstance(value, datetime):
         return value
     if isinstance(value, str):
+        # Before 3.11, fromisoformat rejects a trailing "Z" (the API's UTC suffix).
+        text = value.replace(" ", "T")
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
         try:
-            return datetime.fromisoformat(value.replace(" ", "T"))
+            return datetime.fromisoformat(text)
         except ValueError:
             return datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
     return datetime.min
