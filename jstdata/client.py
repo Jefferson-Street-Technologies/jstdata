@@ -16,6 +16,7 @@ from .models import (
     MetricTaxonomy,
     Observation,
     PreviewRow,
+    Event,
     Release,
     Series,
     TimeSeries,
@@ -359,6 +360,44 @@ class JSTDataClient:
         """Get a single release / filing by id."""
         data = self.make_request(f"release/{release_id}")
         return Release.from_dict(data)
+
+    # --- Events ---
+
+    def list_events(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        item: Optional[Union[str, List[str]]] = None,
+        entity: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        include_amendments: bool = True,
+        sort_order: str = "desc",
+    ) -> List[Event]:
+        """List Form 8-K material events, newest first (``GET /event``).
+
+        ``item`` takes one or more 8-K item codes (``"2.02"``) and matches
+        filings reporting any of them. ``entity`` is a ``cik:`` or ``ticker:``
+        id. ``start_date`` / ``end_date`` are inclusive ``YYYY-MM-DD`` bounds
+        on the filing date; the API defaults ``end_date`` to today UTC.
+        """
+        params: Dict[str, Any] = {
+            "limit": limit,
+            "offset": offset,
+            "sort_order": sort_order,
+        }
+        if item:
+            params["item"] = [item] if isinstance(item, str) else list(item)
+        if entity:
+            params["entity"] = entity
+        if start_date:
+            params["start_date"] = start_date
+        if end_date:
+            params["end_date"] = end_date
+        if not include_amendments:
+            params["include_amendments"] = "false"
+        data = self.make_request("event", params)
+        return [Event.from_dict(r) for r in data["records"]]
 
     # --- Preview ---
 

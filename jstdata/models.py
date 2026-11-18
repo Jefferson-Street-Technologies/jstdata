@@ -23,8 +23,12 @@ def _parse_datetime(value: Any) -> datetime:
     if isinstance(value, datetime):
         return value
     if isinstance(value, str):
+        # Before 3.11, fromisoformat rejects a trailing "Z" (the API's UTC suffix).
+        text = value.replace(" ", "T")
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
         try:
-            return datetime.fromisoformat(value.replace(" ", "T"))
+            return datetime.fromisoformat(text)
         except ValueError:
             return datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
     return datetime.min
@@ -138,6 +142,59 @@ class Release:
             label=data.get("label", ""),
             release_date=_parse_date(data["release_date"]),
             source=data.get("source", ""),
+        )
+
+
+@dataclass(frozen=True)
+class EventItem:
+    code: str
+    title: str
+    short_title: str
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EventItem":
+        return cls(
+            code=data["code"],
+            title=data.get("title", ""),
+            short_title=data.get("short_title") or data.get("title", ""),
+        )
+
+
+@dataclass(frozen=True)
+class Event:
+    """One Form 8-K filing by one company (``GET /event``)."""
+
+    accession_number: str
+    entity_id: str
+    entity_label: str
+    tickers: List[str]
+    form: str
+    is_amendment: bool
+    filing_date: date
+    accepted_at: datetime
+    report_date: Optional[date]
+    headline: str
+    reported_items: List[EventItem]
+    item_codes: List[str]
+    url: str
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Event":
+        report_date = data.get("report_date")
+        return cls(
+            accession_number=data["accession_number"],
+            entity_id=data["entity_id"],
+            entity_label=data.get("entity_label", data["entity_id"]),
+            tickers=list(data.get("tickers") or []),
+            form=data.get("form", "8-K"),
+            is_amendment=bool(data.get("is_amendment", False)),
+            filing_date=_parse_date(data["filing_date"]),
+            accepted_at=_parse_datetime(data["accepted_at"]),
+            report_date=_parse_date(report_date) if report_date else None,
+            headline=data.get("headline", ""),
+            reported_items=[EventItem.from_dict(i) for i in data.get("reported_items") or []],
+            item_codes=list(data.get("item_codes") or []),
+            url=data.get("url", ""),
         )
 
 

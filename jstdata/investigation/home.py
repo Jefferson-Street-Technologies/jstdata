@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import webbrowser
+from dataclasses import dataclass
+from datetime import timezone
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 from textual import on, work
 from textual.app import ComposeResult
@@ -18,7 +22,7 @@ from ..actions.pagination import page_fetch_limit, take_page
 from ..actions.screen import BaseScreen
 from ..client import JSTDataClient
 from ..investigation.model import Investigation, Workspace
-from ..models import Entity, Metric, Release, Series, Taxonomy
+from ..models import Entity, Event, Metric, Release, Series, Taxonomy
 from .browsers import (
     SEARCH_TYPES,
     ActionTreeItem,
@@ -46,6 +50,29 @@ from .search_drawer import (
 from .workspace_drawer import WorkspaceResourceRow
 
 RECENT_PAGE = 20
+
+# EDGAR timestamps are UTC; filers and readers think in New York time.
+SEC_TZ = ZoneInfo("America/New_York")
+
+
+@dataclass(frozen=True)
+class RecentFilter:
+    """One Recent filter chip: an 8-K item preset, or the plain release list."""
+
+    label: str
+    items: tuple[str, ...] = ()
+    releases: bool = False
+
+
+RECENT_FILTERS: tuple[RecentFilter, ...] = (
+    RecentFilter("8-K ALL"),
+    RecentFilter("EARNINGS", ("2.02",)),
+    RecentFilter("LEADERSHIP", ("5.02",)),
+    RecentFilter("DEALS", ("1.01", "1.02", "2.01")),
+    RecentFilter("DISTRESS", ("1.03", "2.04", "2.06", "3.01", "4.02")),
+    RecentFilter("AUDITOR", ("4.01", "4.02")),
+    RecentFilter("ALL RELEASES", releases=True),
+)
 
 
 class DestinationCard(Static):
@@ -76,6 +103,35 @@ class ReleaseTile(ListItem):
         yield Label(f"{rel.release_date.isoformat()}  ·  {source}", classes="rel-meta")
 
 
+def event_time(event: Event) -> str:
+    """Acceptance time in New York time, e.g. ``2026-11-17 16:41 ET``."""
+    accepted = event.accepted_at
+    if accepted.tzinfo is None:
+        accepted = accepted.replace(tzinfo=timezone.utc)
+    return accepted.astimezone(SEC_TZ).strftime("%Y-%m-%d %H:%M ET")
+
+
+def event_company(event: Event) -> str:
+    tickers = " ".join(event.tickers[:3])
+    return f"{event.entity_label}  {tickers}" if tickers else event.entity_label
+
+
+class EventTile(ListItem):
+    """One stacked Recent card for an 8-K: company, headline, time · form · items."""
+
+    def __init__(self, event: Event) -> None:
+        super().__init__()
+        self.event = event
+
+    def compose(self) -> ComposeResult:
+        ev = self.event
+        yield Label(event_company(ev), classes="rel-title")
+        yield Label(ev.headline or "—", classes="evt-headline")
+        form = f"{ev.form} amendment" if ev.is_amendment else ev.form
+        codes = " ".join(ev.item_codes)
+        yield Label(f"{event_time(ev)}  ·  {form}  ·  {codes}", classes="rel-meta")
+
+
 class HomeScreen(BaseScreen):
     """Persistent Home: options left, data top-right, graph bottom-right."""
 
@@ -94,6 +150,7 @@ class HomeScreen(BaseScreen):
         Binding("slash", "focus_filter", "Search", show=False),
         Binding("f", "cycle_filter", "Filter", show=False),
         Binding("space", "collect", "Collect", show=False),
+        Binding("o", "open_filing", "Open filing on sec.gov", show=False),
         Binding("backspace", "remove", "Remove", show=False),
         Binding("delete", "remove", "Remove", show=False),
         Binding("c", "create_query", "Query from workspace", show=False),
@@ -223,12 +280,13 @@ class HomeScreen(BaseScreen):
         min-height: 1;
         max-height: 1;
     }
-    ReleaseTile {
+    ReleaseTile, EventTile {
         height: 5;
         min-height: 5;
         max-height: 5;
         width: 100%;
-        padding: 1 1 0 1;
+        /* Border takes 2 of the 5 rows: no top padding, or the third line is clipped. */
+        padding: 0 1;
         margin: 0 0 1 0;
         border: solid #222;
         background: #111;
@@ -236,12 +294,13 @@ class HomeScreen(BaseScreen):
     .rel-title { color: #e0e0e0; text-style: bold; height: 1; }
     .rel-id { color: #888; height: 1; }
     .rel-meta { color: #86efac; height: 1; }
+    .evt-headline { color: #c8c8c8; height: 1; }
     QueryListItem { height: 2; min-height: 2; }
     ListView > ListItem.--highlight {
         background: #1a3a2a;
         border-left: solid #4ade80;
     }
-    ListView > ReleaseTile.--highlight {
+    ListView > ReleaseTile.--highlight, ListView > EventTile.--highlight {
         background: #1a3a2a;
         border: solid #4ade80;
     }
@@ -279,7 +338,9 @@ class HomeScreen(BaseScreen):
         self._dest: Optional[str] = None
         self._type_i = 0
         self._search_task: asyncio.Task[None] | None = None
-        self._releases: list[Release] = []
+        self._recent_i = 0
+        # Release rows under ALL RELEASES, Event rows under the 8-K filters.
+        self._releases: list[Release | Event] = []
         self._recent_offset = 0
         self._recent_has_more = False
         self._recent_loading_more = False
@@ -336,9 +397,11 @@ class HomeScreen(BaseScreen):
         if action == "focus_filter":
             return dest == "search"
         if action == "cycle_filter":
-            return dest == "search"
+            return dest in ("search", "recent")
         if action == "collect":
-            return dest == "search" and not isinstance(self.focused, Input)
+            return dest in ("search", "recent") and not isinstance(self.focused, Input)
+        if action == "open_filing":
+            return dest == "recent"
         if action == "remove":
             return dest in ("workspace", "queries")
         if action == "create_query":
@@ -383,6 +446,16 @@ class HomeScreen(BaseScreen):
                 "[bold #e0e0e0]space[/] [#888]collect[/]",
                 "[bold #e0e0e0]f[/] [#888]filter[/]",
             ]
+        elif dest == "recent" and not self._recent_filter().releases:
+            keys = [
+                "[bold #e0e0e0]j[/]/[bold #e0e0e0]k[/] [#888]navigate[/]",
+                "[bold #e0e0e0]↵[/] [#888]company[/]",
+                "[bold #e0e0e0]o[/] [#888]filing[/]",
+                "[bold #e0e0e0]space[/] [#888]collect[/]",
+                "[bold #e0e0e0]f[/] [#888]filter[/]",
+            ]
+        elif dest == "recent":
+            keys.append("[bold #e0e0e0]f[/] [#888]filter[/]")
         elif dest == "workspace":
             keys.extend(
                 [
@@ -426,9 +499,11 @@ class HomeScreen(BaseScreen):
         lst.display = drilled
         searching = bool(drilled and self._dest == "search")
         inp.display = searching
-        filt.display = searching
+        filt.display = searching or bool(drilled and self._dest == "recent")
         if searching:
             self._refresh_search_filters()
+        elif drilled and self._dest == "recent":
+            self._refresh_recent_filters()
 
     def _chrome_ready(self) -> bool:
         """False while the screen exists but compose has not attached widgets."""
@@ -455,6 +530,23 @@ class HomeScreen(BaseScreen):
         rtype = SEARCH_TYPES[self._type_i].upper()
         self.query_one("#search-filters", Label).update(
             f"TYPE: {rtype}  ·  SOURCE: ALL  ·  FREQUENCY: ALL"
+        )
+
+    def _recent_filter(self) -> RecentFilter:
+        return RECENT_FILTERS[self._recent_i]
+
+    def _refresh_recent_filters(self) -> None:
+        # One chip, not all seven: the nav pane is ~40% of the terminal.
+        filt = self._recent_filter()
+        if filt.releases:
+            scope = "FRED, EDGAR, BEA…"
+        elif filt.items:
+            scope = "items " + " ".join(filt.items)
+        else:
+            scope = "every item"
+        self.query_one("#search-filters", Label).update(
+            f"[bold #4ade80]{filt.label}[/]  {scope}  "
+            f"[#555]{self._recent_i + 1}/{len(RECENT_FILTERS)} · f next[/]"
         )
 
     def _refresh_graph(self) -> None:
@@ -529,7 +621,8 @@ class HomeScreen(BaseScreen):
         list_view = self.query_one("#home-list", ListView)
         list_view.clear()
         if dest == "recent":
-            list_view.append(GroupHeader("Loading recent releases…"))
+            what = "releases" if self._recent_filter().releases else "8-K events"
+            list_view.append(GroupHeader(f"Loading recent {what}…"))
             self.load_recent(reset=True)
         elif dest == "search":
             self._show_search_status("Type to search the catalog")
@@ -608,7 +701,12 @@ class HomeScreen(BaseScreen):
         child = self._highlighted()
         if dest == "recent":
             extra = "+" if self._recent_has_more else ""
-            if isinstance(child, ReleaseTile):
+            noun = "releases" if self._recent_filter().releases else "8-K events"
+            if isinstance(child, EventTile):
+                ev = child.event
+                kicker.update(f"8-K / {ev.entity_label.upper()[:34]}")
+                body.update(self._event_inspector(ev, f"{len(self._releases)}{extra}"))
+            elif isinstance(child, ReleaseTile):
                 rel = child.release
                 kicker.update((rel.label or rel.id).upper()[:40])
                 body.update(
@@ -625,14 +723,14 @@ class HomeScreen(BaseScreen):
                     body.update("Loading more…")
                 elif not self._recent_loaded:
                     body.update(
-                        "Latest filings and economic data updates, newest first.\n\n"
+                        "Latest 8-K material events and releases, newest first.\n\n"
                         "[#888]Loading…[/]"
                     )
                 elif not self._releases:
-                    body.update("[#888]No recent releases.[/]")
+                    body.update(f"[#888]No recent {noun}.[/]")
                 else:
                     body.update(
-                        f"{len(self._releases)}{extra} releases · newest first"
+                        f"{len(self._releases)}{extra} {noun} · newest first"
                     )
             return
         if dest == "search":
@@ -789,7 +887,45 @@ class HomeScreen(BaseScreen):
         if self._dest == "search":
             self.query_one("#search-input", Input).focus()
 
+    def _event_inspector(self, ev: Event, count: str) -> str:
+        filt = self._recent_filter()
+        lines = [f"[bold]{ev.entity_label}[/bold]"]
+        if ev.tickers:
+            lines.append(", ".join(ev.tickers))
+        lines.append(f"[#888]{ev.entity_id}[/]")
+        lines.append("")
+        form = f"{ev.form}  [#f59e0b]amendment[/]" if ev.is_amendment else ev.form
+        lines.append(f"form      {form}")
+        lines.append(f"accepted  {event_time(ev)}")
+        if ev.report_date:
+            lines.append(f"event     {ev.report_date.isoformat()}")
+        lines.append(f"accession {ev.accession_number}")
+        lines.append("")
+        lines.append("[bold #4ade80]ITEMS[/]")
+        for item in ev.reported_items:
+            lines.append(f"{item.code:<5} {item.title}")
+        lines.append("")
+        lines.append(f"[#888]{ev.url}[/]")
+        lines.append("")
+        scope = "all items" if not filt.items else "items " + ", ".join(filt.items)
+        lines.append(f"[#888]{count} events · {scope} · newest first[/]")
+        lines.append("Enter opens the company · o opens the filing · space collects")
+        return "\n".join(lines)
+
+    def action_open_filing(self) -> None:
+        child = self._highlighted()
+        if self._dest != "recent" or not isinstance(child, EventTile):
+            return
+        webbrowser.open(child.event.url)
+        self.notify(f"Opened {child.event.accession_number} on sec.gov")
+
     def action_cycle_filter(self) -> None:
+        if self._dest == "recent":
+            self._recent_i = (self._recent_i + 1) % len(RECENT_FILTERS)
+            self._refresh_recent_filters()
+            self._rebuild_list()
+            self.refresh_footer()
+            return
         if self._dest == "search":
             self._type_i = (self._type_i + 1) % len(SEARCH_TYPES)
             self._refresh_search_filters()
@@ -831,6 +967,12 @@ class HomeScreen(BaseScreen):
             return
         child = self._highlighted()
         if self._dest == "recent":
+            if isinstance(child, EventTile):
+                open_fn = getattr(self.app, "open_resource_view", None)
+                if callable(open_fn):
+                    ev = child.event
+                    open_fn("entity", ev.entity_id, label=ev.entity_label)
+                return
             if isinstance(child, ReleaseTile):
                 open_fn = getattr(self.app, "open_resource_view", None)
                 if callable(open_fn):
@@ -875,6 +1017,21 @@ class HomeScreen(BaseScreen):
 
     def action_collect(self) -> None:
         child = self._highlighted()
+        if isinstance(child, EventTile):
+            ev = child.event
+            added = stage_ids(
+                self.workspace,
+                self.app,
+                entity=ev.entity_id,
+                labels={ev.entity_id: ev.entity_label},
+            )
+            if not added:
+                self.notify(f"{ev.entity_label} already in workspace", severity="warning")
+                return
+            self.notify(f"Collected {ev.entity_label} ({ev.entity_id})")
+            self._refresh_header()
+            self._refresh_graph()
+            return
         if not isinstance(child, SearchResultRow):
             return
         resource = child.resource
@@ -1042,7 +1199,7 @@ class HomeScreen(BaseScreen):
     def _maybe_load_more_recent(self) -> None:
         if self._recent_loading_more or not self._recent_has_more:
             return
-        if not isinstance(self._highlighted(), ReleaseTile):
+        if not isinstance(self._highlighted(), (ReleaseTile, EventTile)):
             return
         index = self._list().index
         if index is None or index < len(self._releases) - 1:
@@ -1051,11 +1208,17 @@ class HomeScreen(BaseScreen):
         self._recent_offset = len(self._releases)
         self.load_recent(reset=False)
 
-    def _append_releases(self, releases: list[Release]) -> None:
+    def _append_releases(self, releases: list[Release | Event]) -> None:
         list_view = self._list()
+        remember = getattr(self.app, "remember_label", None)
         for rel in releases:
-            if hasattr(self.app, "remember_label"):
-                self.app.remember_label(rel.id, rel.label or rel.id)
+            if isinstance(rel, Event):
+                if callable(remember):
+                    remember(rel.entity_id, rel.entity_label)
+                list_view.append(EventTile(rel))
+                continue
+            if callable(remember):
+                remember(rel.id, rel.label or rel.id)
             list_view.append(ReleaseTile(rel))
 
     @work(exclusive=True, group="home-recent")
@@ -1066,24 +1229,35 @@ class HomeScreen(BaseScreen):
             self._recent_loading_more = False
             self._recent_loaded = False
         offset = self._recent_offset
+        filt = self._recent_filter()
         try:
-            raw = await asyncio.to_thread(
-                self.client.list_releases,
-                page_fetch_limit(RECENT_PAGE),
-                offset,
-                "desc",
-            )
+            if filt.releases:
+                raw = await asyncio.to_thread(
+                    self.client.list_releases,
+                    page_fetch_limit(RECENT_PAGE),
+                    offset,
+                    "desc",
+                )
+            else:
+                raw = await asyncio.to_thread(
+                    self.client.list_events,
+                    page_fetch_limit(RECENT_PAGE),
+                    offset,
+                    list(filt.items) or None,
+                )
             page, has_more = take_page(raw, RECENT_PAGE)
         except Exception as exc:
-            if self._dest != "recent":
+            if self._dest != "recent" or filt != self._recent_filter():
                 return
             self._recent_loading_more = False
             self._recent_loaded = True
             self._list().clear()
-            self._list().append(GroupHeader(f"Could not load releases: {exc}"))
+            what = "releases" if filt.releases else "8-K events"
+            self._list().append(GroupHeader(f"Could not load {what}: {exc}"))
             self._refresh_data_pane()
             return
-        if self._dest != "recent":
+        # A filter change mid-flight starts its own load; drop this stale page.
+        if self._dest != "recent" or filt != self._recent_filter():
             return
         if reset:
             self._releases = []
@@ -1093,9 +1267,13 @@ class HomeScreen(BaseScreen):
         self._recent_loading_more = False
         self._recent_loaded = True
         if reset and not page:
-            self._list().append(GroupHeader("No recent releases"))
+            what = "releases" if filt.releases else "8-K events"
+            self._list().append(GroupHeader(f"No recent {what}"))
         else:
             self._append_releases(page)
+            if reset:
+                # Highlight the newest row so the inspector shows it straight away.
+                self._list().index = 0
         self._refresh_data_pane()
         self.refresh_footer()
 

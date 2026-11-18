@@ -472,3 +472,63 @@ def test_search_lowercases_query(client, mock_url, method, path):
         # requests_mock's .qs lowercases values, so read the raw URL.
         raw = parse_qs(urlparse(m.request_history[-1].url).query)
         assert raw["query"] == ["amazon"]
+
+
+def test_list_events(client, mock_url):
+    payload = {
+        "records": [
+            {
+                "accession_number": "0000320193-26-000024",
+                "entity_id": "cik:320193",
+                "entity_label": "Apple Inc.",
+                "tickers": ["AAPL"],
+                "form": "8-K",
+                "is_amendment": False,
+                "filing_date": "2026-11-02",
+                "accepted_at": "2026-11-02T21:30:23Z",
+                "report_date": "2026-11-02",
+                "headline": "Results of Operations and Financial Condition",
+                "reported_items": [
+                    {
+                        "code": "2.02",
+                        "title": "Results of Operations and Financial Condition",
+                        "short_title": "Results of Operations and Financial Condition",
+                    },
+                    {
+                        "code": "9.01",
+                        "title": "Financial Statements and Exhibits",
+                        "short_title": "Financial Statements and Exhibits",
+                    },
+                ],
+                "item_codes": ["2.02", "9.01"],
+                "url": "https://www.sec.gov/Archives/edgar/data/320193/000032019326000024/0000320193-26-000024-index.htm",
+            }
+        ],
+        "limit": 21,
+        "offset": 0,
+    }
+    with requests_mock.Mocker() as m:
+        m.get(f"{mock_url}/event", json=payload)
+        rows = client.list_events(
+            limit=21,
+            item=["1.03", "4.02"],
+            entity="ticker:AAPL",
+            start_date="2026-01-01",
+            include_amendments=False,
+        )
+        ev = rows[0]
+        assert ev.entity_id == "cik:320193"
+        assert ev.tickers == ["AAPL"]
+        assert ev.accepted_at.isoformat() == "2026-11-02T21:30:23+00:00"
+        assert [i.code for i in ev.reported_items] == ["2.02", "9.01"]
+        qs = m.last_request.qs
+        assert qs["item"] == ["1.03", "4.02"]
+        assert qs["entity"] == ["ticker:aapl"]  # requests_mock lower-cases qs values
+        assert qs["include_amendments"] == ["false"]
+        assert qs["sort_order"] == ["desc"]
+        assert "end_date" not in qs
+
+        client.list_events(item="2.02")
+        qs = m.last_request.qs
+        assert qs["item"] == ["2.02"]
+        assert "include_amendments" not in qs

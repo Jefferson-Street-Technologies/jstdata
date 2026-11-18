@@ -46,9 +46,9 @@ DESTINATIONS: tuple[Destination, ...] = (
         id=DEST_RECENT,
         number="01",
         title="Recent",
-        blurb="Latest filings and economic updates",
-        inspector="Latest filings and economic data updates, newest first.",
-        filters="Newest first · 20 per page",
+        blurb="Latest 8-K events and releases",
+        inspector="Latest 8-K material events, newest first: who filed, what they reported.",
+        filters="8-K items · All releases · 20 per page",
     ),
     Destination(
         id=DEST_SEARCH,
@@ -132,9 +132,12 @@ def inspector_copy(dest: Destination, inv: Investigation) -> str:
         body = (
             f"{dest.inspector}\n\n"
             "[bold #888]BROWSE[/]\n"
-            "Newest first                 Enter to open\n"
-            "20 per page\n\n"
-            "Id, title, date, and source."
+            "Newest first                 Enter opens company\n"
+            "20 per page                  o opens filing\n"
+            "f cycles filters             space collects\n\n"
+            "[bold #888]FILTERS[/]\n"
+            "8-K all · Earnings · Leadership · Deals\n"
+            "Distress · Auditor · All releases"
         )
     elif dest.id == DEST_SEARCH:
         body = (
