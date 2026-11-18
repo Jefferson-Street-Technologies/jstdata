@@ -938,6 +938,15 @@ class QueryScreen(BaseScreen):
         if callable(edit):
             edit(self.query_id)
 
+    def coach_flags(self) -> set[str]:
+        """State the onboarding coach can check (``loaded``, ``chart``)."""
+        flags = set()
+        if self._loaded:
+            flags.add("loaded")
+            if self._mode == "chart":
+                flags.add("chart")
+        return flags
+
     def action_load(self) -> None:
         try:
             query = self._resolve_query()

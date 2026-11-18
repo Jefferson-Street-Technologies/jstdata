@@ -66,6 +66,16 @@ COMMANDS: tuple[CommandSpec, ...] = (
         "Remove an action (cascade); confirm with --force when needed",
         usage="rm <action-id> [--force]",
     ),
+    CommandSpec(
+        "tutorial",
+        "Open the tutorial menu (start, switch, or leave a tutorial)",
+        usage="tutorial",
+    ),
+    CommandSpec(
+        "tips",
+        "Show or hide the pop-out tips (no argument toggles)",
+        usage="tips [on|off]",
+    ),
 )
 
 _COMMAND_BY_NAME = {c.name: c for c in COMMANDS}
@@ -326,6 +336,15 @@ def parse_command_line(raw: str) -> ParsedCommand:
         known = ", ".join(c.name for c in COMMANDS)
         raise CommandError(f"Unknown command {name!r}. Available: {known}")
     rest = tokens[1:]
+    if name == "tips":
+        if len(rest) > 1 or (rest and rest[0].lower() not in ("on", "off")):
+            raise CommandError("Usage: tips [on|off]")
+        state = None if not rest else rest[0].lower() == "on"
+        return ParsedCommand(name=name, options={"state": state})
+    if name == "tutorial":
+        if len(tokens) > 1:
+            raise CommandError("Usage: tutorial")
+        return ParsedCommand(name=name)
     if name == "workspace":
         if rest:
             raise CommandError("Usage: workspace")

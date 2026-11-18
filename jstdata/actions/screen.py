@@ -23,6 +23,7 @@ class BaseScreen(Screen):
         "[bold]n[/bold]/[bold]p[/bold] siblings",
         "[bold]N[/bold]/[bold]P[/bold] depth",
         "[bold]dd[/bold] delete",
+        "[bold]t[/bold] tutorials",
         "[bold]?[/bold] help",
         "[bold]q[/bold] quit",
     )

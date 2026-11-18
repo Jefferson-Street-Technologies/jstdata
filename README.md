@@ -95,15 +95,34 @@ jst action show rank --json
 Inside the TUI: `g` returns Home (Recent / Search / Actions / Workspace /
 Queries). `esc` goes back one level. `:` opens the command palette (fuzzy
 destinations and saved queries, plus `:workspace`, `:search metric gdp`,
-`:query`, `:rename`, `:add`, `:rm`) · `n`/`p` (↑/↓) siblings · `N`/`P` (→/←) depth ·
-space collects into the workspace · `?` help · `q` quit.
+`:query`, `:rename`, `:add`, `:rm`, `:tutorial`) · `n`/`p` (↑/↓) siblings ·
+`N`/`P` (→/←) depth · space collects into the workspace · `t` tutorials ·
+`?` help · `q` quit.
 
 Active context lives in `~/.jstdata/.active.yaml`.
 
-### Tutorial
+### Tutorials
 
-First `jst` / `jst new` / `jst open` bootstraps bundled `tutorial` and
-`plain-bagel` investigations when none exist.
+The first time you open the TUI, a tutorial menu appears. Pick one, or press
+`esc` to explore on your own; `t` (or `:tutorial`) brings the menu back any
+time. A coach bar docked at the top explains each step and names the exact
+keys to press, and advances as you do them. Each tutorial runs in its own
+investigation (`tutorial-<id>`); leaving it reopens yours.
+
+| Tutorial | Level | What you do |
+|----------|-------|-------------|
+| `big-tech-gross-profit` | Beginner · guided | Compare Apple, Microsoft, Amazon: Home → Search → collect → metric view → Workspace → Query → chart |
+| `gulf-oil-exports` | Intermediate · assisted | Metric-first: collect the oil metrics, open one to see which countries report it, collect the Gulf, chart the query |
+| `g7-government-debt` | Advanced · open | Research question on G7 government debt vs inflation; the coach only checks progress |
+
+A **tip** box across the top of each screen tells you what to press there
+(e.g. *Press "2" to open Search*). Hide it with its "✕ hide tips" or `:tips off`; `:tips on`
+brings it back.
+
+Progress (menu seen, tutorials completed, tips on/off) lives in
+`~/.jstdata/onboarding.json`.
+First `jst` / `jst new` / `jst open` also bootstraps the bundled `tutorial`
+(welcome) and `plain-bagel` demo investigations when none exist.
 
 ### Agents
 

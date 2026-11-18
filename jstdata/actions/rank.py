@@ -535,6 +535,12 @@ class RankScreen(BaseScreen):
         if focused and hasattr(focused, "action_cursor_up"):
             focused.action_cursor_up()
 
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        # Priority Enter must reach the filter Input so it can submit.
+        if action in ("confirm", "add_entity") and isinstance(self.focused, Input):
+            return False
+        return True
+
     def _highlighted_rank(self) -> Optional[RankEntry]:
         child = self.query_one("#rank-list", ListView).highlighted_child
         if isinstance(child, RankRow):
