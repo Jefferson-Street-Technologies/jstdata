@@ -8,9 +8,10 @@ investigation. See the website's ``lib/publications`` for the server side.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 from urllib.parse import urlparse
 
 import requests
@@ -24,12 +25,24 @@ from .investigation import (
 )
 from .investigation.model import ROOT_ACTION_ID
 
+if TYPE_CHECKING:
+    from .client import JSTDataClient
+
 DEFAULT_SITE_URL = "https://www.jeffersonst.io"
 # Publishing runs every query server-side before it answers.
 PUBLISH_TIMEOUT_S = 120
 CLONE_TIMEOUT_S = 30
 
 _PUBLICATION_ID = re.compile(r"^[A-Za-z0-9]{10}$")
+
+
+def configured_site_url(client: "JSTDataClient") -> str:
+    """Website for publish/clone: JSTDATA_SITE_URL > config site_url > default."""
+    try:
+        configured = client._cfg.read().get("site_url")
+    except Exception:
+        configured = None
+    return os.environ.get("JSTDATA_SITE_URL") or configured or DEFAULT_SITE_URL
 
 
 class PublishError(Exception):

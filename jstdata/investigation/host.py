@@ -13,7 +13,7 @@ from textual.screen import ModalScreen, Screen
 from textual.timer import Timer
 from textual.widgets import Input, Label, Static, TextArea
 
-from ..client import APP_DIR, JSTDataClient
+from ..client import APP_DIR, ApiKeyNotSetError, JSTDataClient
 from ..actions.base import ActionBinding, get_action, hydrate_labels
 from ..actions.help import HelpScreen
 from .active import ActiveContext, active_path, load_active, save_active
@@ -41,6 +41,7 @@ from .model import (
 from .browsers import DestinationScreen, WorkspaceBrowser
 from .home import HomeScreen
 from .nav import DEST_IDS, parse_goto
+from .publish_screens import PublishConfirmModal, PublishedModal
 from .search_drawer import SearchDrawer
 from .store import investigation_path, load_investigation, save_investigation
 from .workspace_drawer import WorkspaceDrawer
@@ -355,6 +356,7 @@ class InvestigationHost(App):
         self._d_timer: Timer | None = None
         self._pending_command: ParsedCommand | None = None
         self._pending_goto: str | None = None
+        self._publishing = False
         self._nav_dest: str | None = None
         self._nav_return: str | None = None
         self._dest_index: dict[str, int] = {}
@@ -1144,11 +1146,87 @@ class InvestigationHost(App):
             self._cmd_rename(parsed)
         elif parsed.name == "annotate":
             self._cmd_annotate(parsed)
+        elif parsed.name == "publish":
+            self._cmd_publish()
         elif parsed.name == "tutorial":
             self._open_tutorial_menu_screen(False)
         elif parsed.name == "tips":
             state = parsed.options.get("state")
             self.set_tips(not self._tips_on if state is None else bool(state))
+
+    def _cmd_publish(self) -> None:
+        """Confirm, then publish the investigation in a background thread."""
+        inv = self.investigation
+        if not inv:
+            self.notify("No investigation loaded", severity="error")
+            return
+        if self._publishing:
+            self.notify("Already publishing…")
+            return
+        if not inv.queries:
+            self.notify(
+                "Nothing to publish yet. Save a query first with :query.",
+                severity="warning",
+            )
+            return
+        try:
+            api_key = self.client.api_key
+        except ApiKeyNotSetError:
+            self.notify(
+                "Publishing needs an API key. Run `jst login` first.",
+                severity="error",
+            )
+            return
+        self.push_screen(
+            PublishConfirmModal(inv),
+            lambda ok: self._start_publish(api_key) if ok else None,
+        )
+
+    def _start_publish(self, api_key: str) -> None:
+        import copy
+
+        from ..publish import configured_site_url
+
+        inv = self.investigation
+        if not inv:
+            return
+        # Publish what was confirmed, even if the file reloads meanwhile.
+        snapshot = copy.deepcopy(inv)
+        site_url = configured_site_url(self.client)
+        self._publishing = True
+        n = len(snapshot.queries)
+        self.notify(
+            f"Publishing: running {n} quer{'y' if n == 1 else 'ies'}…",
+            timeout=10,
+        )
+        self.run_worker(
+            lambda: self._publish_in_thread(snapshot, api_key, site_url),
+            thread=True,
+            name="publish",
+        )
+
+    def _publish_in_thread(
+        self, inv: Investigation, api_key: str, site_url: str
+    ) -> None:
+        from ..publish import PublishError, publish_investigation
+
+        try:
+            result = publish_investigation(inv, api_key=api_key, site_url=site_url)
+        except PublishError as exc:
+            self.call_from_thread(self._on_publish_done, None, str(exc))
+            return
+        except Exception as exc:  # unexpected; keep the TUI alive
+            self.call_from_thread(self._on_publish_done, None, f"Publish failed: {exc}")
+            return
+        self.call_from_thread(self._on_publish_done, result["url"], None)
+
+    def _on_publish_done(self, url: Optional[str], error: Optional[str]) -> None:
+        self._publishing = False
+        if error is not None:
+            self.notify(error, severity="error", timeout=10)
+            return
+        assert url is not None
+        self.push_screen(PublishedModal(url))
 
     def _cmd_annotate(self, parsed: ParsedCommand) -> None:
         qid = parsed.options.get("query_id")

@@ -95,11 +95,33 @@ jst action show rank --json
 Inside the TUI: `g` returns Home (Recent / Search / Actions / Workspace /
 Queries). `esc` goes back one level. `:` opens the command palette (fuzzy
 destinations and saved queries, plus `:workspace`, `:search metric gdp`,
-`:query`, `:rename`, `:add`, `:rm`, `:tutorial`) · `n`/`p` (↑/↓) siblings ·
+`:query`, `:rename`, `:publish`, `:add`, `:rm`, `:tutorial`) · `n`/`p` (↑/↓) siblings ·
 `N`/`P` (→/←) depth · space collects into the workspace · `t` tutorials ·
 `?` help · `q` quit.
 
 Active context lives in `~/.jstdata/.active.yaml`.
+
+### Publish and clone
+
+Publishing turns an investigation into a web page that anyone with the link
+can open: its queries, annotations and results, with each observation's
+provenance and a CSV download. Signed-in visitors can refresh the results with
+their own API key. The website runs the queries with yours when you publish.
+
+```bash
+jst publish                  # the active investigation; asks before sharing
+jst publish plain-bagel --yes
+jst clone https://www.jeffersonst.io/p/AbCdEf1234   # copy one into your environment
+```
+
+In the TUI, `:publish` does the same and shows the link, with `c` to copy it
+and `o` to open it. Each publish makes a new link with the results as of then;
+earlier links don't change. `jst clone` saves the published queries and
+annotations as a new local investigation (adding `-clone` if the id is taken)
+and needs no API key.
+
+The website defaults to `https://www.jeffersonst.io`; point at another with
+`JSTDATA_SITE_URL` or `jst config set site_url <url>`.
 
 ### Tutorials
 

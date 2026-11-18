@@ -742,15 +742,9 @@ def open_cmd(investigation_id: str) -> None:
 
 
 def _site_url() -> str:
-    """Website for publish/clone: JSTDATA_SITE_URL > config site_url > default."""
-    import os
-    from .publish import DEFAULT_SITE_URL
+    from .publish import configured_site_url
 
-    try:
-        configured = client._cfg.read().get("site_url")
-    except Exception:
-        configured = None
-    return os.environ.get("JSTDATA_SITE_URL") or configured or DEFAULT_SITE_URL
+    return configured_site_url(client)
 
 
 @cli.command("publish")
