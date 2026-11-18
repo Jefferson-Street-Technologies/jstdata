@@ -64,9 +64,17 @@ def _host(tmp_path, *, with_query=True):
 
 async def _command(pilot, text):
     await pilot.press("colon")
-    await pilot.pause()
+    await pilot.pause(0.2)  # let the palette mount before typing
     await pilot.press(*text, "enter")
     await pilot.pause(0.3)
+
+
+async def _wait_for(pilot, predicate, seconds=3.0):
+    """Poll instead of a fixed sleep, so slow machines don't flake."""
+    for _ in range(int(seconds / 0.1)):
+        if predicate():
+            return
+        await pilot.pause(0.1)
 
 
 def test_publish_confirms_then_shows_link(tmp_path, calls):
@@ -78,10 +86,7 @@ def test_publish_confirms_then_shows_link(tmp_path, calls):
             assert isinstance(app.screen, PublishConfirmModal)
 
             await pilot.press("y")
-            for _ in range(20):
-                await pilot.pause(0.1)
-                if isinstance(app.screen, PublishedModal):
-                    break
+            await _wait_for(pilot, lambda: isinstance(app.screen, PublishedModal))
             assert isinstance(app.screen, PublishedModal)
             assert app.screen.url == URL
             assert calls == [{"id": app.investigation.id, "api_key": "k123",
@@ -131,10 +136,8 @@ def test_publish_error_is_shown_and_allows_retry(tmp_path, calls):
             await pilot.pause()
             await _command(pilot, "publish")
             await pilot.press("y")
-            for _ in range(20):
-                await pilot.pause(0.1)
-                if not app._publishing:
-                    break
+            await pilot.pause(0.1)
+            await _wait_for(pilot, lambda: not app._publishing)
             assert app._publishing is False
             assert not isinstance(app.screen, PublishedModal)
             assert len(calls) == 1
@@ -160,3 +163,66 @@ def test_confirmation_lists_what_becomes_public(tmp_path):
     # Names that look like Rich markup are escaped, not applied.
     assert "\\[red]Q0" in text
     assert "Anyone with the link" in text
+
+
+def test_markup_like_text_does_not_crash_the_tui(tmp_path, calls):
+    """Cloned investigations are remote text; brackets must not break rendering."""
+    from jstdata.actions.query_view import QueryScreen
+    from jstdata.investigation import update_investigation
+    from jstdata.investigation.host import AnnotationModal, InvestigationHost
+    from jstdata.investigation import resume_or_create_investigation
+
+    mark_prompted(tmp_path)
+    inv = resume_or_create_investigation(app_dir=tmp_path)
+    update_investigation(
+        inv,
+        title="Q3 [/] debt [link=https://evil]x[/link]",
+        notes="notes [/bold] here",
+        annotations="ann [/] x",
+        app_dir=tmp_path,
+    )
+    inv = open_investigation(inv.id, app_dir=tmp_path)
+    add_query(inv, name="query [/] name", annotations="qa [/x] y", metric=["m"], app_dir=tmp_path)
+
+    async def run():
+        app = InvestigationHost(_Client(), app_dir=tmp_path)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.4)
+            await _command(pilot, "query 1")
+            await _wait_for(pilot, lambda: isinstance(app.screen, QueryScreen))
+            assert isinstance(app.screen, QueryScreen)
+            await _command(pilot, "annotate 1")
+            await _wait_for(pilot, lambda: isinstance(app.screen, AnnotationModal))
+            assert isinstance(app.screen, AnnotationModal)
+            await pilot.press("escape")
+            await pilot.pause(0.2)
+            # Every Home section renders titles, notes and query names.
+            for key in ["1", "2", "3", "4", "5"]:
+                await pilot.press("g")
+                await pilot.pause(0.2)
+                await pilot.press(key)
+                await pilot.pause(0.3)
+        # The publish dialog's escaping is covered by
+        # test_confirmation_lists_what_becomes_public.
+        assert app._exception is None
+
+    asyncio.run(run())
+
+
+def test_publish_aborts_if_investigation_changes_while_confirming(tmp_path, calls):
+    from jstdata.investigation import create_investigation
+
+    async def run():
+        app = _host(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await _command(pilot, "publish")
+            assert isinstance(app.screen, PublishConfirmModal)
+            # Another investigation becomes current (e.g. `jst open` elsewhere).
+            app.investigation = create_investigation(app_dir=tmp_path, activate=False)
+            await pilot.press("y")
+            await pilot.pause(0.5)
+            assert calls == []
+            assert not isinstance(app.screen, PublishedModal)
+
+    asyncio.run(run())

@@ -115,13 +115,10 @@ class JSTDataClientConfig:
             except Exception:
                 pass
 
-        current["api_key"] = kwargs.get("api_key") or current.get("api_key") or self.api_key
-        current["base_url"] = (
-            kwargs.get("base_url") or current.get("base_url") or self.base_url
-        )
-        # Other settings (e.g. site_url for jst publish) are stored as given.
+        # Only the keys being set change. Copying self.api_key here used to
+        # write a key that came from JSTDATA_API_KEY (env only) to disk.
         for key, value in kwargs.items():
-            if key not in ("api_key", "base_url") and value:
+            if value:
                 current[key] = value
 
         with open(CONFIG_FILE, "w") as f:

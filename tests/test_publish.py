@@ -194,3 +194,97 @@ def test_unreachable_site_gets_a_short_message(requests_mock, inv):
     message = str(excinfo.value)
     assert message.startswith(f"Couldn't reach {SITE}.")
     assert "pool trace" not in message
+
+
+# --- Hardening (review of PR #6) -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "body,kwargs",
+    [
+        ({"text": "<html>oops</html>"}, {}),
+        ({"json": {"no": "investigation"}}, {}),
+        ({"json": {"investigation": ["a", "list"]}}, {}),
+        ({"json": {"investigation": {"title": "no id"}}}, {}),
+        ({"json": {"investigation": {"id": 42}}}, {}),
+    ],
+)
+def test_clone_rejects_malformed_replies(requests_mock, tmp_path, body, kwargs):
+    requests_mock.get(f"{SITE}/api/publications/{PUB_ID}/definition", **body)
+    with pytest.raises(PublishError, match="didn't send a valid investigation"):
+        clone_publication(PUB_ID, site_url=SITE, root=tmp_path, **kwargs)
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("bad_id", ["../evil", "a/b", "Housing", "abc\n"])
+def test_clone_refuses_unsafe_published_ids(requests_mock, tmp_path, inv, bad_id):
+    definition = published_definition(inv)
+    definition["id"] = bad_id
+    requests_mock.get(f"{SITE}/api/publications/{PUB_ID}/definition", json={"investigation": definition})
+    with pytest.raises(PublishError, match="--as"):
+        clone_publication(PUB_ID, site_url=SITE, root=tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_clone_refuses_unsafe_as_id(requests_mock, tmp_path, inv):
+    from jstdata.investigation import InvestigationError
+
+    requests_mock.get(f"{SITE}/api/publications/{PUB_ID}/definition", json={"investigation": published_definition(inv)})
+    with pytest.raises(InvestigationError):
+        clone_publication(PUB_ID, site_url=SITE, root=tmp_path, new_id="../evil")
+
+
+def test_clone_never_sends_an_api_key(requests_mock, tmp_path, inv, monkeypatch):
+    monkeypatch.setenv("JSTDATA_API_KEY", "secret-key")
+    requests_mock.get(f"{SITE}/api/publications/{PUB_ID}/definition", json={"investigation": published_definition(inv)})
+    clone_publication(f"{SITE}/p/{PUB_ID}", root=tmp_path)
+    req = requests_mock.last_request
+    assert "Authorization" not in req.headers
+    assert "secret-key" not in req.url
+
+
+def test_clone_caps_response_size(requests_mock, tmp_path):
+    from jstdata.publish import MAX_CLONE_BYTES
+
+    requests_mock.get(f"{SITE}/api/publications/{PUB_ID}/definition", content=b" " * (MAX_CLONE_BYTES + 10))
+    with pytest.raises(PublishError, match="too large"):
+        clone_publication(PUB_ID, site_url=SITE, root=tmp_path)
+
+
+def test_publish_refuses_plain_http_except_locally(requests_mock, inv):
+    with pytest.raises(PublishError, match="unencrypted"):
+        publish_investigation(inv, api_key="k", site_url="http://example.com")
+    assert not requests_mock.called
+    with pytest.raises(PublishError, match="isn't a website address"):
+        publish_investigation(inv, api_key="k", site_url="www.jeffersonst.io")
+
+    requests_mock.post("http://localhost:3000/api/publications", status_code=201, json={"id": PUB_ID, "url": "u"})
+    assert publish_investigation(inv, api_key="k", site_url="http://localhost:3000")["url"] == "u"
+
+
+def test_publish_rejects_reply_without_link(requests_mock, inv):
+    requests_mock.post(f"{SITE}/api/publications", status_code=201, json={"id": PUB_ID})
+    with pytest.raises(PublishError, match="not with a publication link"):
+        publish_investigation(inv, api_key="k", site_url=SITE)
+
+
+def test_config_set_site_url(tmp_path, monkeypatch):
+    import json
+
+    from jstdata import cli as cli_module
+    from jstdata import client as client_module
+
+    config_file = tmp_path / "config.json"
+    config_file.write_text(json.dumps({"api_key": "file-key"}))
+    monkeypatch.setattr(client_module, "CONFIG_FILE", config_file)
+    monkeypatch.setenv("JSTDATA_API_KEY", "env-only-key")
+    runner = CliRunner()
+
+    result = runner.invoke(cli_module.cli, ["config", "set", "site_url", "http://example.com"])
+    assert result.exit_code == 2 and "unencrypted" in result.output
+
+    result = runner.invoke(cli_module.cli, ["config", "set", "site_url", "https://dev.example.com/"])
+    assert result.exit_code == 0, result.output
+    saved = json.loads(config_file.read_text())
+    # Only site_url changed: the env-only key was not copied to disk.
+    assert saved == {"api_key": "file-key", "site_url": "https://dev.example.com"}

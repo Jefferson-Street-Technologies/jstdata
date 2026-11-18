@@ -19,7 +19,10 @@ TUTORIAL_ID = "tutorial"
 
 def validate_investigation_id(investigation_id: str) -> str:
     """Require a lowercase slug: ``housing-slowdown``, not ``Housing``."""
-    if not _SLUG_RE.match(investigation_id):
+    # fullmatch: `$` alone would accept a trailing newline ("abc\n").
+    if not isinstance(investigation_id, str) or not _SLUG_RE.fullmatch(
+        investigation_id
+    ):
         raise InvestigationError(
             f"Invalid investigation id {investigation_id!r}. "
             "Use a slug like 'housing-slowdown' "

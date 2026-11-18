@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from rich.markup import escape
+
 import asyncio
 from typing import Any
 
@@ -838,7 +840,7 @@ class QueryListItem(ListItem):
             return
         assert self.query is not None
         q = self.query
-        name = q.name or f"query {q.id}"
+        name = escape(q.name or f"query {q.id}")
         yield Label(f"Q{q.id} · {name}", classes="query-title")
         yield Label(
             f"    {len(q.metric)}M · {len(q.entity)}E · {len(q.series)}S"

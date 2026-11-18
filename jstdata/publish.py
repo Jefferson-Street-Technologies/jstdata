@@ -8,6 +8,7 @@ investigation. See the website's ``lib/publications`` for the server side.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path
@@ -34,6 +35,31 @@ PUBLISH_TIMEOUT_S = 120
 CLONE_TIMEOUT_S = 30
 
 _PUBLICATION_ID = re.compile(r"^[A-Za-z0-9]{10}$")
+# A definition is at most 256 KB on the server; refuse anything far bigger.
+MAX_CLONE_BYTES = 1024 * 1024
+_LOCAL_HOSTS = ("localhost", "127.0.0.1", "[::1]")
+
+
+def check_site_url(site_url: str) -> str:
+    """The site URL without a trailing slash, if it's safe to send a key to.
+
+    Publishing sends your API key, so plain http is only allowed for a site
+    on this machine.
+    """
+    parsed = urlparse(site_url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise PublishError(
+            f"{site_url!r} isn't a website address. Use something like "
+            f"{DEFAULT_SITE_URL}."
+        )
+    if parsed.scheme == "http" and parsed.hostname not in (
+        h.strip("[]") for h in _LOCAL_HOSTS
+    ):
+        raise PublishError(
+            f"{site_url} uses plain http, which would send your API key "
+            "unencrypted. Use https."
+        )
+    return site_url.rstrip("/")
 
 
 def configured_site_url(client: "JSTDataClient") -> str:
@@ -86,12 +112,13 @@ def publish_investigation(
         raise PublishError(
             f"{inv.id!r} has no queries to publish. Add one with `jst query add`."
         )
+    site_url = check_site_url(site_url)
     body: dict[str, Any] = {"investigation": inv.to_dict()}
     if publisher_name:
         body["publisherName"] = publisher_name
     try:
         response = requests.post(
-            f"{site_url.rstrip('/')}/api/publications",
+            f"{site_url}/api/publications",
             json=body,
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=PUBLISH_TIMEOUT_S,
@@ -100,7 +127,15 @@ def publish_investigation(
         raise _unreachable(site_url, exc) from exc
     if response.status_code != 201:
         raise PublishError(_error_message(response))
-    return response.json()
+    try:
+        result = response.json()
+        if not isinstance(result.get("url"), str):
+            raise ValueError("no url")
+    except (ValueError, AttributeError) as exc:
+        raise PublishError(
+            f"{site_url} answered, but not with a publication link."
+        ) from exc
+    return result
 
 
 def parse_publication_ref(
@@ -153,22 +188,43 @@ def clone_publication(
         response = requests.get(
             f"{origin}/api/publications/{pub_id}/definition",
             timeout=CLONE_TIMEOUT_S,
+            stream=True,
         )
+        if response.status_code == 404:
+            raise PublishError(f"No publication {pub_id!r} at {origin}.")
+        if response.status_code != 200:
+            raise PublishError(_error_message(response))
+        # The definition comes from another server: cap what we read.
+        raw = response.raw.read(MAX_CLONE_BYTES + 1, decode_content=True)
     except requests.RequestException as exc:
         raise _unreachable(origin, exc) from exc
-    if response.status_code == 404:
-        raise PublishError(f"No publication {pub_id!r} at {origin}.")
-    if response.status_code != 200:
-        raise PublishError(_error_message(response))
+    if len(raw) > MAX_CLONE_BYTES:
+        raise PublishError(f"The publication at {origin} is too large to clone.")
 
-    data = dict(response.json()["investigation"])
+    try:
+        data = dict(json.loads(raw)["investigation"])
+        published_id = data["id"]
+        if not isinstance(published_id, str):
+            raise TypeError("id")
+    except (ValueError, KeyError, TypeError) as exc:
+        raise PublishError(
+            f"{origin} didn't send a valid investigation for {pub_id!r}."
+        ) from exc
+
     if new_id is not None:
         validate_investigation_id(new_id)
         if investigation_exists(new_id, root=root):
             raise InvestigationError(f"Investigation {new_id!r} already exists.")
         data["id"] = new_id
     else:
-        data["id"] = _available_id(data["id"], root)
+        try:
+            validate_investigation_id(published_id)
+        except InvestigationError as exc:
+            raise PublishError(
+                f"The published id {published_id!r} isn't a valid local id. "
+                "Choose one with --as, e.g. --as my-copy."
+            ) from exc
+        data["id"] = _available_id(published_id, root)
 
     # Older definitions or hand-built ones may lack the TUI's view tree;
     # an investigation needs at least its root action.

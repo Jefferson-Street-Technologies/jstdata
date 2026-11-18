@@ -88,6 +88,17 @@ def config_set(key, value):
     Update a configuration value. Valid keys are "api_key", "base_url" and
     "site_url" (the website `jst publish` and `jst clone` use).
     """
+    if key == "site_url":
+        from .publish import PublishError, check_site_url
+
+        try:
+            value = check_site_url(value)
+        except PublishError as e:
+            click.secho(f"Error: {e}", fg="red", err=True)
+            sys.exit(2)
+    if not value:
+        click.secho(f"Error: {key} can't be empty.", fg="red", err=True)
+        sys.exit(2)
     client._cfg.write(**{key: value})
     click.echo(f"Set {key} to {value}")
 

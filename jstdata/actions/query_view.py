@@ -6,6 +6,8 @@ the human surface is a formatted table, optional chart, and a Raw JSON mode.
 
 from __future__ import annotations
 
+from rich.markup import escape
+
 import asyncio
 import csv
 import json
@@ -902,7 +904,7 @@ class QueryScreen(BaseScreen):
             self.query_one("#query-title", Label).update(str(exc))
             return
         tag = f"Q{query.id}" if query.id else "WORKSPACE"
-        title = query.name or tag
+        title = escape(query.name) if query.name else tag
         self.query_one("#query-kicker", Label).update(f"QUERY / {tag}")
         self.query_one("#query-title", Label).update(title)
         self.query_one("#query-spec", Static).update(query_spec_line(query))

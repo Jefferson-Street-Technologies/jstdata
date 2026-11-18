@@ -6,6 +6,8 @@ action tree and command grammar stay the source of truth.
 
 from __future__ import annotations
 
+from rich.markup import escape
+
 from dataclasses import dataclass
 from typing import Optional
 
@@ -103,7 +105,9 @@ def annotations_panel(
     body = (text or "").strip()
     if not body:
         return f"[#888]No annotations. {empty_hint}[/]"
-    return f"[bold #888]ANNOTATIONS[/]\n{body}"
+    # Annotations are user (or, after `jst clone`, remote) text: escape it so
+    # brackets like "[/]" show as typed instead of breaking the markup.
+    return f"[bold #888]ANNOTATIONS[/]\n{escape(body)}"
 
 
 def workspace_counts_line(inv: Investigation) -> str:
@@ -367,6 +371,7 @@ def list_palette_items(
     if inv is not None:
         for qid in sorted(inv.queries):
             q = inv.queries[qid]
+            # Not escaped here: CommandPalette escapes labels itself.
             name = q.name or f"query {qid}"
             items.append(
                 PaletteItem(

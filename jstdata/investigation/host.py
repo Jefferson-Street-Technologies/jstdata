@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from rich.markup import escape
+
+import copy
 from pathlib import Path
 from typing import Optional
 
@@ -642,10 +645,13 @@ class InvestigationHost(App):
         kwargs = dict(action.args)
         kwargs["input_context"] = self.input_context
         if action.type == "home":
-            kwargs.setdefault("title", self.investigation.title)
-            body = action.description or ""
+            # User (or cloned) text shown as markup: escape it.
+            kwargs.setdefault("title", escape(self.investigation.title))
+            body = escape(action.description or "")
             if ws.description:
-                body = (body + "\n\n" if body else "") + f"Workspace: {ws.description}"
+                body = (body + "\n\n" if body else "") + (
+                    f"Workspace: {escape(ws.description)}"
+                )
             kwargs.setdefault("body", body)
 
         return spec.create_screen(self.client, self.workspace, **kwargs)
@@ -1177,21 +1183,24 @@ class InvestigationHost(App):
                 severity="error",
             )
             return
+        # Publish exactly what the dialog shows, even if the file reloads
+        # (or another investigation opens) while it's open.
+        snapshot = copy.deepcopy(inv)
         self.push_screen(
-            PublishConfirmModal(inv),
-            lambda ok: self._start_publish(api_key) if ok else None,
+            PublishConfirmModal(snapshot),
+            lambda ok: self._start_publish(snapshot, api_key) if ok else None,
         )
 
-    def _start_publish(self, api_key: str) -> None:
-        import copy
-
+    def _start_publish(self, snapshot: Investigation, api_key: str) -> None:
         from ..publish import configured_site_url
 
-        inv = self.investigation
-        if not inv:
+        if not self.investigation or self.investigation.id != snapshot.id:
+            self.notify(
+                "The investigation changed while the dialog was open. "
+                "Run :publish again.",
+                severity="warning",
+            )
             return
-        # Publish what was confirmed, even if the file reloads meanwhile.
-        snapshot = copy.deepcopy(inv)
         site_url = configured_site_url(self.client)
         self._publishing = True
         n = len(snapshot.queries)
@@ -1210,20 +1219,27 @@ class InvestigationHost(App):
     ) -> None:
         from ..publish import PublishError, publish_investigation
 
+        url: Optional[str] = None
+        error: Optional[str] = None
         try:
-            result = publish_investigation(inv, api_key=api_key, site_url=site_url)
+            url = publish_investigation(inv, api_key=api_key, site_url=site_url)["url"]
         except PublishError as exc:
-            self.call_from_thread(self._on_publish_done, None, str(exc))
-            return
+            error = str(exc)
         except Exception as exc:  # unexpected; keep the TUI alive
-            self.call_from_thread(self._on_publish_done, None, f"Publish failed: {exc}")
-            return
-        self.call_from_thread(self._on_publish_done, result["url"], None)
+            error = f"Publish failed: {exc}"
+        try:
+            self.call_from_thread(self._on_publish_done, url, error)
+        except RuntimeError:
+            # The TUI was closed mid-publish. The publication may still have
+            # been created; say where, since the dialog can't show it.
+            if url is not None:
+                print(f"Published: {url}")
 
     def _on_publish_done(self, url: Optional[str], error: Optional[str]) -> None:
         self._publishing = False
         if error is not None:
-            self.notify(error, severity="error", timeout=10)
+            # Server messages can echo query names: show them as plain text.
+            self.notify(escape(error), severity="error", timeout=10)
             return
         assert url is not None
         self.push_screen(PublishedModal(url))
@@ -1338,10 +1354,10 @@ class InvestigationHost(App):
         except InvestigationError as exc:
             self.notify(str(exc), severity="error")
             return
-        label = query.name or f"Q{query.id}"
+        label = escape(query.name or f"Q{query.id}")
         self.push_screen(
             AnnotationModal(
-                title=f"QUERY ANNOTATIONS · {label}".upper(),
+                title=f"QUERY ANNOTATIONS · {label.upper()}",
                 text=query.annotations or "",
             ),
             lambda result, qid=query_id: self._on_query_annotations_submitted(
@@ -1525,7 +1541,7 @@ class InvestigationHost(App):
         except InvestigationError as exc:
             self.notify(str(exc), severity="error")
             return
-        name = query.name or f"query {query_id}"
+        name = escape(query.name or f"query {query_id}")
         self.push_screen(
             ConfirmForceModal(
                 f"Delete Q{query_id} · {name}? This cannot be undone."
