@@ -50,12 +50,12 @@ _SCREENS = {
     "MetricScreen": (
         'Press "r" to load what this metric means and who reports it. Then press '
         '"/" to filter that list, "Space" to add an entry to your workspace, or '
-        '"Enter" to open it.'
+        '"Enter" to open it. Press "a" to add this metric itself.'
     ),
     "EntityScreen": (
         'Press "r" to load this entity\'s metrics and relationships. "Tab" '
         'switches between the two lists, "Space" adds the highlighted item, and '
-        '"Enter" opens a metric.'
+        '"Enter" opens a metric. Press "a" to add this entity itself.'
     ),
     "MetricsScreen": (
         'Press "r" to load the metrics your entities report. "m" switches between '

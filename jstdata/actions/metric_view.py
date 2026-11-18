@@ -268,7 +268,7 @@ class MetricScreen(BaseScreen):
         if self.focused is filt:
             entities = self.query_one("#entities-list", ListView)
             entities.focus()
-            # Highlight the top match so space collects it, not the metric.
+            # Highlight the top match so space collects it (instead of a warning).
             if entities.index is None and len(entities.children):
                 entities.index = 0
 
