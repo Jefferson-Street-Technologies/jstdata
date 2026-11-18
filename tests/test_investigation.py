@@ -1228,3 +1228,105 @@ def test_query_inspect_cartesian_coverage():
     assert payload["counts"]["expected_pairs"] == 2
     assert payload["counts"]["resolved"] == 1
     assert payload["missing"] == [{"metric": "gdp", "entity": "usa"}]
+
+
+def _event(**overrides):
+    from datetime import date, datetime, timezone
+
+    from jstdata.models import Event, EventItem
+
+    fields = dict(
+        accession_number="0000950142-26-003101",
+        entity_id="cik:96021",
+        entity_label="SYSCO CORP",
+        tickers=["SYY"],
+        form="8-K",
+        is_amendment=False,
+        filing_date=date(2026, 11, 17),
+        accepted_at=datetime(2026, 11, 17, 21, 41, 18, tzinfo=timezone.utc),
+        report_date=date(2026, 11, 12),
+        headline="Departure/Election of Directors or Officers",
+        reported_items=[
+            EventItem(
+                "5.02",
+                "Departure of Directors or Certain Officers",
+                "Departure/Election of Directors or Officers",
+            )
+        ],
+        item_codes=["5.02"],
+        url="https://www.sec.gov/Archives/edgar/data/96021/000095014226003101/0000950142-26-003101-index.htm",
+    )
+    fields.update(overrides)
+    return Event(**fields)
+
+
+def test_recent_filters_lead_with_8k_and_keep_releases():
+    from jstdata.investigation.home import RECENT_FILTERS, event_company, event_time
+
+    assert RECENT_FILTERS[0].label == "8-K ALL" and not RECENT_FILTERS[0].items
+    assert RECENT_FILTERS[-1].releases
+    assert all(f.items for f in RECENT_FILTERS[1:-1])
+    ev = _event()
+    assert event_time(ev) == "2026-11-17 16:41 ET"  # EST in November
+    assert event_company(ev) == "SYSCO CORP  SYY"
+    assert event_company(_event(tickers=[])) == "SYSCO CORP"
+
+
+def test_home_recent_lists_8k_events_and_filters_by_item(tmp_path):
+    import asyncio
+
+    from jstdata.investigation import resume_or_create_investigation
+    from jstdata.investigation.home import EventTile, HomeScreen, ReleaseTile
+    from jstdata.models import Release
+    from jstdata.onboarding import mark_prompted
+    from datetime import date
+
+    class Client:
+        def __init__(self):
+            self.event_calls = []
+
+        def list_events(self, limit, offset, item=None, **kwargs):
+            self.event_calls.append((limit, offset, item))
+            return [_event()]
+
+        def list_releases(self, *args, **kwargs):
+            return [Release("r1", "GDP (2026-11-17)", date(2026, 11, 17), "BEA")]
+
+        def __getattr__(self, name):
+            return lambda *args, **kwargs: []
+
+    mark_prompted(tmp_path)
+    resume_or_create_investigation(app_dir=tmp_path)
+    client = Client()
+
+    async def run():
+        from jstdata.investigation.host import InvestigationHost
+
+        app = InvestigationHost(client, app_dir=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert isinstance(app.screen, HomeScreen)
+            await pilot.press("1")
+            await pilot.pause(0.3)
+            home = app.screen
+            tiles = list(home.query(EventTile))
+            assert [t.event.entity_label for t in tiles] == ["SYSCO CORP"]
+            assert client.event_calls[-1] == (21, 0, None)
+            body = str(home.query_one("#home-data-body").render())
+            assert "5.02" in body and "sec.gov" in body
+
+            await pilot.press("space")
+            await pilot.pause()
+            assert "cik:96021" in home.workspace.entity
+
+            await pilot.press("f")  # EARNINGS
+            await pilot.pause(0.3)
+            assert client.event_calls[-1] == (21, 0, ["2.02"])
+
+            for _ in range(5):  # through to ALL RELEASES
+                await pilot.press("f")
+                await pilot.pause(0.2)
+            assert [t.release.id for t in home.query(ReleaseTile)] == ["r1"]
+            assert not list(home.query(EventTile))
+
+    asyncio.run(run())
