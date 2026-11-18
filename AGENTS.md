@@ -36,6 +36,9 @@ For **how to operate** the product as an agent (policy, modes, recipes), run
    - Workspace destination / drawer: `j`/`k` rows, backspace to remove
    - `q` quit
    - `?` action-specific keybindings (from the catalog entry)
+   - `t` / `:tutorial` tutorial menu (first run opens it automatically)
+   - Tip box across the top of every screen; `:tips on|off` or click
+     "✕ hide tips" (remembered in `~/.jstdata/onboarding.json`)
 4. **Investigation** — named YAML under `~/.jstdata/investigations/` that stores
    **one workspace + queries + action tree** (type, args, parent_id, optional
    `context`). Managed with `jst new` / `jst ls` / `jst open`; bare `jst`
@@ -60,6 +63,38 @@ Catalog + `ActionSpec` live in `jstdata/actions/`. The host runtime is
 `register(ActionSpec)`. Built-ins: views `table` / `metric` / `entity` /
 `metrics` / `release`; staging/explore `console` / `discover` / `rank`.
 Bundled demo: `plain-bagel` (hyperscaler debt + release provenance).
+
+## Onboarding (coached tutorials)
+
+`jstdata/onboarding/` holds the tutorial catalog, coach, and chrome. Each
+tutorial is one YAML in `onboarding/tutorials/` with `id`, `title`,
+`level: guided|assisted|open`, `summary`, `start_action`, an embedded
+`investigation` (workspace + action tree), and `phases` (`text`, `do`,
+`until`). `InvestigationHost.start_tutorial` installs the investigation fresh
+as `tutorial-<id>`, remembers the active one, and switches; `leave_tutorial`
+switches back. Opening any other investigation ends the tutorial. When the
+coach reaches the `done` phase it records completion, drops the coach bar, and
+shows `TutorialComplete` (next tutorial / all tutorials / back to my
+investigation / keep exploring); the `done` phase's `text` is its message.
+
+The coach is **poll-based**: every 0.25s the host builds a `CoachSnapshot`
+(workspace ids, query count, active action, focused widget ids, screen class,
+Home destination, `coach_flags()`) and advances past satisfied phases. `until`
+keys are ANDed: `workspace_metric_count`, `workspace_entity_count`,
+`workspace_has_metric`, `workspace_has_entity`, `query_count`, `active_action`,
+`focus` (widget id), `screen` (class name), `home_dest`, `screen_flag`, plus
+`done`. Actions need no tutorial hooks; to expose extra state, add a
+`coach_flags() -> set[str]` method to the screen (see `QueryScreen`). Every
+guided/assisted phase must have a `do:` line (enforced by tests). Avoid `[...]`
+in coach text; Textual parses it as markup.
+
+**Tips** (`onboarding/tips.py`): outside tutorials, a `TipBox` docked at the
+top shows a tip for the current screen / Home destination (`tip_for(CoachSnapshot)`, keyed
+by screen class name). When you add an action, add a line to `_SCREENS` so it
+gets a tip instead of the generic fallback. Write tips as instructions that
+name the key in quotes: `Press "r" to load …`. On Home, the drawers, and the console,
+`next_step_nudge` replaces the tip with the next thing to collect (2+ entities
+→ add a metric; a metric → add entities; both → press `c` for a query).
 
 ## Why actions matter
 
@@ -147,8 +182,9 @@ Seed args go on `arguments`. They configure the TUI via
 | Remove action | `jst action rm <action-id> --force` |
 | Resolve resources | `jst api metric search …` / `jst api entity search …` |
 | Query / observations | `jst api query …` / `jst api series observations …` |
+| Tutorials | `t` / `:tutorial` in the TUI (first run opens the menu) |
 | Agent bootstrap | `jst agent-guide` / `jst agent install` |
-| Inside the TUI | `g` home · `esc` back · `:` palette · `n`/`p` siblings · `N`/`P` depth · `:workspace` · space collect · `?` · `q` |
+| Inside the TUI | `g` home · `esc` back · `:` palette · `n`/`p` siblings · `N`/`P` depth · `:workspace` · space collect · `t` tutorials · `?` · `q` |
 
 ## Catalog / search notes (for action authors)
 

@@ -52,6 +52,12 @@ def _as_id_list(value: Optional[Union[str, List[str]]]) -> Optional[List[str]]:
     return items or None
 
 
+def _search_text(query: str) -> str:
+    """Lowercase search text: the API's text match is case-sensitive and only
+    matches lowercase queries (``Amazon`` misses ``AMAZON COM INC``)."""
+    return str(query).strip().lower()
+
+
 def _format_as_of(value: Union[str, datetime]) -> str:
     """ISO-8601 timestamp; naive datetimes are treated as UTC."""
     if isinstance(value, datetime):
@@ -461,7 +467,7 @@ class JSTDataClient:
     ) -> List[Union[Entity, Metric, Series]]:
         """Unified search across all resource types."""
         data = self.make_request(
-            "search", {"query": query, "limit": limit, "offset": offset}
+            "search", {"query": _search_text(query), "limit": limit, "offset": offset}
         )
         results = []
         for r in data["records"]:
@@ -494,7 +500,7 @@ class JSTDataClient:
         """
         params: Dict[str, Any] = {"limit": limit, "offset": offset}
         if query is not None and str(query).strip():
-            params["query"] = query
+            params["query"] = _search_text(query)
         metrics = _as_id_list(metric)
         if metrics:
             params["metric"] = metrics
@@ -524,7 +530,7 @@ class JSTDataClient:
         """
         params: Dict[str, Any] = {"limit": limit, "offset": offset}
         if query is not None and str(query).strip():
-            params["query"] = query
+            params["query"] = _search_text(query)
         entities = _as_id_list(entity)
         if entities:
             params["entity"] = entities
@@ -539,7 +545,8 @@ class JSTDataClient:
     ) -> List[Series]:
         """Search for series."""
         data = self.make_request(
-            "search/series", {"query": query, "limit": limit, "offset": offset}
+            "search/series",
+            {"query": _search_text(query), "limit": limit, "offset": offset},
         )
         return [Series.from_dict(s) for s in data["records"]]
 

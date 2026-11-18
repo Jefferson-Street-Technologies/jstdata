@@ -37,8 +37,11 @@ def test_complete_command_names():
         "annotate",
         "add",
         "rm",
+        "tutorial",
+        "tips",
     ]
     assert complete_command_line("se") == ["search"]
+    assert complete_command_line("tu") == ["tutorial"]
     assert complete_command_line(":a") == ["annotate", "add"]
     # Exact command name offers next-token completions (action types for add).
     add_next = complete_command_line("add")

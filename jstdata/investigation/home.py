@@ -105,6 +105,7 @@ class HomeScreen(BaseScreen):
 
     FOOTER_CHROME: tuple[str, ...] = (
         "[bold #e0e0e0]:[/] [#888]commands[/]",
+        "[bold #e0e0e0]t[/] [#888]tutorials[/]",
         "[bold #e0e0e0]?[/] [#888]help[/]",
         "[bold #e0e0e0]q[/] [#888]quit[/]",
     )
@@ -549,6 +550,10 @@ class HomeScreen(BaseScreen):
             list_view.append(QueryListItem("create"))
             for qid in sorted(inv.queries):
                 list_view.append(QueryListItem("query", inv.queries[qid]))
+            # Highlight a row so Enter acts ("Create from workspace" first).
+            stored = getattr(self.app, "_dest_index", {}).get("queries", 0)
+            count = 1 + len(inv.queries)
+            list_view.index = stored if isinstance(stored, int) and stored < count else 0
         self._refresh_data_pane()
 
     def _fill_workspace(self, list_view: ListView) -> None:
@@ -567,15 +572,25 @@ class HomeScreen(BaseScreen):
             ("SERIES", "series", list(ws.series)),
         ]
         any_ids = False
+        # Count appends ourselves (children lag pending mounts) so the first
+        # resource row can be highlighted; otherwise Enter / Backspace no-op.
+        appended = 2 if ws.taxonomy else 0  # list was just cleared
+        first_row = 1 if ws.taxonomy else None
         for title, rtype, ids in groups:
             list_view.append(GroupHeader(f"{title} · {len(ids)}"))
+            appended += 1
             for rid in ids:
                 any_ids = True
                 list_view.append(
                     WorkspaceResourceRow(rid, rtype, label_for(labels, rid))
                 )
+                if first_row is None:
+                    first_row = appended
+                appended += 1
         if not any_ids and not ws.taxonomy:
             list_view.append(GroupHeader("Empty — Search and collect first"))
+        if first_row is not None:
+            list_view.index = first_row
 
     def _list(self) -> ListView:
         return self.query_one("#home-list", ListView)
@@ -977,11 +992,15 @@ class HomeScreen(BaseScreen):
         else:
             first_row = None
             prefer_entity = False
+            # Count appends ourselves: ``list_view.children`` lags pending mounts,
+            # which put the default highlight on the second result.
+            appended = 0
             for kind, payload, rtype in clustered_search_items(rows):
                 if kind == "header":
                     title = str(payload)
                     prefer_entity = title.upper() not in TYPE_HEADINGS
                     list_view.append(GroupHeader(title))
+                    appended += 1
                 elif payload is not None and rtype is not None:
                     list_view.append(
                         SearchResultRow(
@@ -990,8 +1009,9 @@ class HomeScreen(BaseScreen):
                             prefer_entity=prefer_entity and rtype == "series",
                         )
                     )
+                    appended += 1
                     if first_row is None:
-                        first_row = len(list_view.children) - 1
+                        first_row = appended - 1
             if first_row is not None:
                 list_view.index = first_row
         self._refresh_data_pane()

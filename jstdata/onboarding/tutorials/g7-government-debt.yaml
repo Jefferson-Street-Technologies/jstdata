@@ -1,0 +1,38 @@
+id: g7-government-debt
+title: Which G7 Economy Carries the Most Debt?
+level: open
+summary: An open research question on G7 government debt and inflation. The coach only checks progress — you choose the path.
+start_action: 0
+investigation:
+  title: "Tutorial · Which G7 Economy Carries the Most Debt?"
+  workspace:
+    id: 0
+    label: G7 debt
+  actions:
+  - id: 0
+    type: home
+    description: Tutorial home. g always returns here.
+phases:
+  - text: |
+      RESEARCH QUESTION: Which G7 economies carry the most government debt relative to the size of their economy — and do the most indebted also have the highest inflation?
+      No step-by-step this time. First, collect the general government gross debt metric, plus at least one more metric to compare it with.
+    do: 'Your call. Stuck? Home → "2" searches, "Space" collects, "Enter" opens a view, "?" lists keys'
+    until:
+      workspace_has_metric: general-government-gross-debt
+      workspace_metric_count: 2
+
+  - text: |
+      Now build your population: collect at least five G7 countries (the United States, Japan, Germany, the United Kingdom, France, Italy, Canada).
+    until:
+      workspace_entity_count: 5
+
+  - text: |
+      Save your workspace as a query and chart it. Who stands out, and does debt move with inflation over time?
+    until:
+      screen_flag: chart
+
+  - text: |
+      Done! Copy the Python for this query (y in the query view) to keep going in a notebook.
+    do: 'Press ":" → type tutorial → "Enter" for more tutorials, or "g" for Home'
+    until:
+      done: true
