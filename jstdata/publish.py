@@ -49,6 +49,16 @@ class PublishError(Exception):
     """A publish or clone failed; the message is meant for the user."""
 
 
+def _unreachable(site_url: str, exc: requests.RequestException) -> PublishError:
+    """A short, actionable message instead of urllib3's connection trace."""
+    if isinstance(exc, requests.Timeout):
+        return PublishError(f"{site_url} took too long to answer. Try again.")
+    return PublishError(
+        f"Couldn't reach {site_url}. Check your connection, or that the site "
+        "is running if it's a local address."
+    )
+
+
 def _error_message(response: requests.Response) -> str:
     try:
         body = response.json()
@@ -87,7 +97,7 @@ def publish_investigation(
             timeout=PUBLISH_TIMEOUT_S,
         )
     except requests.RequestException as exc:
-        raise PublishError(f"Couldn't reach {site_url}: {exc}") from exc
+        raise _unreachable(site_url, exc) from exc
     if response.status_code != 201:
         raise PublishError(_error_message(response))
     return response.json()
@@ -145,7 +155,7 @@ def clone_publication(
             timeout=CLONE_TIMEOUT_S,
         )
     except requests.RequestException as exc:
-        raise PublishError(f"Couldn't reach {origin}: {exc}") from exc
+        raise _unreachable(origin, exc) from exc
     if response.status_code == 404:
         raise PublishError(f"No publication {pub_id!r} at {origin}.")
     if response.status_code != 200:

@@ -183,3 +183,14 @@ def test_cli_publish_and_clone(requests_mock, tmp_path, monkeypatch, inv):
     assert result.exit_code == 0, result.output
     assert "plain-bagel-clone" in result.output
     assert active.load_active().investigation == "plain-bagel-clone"
+
+
+def test_unreachable_site_gets_a_short_message(requests_mock, inv):
+    import requests
+
+    requests_mock.post(f"{SITE}/api/publications", exc=requests.ConnectionError("pool trace"))
+    with pytest.raises(PublishError) as excinfo:
+        publish_investigation(inv, api_key="k", site_url=SITE)
+    message = str(excinfo.value)
+    assert message.startswith(f"Couldn't reach {SITE}.")
+    assert "pool trace" not in message
