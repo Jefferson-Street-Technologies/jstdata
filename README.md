@@ -120,6 +120,9 @@ earlier links don't change. `jst clone` saves the published queries and
 annotations as a new local investigation (adding `-clone` if the id is taken)
 and needs no API key.
 
+Annotations (investigation and query) are Markdown; see
+[docs/annotations.md](docs/annotations.md) for the format and what's planned.
+
 The website defaults to `https://www.jeffersonst.io`; point at another with
 `JSTDATA_SITE_URL` or `jst config set site_url <url>`.
 
