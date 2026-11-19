@@ -21,7 +21,6 @@ from ..models import Entity, Metric, Series, Taxonomy
 from .nav import (
     DEST_ACTIONS,
     DEST_QUERIES,
-    DEST_RECENT,
     DEST_SEARCH,
     DEST_WORKSPACE,
     ActionTreeRow,
@@ -35,7 +34,6 @@ from .search_drawer import SearchResultRow, fetch_search_results
 from .workspace_drawer import WorkspaceResourceRow
 
 SEARCH_TYPES = ("all", "metric", "entity", "series")
-RECENT_FILTERS = ("all", "relevant", "filings", "economic")
 
 
 class DestinationScreen(BaseScreen):
@@ -81,94 +79,6 @@ def _resource_label(resource: Any) -> str:
         or getattr(resource, "name", None)
         or getattr(resource, "id", "Unknown")
     )
-
-
-# ---------------------------------------------------------------------------
-# Recent (placeholder — no unified ingestion feed)
-# ---------------------------------------------------------------------------
-
-
-class RecentBrowser(DestinationScreen):
-    dest_id = DEST_RECENT
-
-    BINDINGS = [
-        Binding("j", "cursor_down", "Down", show=False),
-        Binding("k", "cursor_up", "Up", show=False),
-        Binding("down", "cursor_down", "Down", show=False),
-        Binding("up", "cursor_up", "Up", show=False),
-        Binding("f", "cycle_filter", "Filter", key_display="f"),
-        Binding("enter", "confirm", "Inspect", show=False),
-    ]
-
-    DEFAULT_CSS = """
-    #dest-body { height: 1fr; padding: 1 2; }
-    #dest-kicker { color: #4ade80; text-style: bold; height: 1; }
-    #dest-filters { color: #888; height: 1; margin-bottom: 1; }
-    #dest-empty {
-        color: #888;
-        height: 1fr;
-        padding: 2 1;
-    }
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._filter_i = 0
-
-    def compose_body(self) -> ComposeResult:
-        with Vertical(id="dest-body"):
-            yield Label("JST / RECENT", id="dest-kicker")
-            yield Label("", id="dest-filters")
-            yield Static("", id="dest-empty")
-
-    def on_mount(self) -> None:
-        super().on_mount()
-        self._filter_i = min(self._stored_index(), len(RECENT_FILTERS) - 1)
-        self._refresh()
-
-    def footer_action_keys(self) -> list[str]:
-        return ["[bold]f[/bold] filter"]
-
-    def help_bindings(self) -> list[tuple[str, str]]:
-        return [
-            ("f", "Cycle All / Relevant / Filings / Economic"),
-            ("esc", "Back to Home"),
-            ("g", "Home"),
-        ]
-
-    def _refresh(self) -> None:
-        chips = []
-        for i, name in enumerate(RECENT_FILTERS):
-            label = name.upper()
-            if i == self._filter_i:
-                chips.append(f"[bold #4ade80]{label}[/]")
-            else:
-                chips.append(label)
-        self.query_one("#dest-filters", Label).update(" · ".join(chips))
-        self.query_one("#dest-empty", Static).update(
-            "No unified ingestion feed yet.\n\n"
-            "Recent will list newly ingested SEC filings and economic "
-            "updates here — event type, title, related entity or series, "
-            "and timestamp.\n\n"
-            f"Filter is set to {RECENT_FILTERS[self._filter_i]}; there is "
-            "nothing to show until a feed exists.\n\n"
-            "Use Search to find catalog resources in the meantime."
-        )
-        self._remember(self._filter_i)
-
-    def action_cycle_filter(self) -> None:
-        self._filter_i = (self._filter_i + 1) % len(RECENT_FILTERS)
-        self._refresh()
-
-    def action_cursor_down(self) -> None:
-        self.action_cycle_filter()
-
-    def action_cursor_up(self) -> None:
-        self._filter_i = (self._filter_i - 1) % len(RECENT_FILTERS)
-        self._refresh()
-
-    def action_confirm(self) -> None:
-        self.notify("Recent feed is not available yet", severity="warning")
 
 
 # ---------------------------------------------------------------------------
