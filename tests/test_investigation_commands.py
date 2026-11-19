@@ -35,6 +35,7 @@ def test_complete_command_names():
         "query",
         "rename",
         "annotate",
+        "publish",
         "add",
         "rm",
         "tutorial",
@@ -339,3 +340,10 @@ def test_palette_format_includes_open_labels_when_investigation_set():
     palette = CommandPalette(investigation=inv)
     text = palette._format_suggestions("act")
     assert "Open Actions" in text
+
+
+def test_parse_publish_takes_no_arguments():
+    assert parse_command_line("publish").name == "publish"
+    assert parse_command_line(":publish").name == "publish"
+    with pytest.raises(CommandError, match="Usage: publish"):
+        parse_command_line("publish now")

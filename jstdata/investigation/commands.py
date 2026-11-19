@@ -57,6 +57,11 @@ COMMANDS: tuple[CommandSpec, ...] = (
         usage="annotate [query-id]",
     ),
     CommandSpec(
+        "publish",
+        "Publish as a shareable web page (asks first)",
+        usage="publish",
+    ),
+    CommandSpec(
         "add",
         "Add an action under the active (or --parent) node",
         usage=ADD_USAGE,
@@ -348,6 +353,10 @@ def parse_command_line(raw: str) -> ParsedCommand:
     if name == "workspace":
         if rest:
             raise CommandError("Usage: workspace")
+        return ParsedCommand(name=name)
+    if name == "publish":
+        if rest:
+            raise CommandError("Usage: publish")
         return ParsedCommand(name=name)
     if name == "search":
         return _parse_search(rest)

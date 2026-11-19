@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from rich.markup import escape
+
 import asyncio
 import webbrowser
 from dataclasses import dataclass
@@ -520,10 +522,13 @@ class HomeScreen(BaseScreen):
         if not self._chrome_ready():
             return
         inv = self._investigation()
-        self.query_one("#home-title", Label).update(inv.title or self.home_title)
+        # Title and notes are user (or cloned) text, not markup.
+        self.query_one("#home-title", Label).update(
+            escape(inv.title) if inv.title else self.home_title
+        )
         subtitle = self.query_one("#home-subtitle", Label)
         notes = (inv.notes or "").strip()
-        subtitle.update(notes)
+        subtitle.update(escape(notes))
         subtitle.set_class(not notes, "-empty")
 
     def _refresh_search_filters(self) -> None:
