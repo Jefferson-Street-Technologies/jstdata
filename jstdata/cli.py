@@ -1,5 +1,6 @@
 import sys
 import click
+import requests
 from typing import List, Union, Optional
 
 from .add_options import apply_click_add_options
@@ -12,16 +13,18 @@ def resolve_id(value: str, search_func, get_func=None) -> str:
     """
     Resolve a CLI argument to a resource id.
 
-    An exact id wins: if ``get_func`` finds ``value``, it is returned unchanged.
-    Otherwise ``value`` is treated as keywords and the top search hit is used.
-    If neither matches, ``value`` is passed through as-is.
+    An exact id wins: if ``get_func`` finds ``value``, its id is returned.
+    Only a 404 means "not an id"; other lookup errors propagate rather than
+    silently swapping in a search hit. Otherwise ``value`` is treated as
+    keywords and the top search hit is used. If neither matches, ``value`` is
+    passed through as-is.
     """
     if get_func is not None:
         try:
-            get_func(value)
-            return value
-        except Exception:
-            pass
+            return get_func(value).id
+        except requests.HTTPError as e:
+            if e.response is None or e.response.status_code != 404:
+                raise
     try:
         results = search_func(value, limit=1)
         if results:

@@ -10,7 +10,7 @@ economic data API.
 - **Series-First**: The individual data series is the primary resource, carrying its own metadata (frequency, units, source).
 - **Entity Graph**: Entities are nodes in a relational graph — walk from a company to its SIC, a security ticker, or a geography.
 - **Taxonomies**: Named populations (`country`, `sec-central-index-key`, …) scope search, query, and ranking.
-- **Intent over IDs**: CLI and Python favor fuzzy search over memorizing slugs; always resolve before querying.
+- **Intent over IDs**: CLI and Python favor fuzzy search over memorizing slugs; `jst api query` uses exact IDs as-is and searches only for keywords.
 - **Investigations**: Durable research artifacts — one workspace (staged ids), saved queries (cartesian metric × entity), and a tree of actions (analytical TUIs).
 - **Reproducible Discovery**: High-speed discovery in the TUI transitions into immutable Python / CLI snippets.
 

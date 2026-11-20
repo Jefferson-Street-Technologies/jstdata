@@ -118,6 +118,36 @@ def test_query_direct_id(runner, mock_url):
         assert not any("/search/" in r.url for r in m.request_history)
 
 
+def test_query_exact_lookup_error_does_not_fall_back_to_search(runner, mock_url):
+    with requests_mock.Mocker() as m:
+        m.get(f"{mock_url}/entity/0000320193", status_code=503)
+        m.get(
+            f"{mock_url}/search/entities",
+            json={"records": [{"id": "msft", "label": "Microsoft"}]},
+        )
+        m.get(f"{mock_url}/query", json={"records": []})
+
+        result = runner.invoke(cli, ["api", "query", "--entity", "0000320193"])
+        assert result.exit_code != 0
+        assert not any("/search/" in r.url for r in m.request_history)
+        assert not any("/query" in r.url for r in m.request_history)
+
+
+def test_query_exact_lookup_uses_canonical_id_and_quotes_path(runner, mock_url):
+    with requests_mock.Mocker() as m:
+        m.get(f"{mock_url}/entity/AAPL", json={"id": "aapl", "label": "Apple"})
+        m.get(f"{mock_url}/series/a%2Fb", json={"id": "a/b", "label": "A/B"})
+        m.get(f"{mock_url}/query", json={"records": []})
+
+        result = runner.invoke(
+            cli, ["api", "query", "--entity", "AAPL", "--series", "a/b"]
+        )
+        assert result.exit_code == 0, result.output
+        query_req = m.request_history[-1]
+        assert query_req.qs["entity"] == ["aapl"]
+        assert query_req.qs["series"] == ["a/b"]
+
+
 def test_query_no_fuzzy_passes_values_through(runner, mock_url):
     with requests_mock.Mocker() as m:
         m.get(f"{mock_url}/query", json={"records": []})
@@ -174,6 +204,7 @@ def test_query_fuzzy_resolution(runner, mock_url):
 def test_query_sort_by_value_and_taxonomy(runner, mock_url):
     mock_query_data = {"records": []}
     with requests_mock.Mocker() as m:
+        m.get(f"{mock_url}/metric/gdp", json={"id": "gdp", "name": "GDP"})
         m.get(f"{mock_url}/query", json=mock_query_data)
         result = runner.invoke(
             cli,
