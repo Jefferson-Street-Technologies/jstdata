@@ -155,6 +155,8 @@ def test_cli_publish_and_clone(requests_mock, tmp_path, monkeypatch, inv):
     # pointer that clone sets, and the config publish reads.
     monkeypatch.setattr(store, "INVESTIGATIONS_DIR", tmp_path / "investigations")
     monkeypatch.setattr(active, "APP_DIR", tmp_path)
+    # Remembered publication links (publications.json) go here too.
+    monkeypatch.setattr("jstdata.client.APP_DIR", tmp_path)
     monkeypatch.setenv("JSTDATA_SITE_URL", SITE)
     monkeypatch.setattr(type(cli_module.client), "api_key", property(lambda self: "k123"))
     save_investigation(inv, root=tmp_path / "investigations")
@@ -288,3 +290,84 @@ def test_config_set_site_url(tmp_path, monkeypatch):
     saved = json.loads(config_file.read_text())
     # Only site_url changed: the env-only key was not copied to disk.
     assert saved == {"api_key": "file-key", "site_url": "https://dev.example.com"}
+
+
+# --- Updating a publication in place (JEF-166) ------------------------------
+
+
+def test_update_sends_text_with_bearer_key(requests_mock, inv):
+    from jstdata.publish import update_publication
+
+    requests_mock.patch(
+        f"{SITE}/api/publications/{PUB_ID}",
+        json={"id": PUB_ID, "url": f"{SITE}/p/{PUB_ID}", "updatedAt": "2026-11-20T12:00:00Z"},
+    )
+    result = update_publication(inv, PUB_ID, api_key="k123", site_url=SITE)
+    assert result["url"] == f"{SITE}/p/{PUB_ID}"
+    req = requests_mock.last_request
+    assert req.method == "PATCH"
+    assert req.headers["Authorization"] == "Bearer k123"
+    assert req.json()["investigation"]["title"] == "Plain Bagel"
+
+
+def test_update_refused_when_queries_changed(requests_mock, inv):
+    from jstdata.publish import QueriesChangedError, update_publication
+
+    requests_mock.patch(
+        f"{SITE}/api/publications/{PUB_ID}",
+        status_code=409,
+        json={"error": "The queries changed since this was published.", "code": "queries_changed"},
+    )
+    with pytest.raises(QueriesChangedError, match="queries changed"):
+        update_publication(inv, PUB_ID, api_key="k", site_url=SITE)
+
+
+def test_update_of_someone_elses_publication(requests_mock, inv):
+    from jstdata.publish import update_publication
+
+    requests_mock.patch(f"{SITE}/api/publications/{PUB_ID}", status_code=404, json={"error": "Not found"})
+    with pytest.raises(PublishError, match="wasn't published with your account"):
+        update_publication(inv, PUB_ID, api_key="k", site_url=SITE)
+
+
+def test_remembered_links_newest_first(tmp_path):
+    from jstdata.publish import last_publication, record_publication
+
+    assert last_publication("x", app_dir=tmp_path) is None
+    record_publication("x", {"id": "AAAAAAAAAA", "url": "u1"}, app_dir=tmp_path)
+    record_publication("x", {"id": "BBBBBBBBBB", "url": "u2"}, app_dir=tmp_path)
+    assert last_publication("x", app_dir=tmp_path)["id"] == "BBBBBBBBBB"
+    # Updating an older link moves it back to the top.
+    record_publication("x", {"id": "AAAAAAAAAA", "url": "u1"}, app_dir=tmp_path)
+    assert last_publication("x", app_dir=tmp_path)["id"] == "AAAAAAAAAA"
+    # A corrupt file is treated as empty, not an error.
+    (tmp_path / "publications.json").write_text("not json")
+    assert last_publication("x", app_dir=tmp_path) is None
+
+
+def test_cli_publish_then_update(requests_mock, tmp_path, monkeypatch, inv):
+    from jstdata import cli as cli_module
+    from jstdata.investigation import active, store
+
+    monkeypatch.setattr(store, "INVESTIGATIONS_DIR", tmp_path / "investigations")
+    monkeypatch.setattr(active, "APP_DIR", tmp_path)
+    monkeypatch.setattr("jstdata.client.APP_DIR", tmp_path)
+    monkeypatch.setenv("JSTDATA_SITE_URL", SITE)
+    monkeypatch.setattr(type(cli_module.client), "api_key", property(lambda self: "k123"))
+    save_investigation(inv, root=tmp_path / "investigations")
+    runner = CliRunner()
+
+    result = runner.invoke(cli_module.cli, ["publish", "plain-bagel", "--update", "--yes"])
+    assert result.exit_code == 2 and "hasn't been published" in result.output
+
+    requests_mock.post(f"{SITE}/api/publications", status_code=201,
+                       json={"id": PUB_ID, "url": f"{SITE}/p/{PUB_ID}", "recordCount": 1})
+    result = runner.invoke(cli_module.cli, ["publish", "plain-bagel", "--yes"])
+    assert result.exit_code == 0, result.output
+
+    requests_mock.patch(f"{SITE}/api/publications/{PUB_ID}",
+                        json={"id": PUB_ID, "url": f"{SITE}/p/{PUB_ID}", "updatedAt": "t"})
+    result = runner.invoke(cli_module.cli, ["publish", "plain-bagel", "--update", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "Updated." in result.output
+    assert requests_mock.last_request.method == "PATCH"

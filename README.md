@@ -117,12 +117,20 @@ text is saved to the investigation, and you confirm before anything is shared.
 jst publish                  # the active investigation: draft, confirm, publish
 jst publish plain-bagel --no-edit   # skip the draft, use the saved text
 jst publish plain-bagel --yes       # no draft, no confirmation (scripts)
+jst publish plain-bagel --update    # fix the text on the existing link
+jst publish plain-bagel --new       # always make a new link
 jst clone https://www.jeffersonst.io/p/AbCdEf1234   # copy one into your environment
 ```
 
 In the TUI, `:publish` does the same and shows the link, with `c` to copy it
-and `o` to open it. Each publish makes a new link with the results as of then;
-earlier links don't change. `jst clone` saves the published queries and
+and `o` to open it.
+
+Publishing an investigation again asks whether to **update** its existing
+link or make a **new** one. Updating replaces the page's text (title,
+description, overview, query names and notes) on the same link and keeps its
+results; the page shows "Edited". If you changed the queries themselves,
+publish a new link instead, so the results always match the page. `jst`
+remembers your links in `~/.jstdata/publications.json`. `jst clone` saves the published queries and
 annotations as a new local investigation (adding `-clone` if the id is taken)
 and needs no API key.
 

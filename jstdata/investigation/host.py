@@ -1238,15 +1238,33 @@ class InvestigationHost(App):
                 if isinstance(screen, HomeScreen):
                     screen.refresh_live()
             self.notify(f"Saved: {changes.summary()}")
+        from ..publish import last_publication
+
         # Publish exactly what the dialog shows, even if the file reloads
         # (or another investigation opens) while it's open.
         snapshot = copy.deepcopy(self.investigation)
+        previous = last_publication(snapshot.id, app_dir=self.app_dir)
         self.push_screen(
-            PublishConfirmModal(snapshot),
-            lambda ok: self._start_publish(snapshot, api_key) if ok else None,
+            PublishConfirmModal(
+                snapshot, previous["url"] if previous is not None else None
+            ),
+            lambda mode: self._start_publish(
+                snapshot,
+                api_key,
+                mode,
+                previous["id"] if previous is not None else None,
+            )
+            if mode is not None
+            else None,
         )
 
-    def _start_publish(self, snapshot: Investigation, api_key: str) -> None:
+    def _start_publish(
+        self,
+        snapshot: Investigation,
+        api_key: str,
+        mode: str = "new",
+        previous_id: Optional[str] = None,
+    ) -> None:
         from ..publish import configured_site_url
 
         if not self.investigation or self.investigation.id != snapshot.id:
@@ -1260,44 +1278,70 @@ class InvestigationHost(App):
         self._publishing = True
         n = len(snapshot.queries)
         self.notify(
-            f"Publishing: running {n} quer{'y' if n == 1 else 'ies'}…",
+            "Updating the page's text…"
+            if mode == "update"
+            else f"Publishing: running {n} quer{'y' if n == 1 else 'ies'}…",
             timeout=10,
         )
         self.run_worker(
-            lambda: self._publish_in_thread(snapshot, api_key, site_url),
+            lambda: self._publish_in_thread(
+                snapshot, api_key, site_url, mode, previous_id
+            ),
             thread=True,
             name="publish",
         )
 
     def _publish_in_thread(
-        self, inv: Investigation, api_key: str, site_url: str
+        self,
+        inv: Investigation,
+        api_key: str,
+        site_url: str,
+        mode: str = "new",
+        previous_id: Optional[str] = None,
     ) -> None:
-        from ..publish import PublishError, publish_investigation
+        from ..publish import (
+            PublishError,
+            QueriesChangedError,
+            publish_investigation,
+            record_publication,
+            update_publication,
+        )
 
         url: Optional[str] = None
         error: Optional[str] = None
         try:
-            url = publish_investigation(inv, api_key=api_key, site_url=site_url)["url"]
+            if mode == "update" and previous_id is not None:
+                result = update_publication(
+                    inv, previous_id, api_key=api_key, site_url=site_url
+                )
+            else:
+                result = publish_investigation(inv, api_key=api_key, site_url=site_url)
+            url = result["url"]
+            record_publication(inv.id, result, app_dir=self.app_dir)
+        except QueriesChangedError as exc:
+            error = f"{exc} Run :publish again and press p for a new link."
         except PublishError as exc:
             error = str(exc)
         except Exception as exc:  # unexpected; keep the TUI alive
             error = f"Publish failed: {exc}"
         try:
-            self.call_from_thread(self._on_publish_done, url, error)
+            self.call_from_thread(self._on_publish_done, url, error, mode == "update")
         except RuntimeError:
             # The TUI was closed mid-publish. The publication may still have
             # been created; say where, since the dialog can't show it.
             if url is not None:
                 print(f"Published: {url}")
 
-    def _on_publish_done(self, url: Optional[str], error: Optional[str]) -> None:
+    def _on_publish_done(
+        self, url: Optional[str], error: Optional[str], updated: bool = False
+    ) -> None:
         self._publishing = False
         if error is not None:
             # Server messages can echo query names: show them as plain text.
             self.notify(escape(error), severity="error", timeout=10)
             return
         assert url is not None
-        self.push_screen(PublishedModal(url))
+        self.push_screen(PublishedModal(url, updated=updated))
 
     def _cmd_annotate(self, parsed: ParsedCommand) -> None:
         qid = parsed.options.get("query_id")

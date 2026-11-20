@@ -37,8 +37,13 @@ def describe_publication(inv: Investigation) -> str:
     return "\n".join(lines)
 
 
-class PublishConfirmModal(ModalScreen[bool]):
-    """Ask before publishing, listing exactly what becomes public."""
+class PublishConfirmModal(ModalScreen[str | None]):
+    """Ask before publishing, listing exactly what becomes public.
+
+    Dismisses with ``"new"`` (publish a new link), ``"update"`` (replace the
+    text at ``previous_url``, offered when the investigation was published
+    before) or None (cancel).
+    """
 
     DEFAULT_CSS = """
     PublishConfirmModal {
@@ -59,29 +64,55 @@ class PublishConfirmModal(ModalScreen[bool]):
 
     BINDINGS = [
         Binding("y", "yes", "Publish", show=False),
+        Binding("u", "update", "Update", show=False),
+        Binding("p", "new", "New link", show=False),
         Binding("n", "no", "Cancel", show=False),
-        Binding("escape", "no", "Cancel", show=False),
+        Binding("escape", "cancel", "Cancel", show=False),
     ]
 
-    def __init__(self, inv: Investigation) -> None:
+    def __init__(self, inv: Investigation, previous_url: str | None = None) -> None:
         super().__init__()
         self._inv = inv
+        self._previous = previous_url
 
     def compose(self) -> ComposeResult:
         with Vertical(id="publish-box"):
             yield Label("PUBLISH", id="publish-kicker")
-            yield Static(describe_publication(self._inv), id="publish-body", markup=True)
-            yield Label(
-                "[bold]y[/bold] publish  ·  [bold]n[/bold]/[bold]esc[/bold] cancel",
-                id="publish-hint",
-                markup=True,
+            body = describe_publication(self._inv)
+            if self._previous is not None:
+                body += (
+                    f"\n\nAlready published at [bold]{escape(self._previous)}[/bold]. "
+                    "Update that page's text, or publish a new link? Updating keeps "
+                    "its results; if you changed the queries, publish a new link."
+                )
+            yield Static(body, id="publish-body", markup=True)
+            hint = (
+                "[bold]u[/bold] update that page  ·  [bold]p[/bold] new link  ·  "
+                "[bold]esc[/bold] cancel"
+                if self._previous is not None
+                else "[bold]y[/bold] publish  ·  [bold]n[/bold]/[bold]esc[/bold] cancel"
             )
+            yield Label(hint, id="publish-hint", markup=True)
 
     def action_yes(self) -> None:
-        self.dismiss(True)
+        if self._previous is None:
+            self.dismiss("new")
+
+    def action_update(self) -> None:
+        if self._previous is not None:
+            self.dismiss("update")
+
+    def action_new(self) -> None:
+        if self._previous is not None:
+            self.dismiss("new")
 
     def action_no(self) -> None:
-        self.dismiss(False)
+        # With a previous link, "n" is too close to "new link": only esc cancels.
+        if self._previous is None:
+            self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 class PublishedModal(ModalScreen[None]):
@@ -112,16 +143,20 @@ class PublishedModal(ModalScreen[None]):
         Binding("enter", "close", "Close", show=False),
     ]
 
-    def __init__(self, url: str) -> None:
+    def __init__(self, url: str, *, updated: bool = False) -> None:
         super().__init__()
         self.url = url
+        self.updated = updated
 
     def compose(self) -> ComposeResult:
         with Vertical(id="published-box"):
-            yield Label("PUBLISHED", id="published-kicker")
+            yield Label("UPDATED" if self.updated else "PUBLISHED", id="published-kicker")
             yield Label(self.url, id="published-url", markup=False)
             yield Static(
-                "Share this link. Publishing again makes a new link; this one "
+                "The page's text is updated on the same link; its results are "
+                "unchanged."
+                if self.updated
+                else "Share this link. Publishing again makes a new link; this one "
                 "keeps the results as of now.",
                 id="published-body",
             )
