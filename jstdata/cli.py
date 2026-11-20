@@ -1,5 +1,6 @@
 import sys
 import click
+import requests
 from typing import List, Union, Optional
 
 from .add_options import apply_click_add_options
@@ -8,15 +9,22 @@ from .utils import common_params, common_search_params, format_and_print
 
 client = JSTDataClient()
 
-def resolve_id(value: str, search_func) -> str:
+def resolve_id(value: str, search_func, get_func=None) -> str:
     """
-    Helper to resolve a potential ID or search for it.
-    Emphasizes 'Intent over IDs'.
+    Resolve a CLI argument to a resource id.
+
+    An exact id wins: if ``get_func`` finds ``value``, its id is returned.
+    Only a 404 means "not an id"; other lookup errors propagate rather than
+    silently swapping in a search hit. Otherwise ``value`` is treated as
+    keywords and the top search hit is used. If neither matches, ``value`` is
+    passed through as-is.
     """
-    # Simple heuristic: if it looks like an ID (no spaces, all lowercase/dashes),
-    # we might still want to check if it's valid, but for now let's just use search
-    # if it's not a perfect match.
-    # In a real scenario, we might try a direct lookup first.
+    if get_func is not None:
+        try:
+            return get_func(value).id
+        except requests.HTTPError as e:
+            if e.response is None or e.response.status_code != 404:
+                raise
     try:
         results = search_func(value, limit=1)
         if results:
@@ -432,7 +440,11 @@ def series_observations(
     default="id",
     help="Order series by id (default) or by last value in the window (desc)",
 )
-@click.option("--fuzzy", is_flag=True, default=True, help="Try to resolve keywords to IDs automatically")
+@click.option(
+    "--fuzzy/--no-fuzzy",
+    default=True,
+    help="Resolve keywords that are not exact IDs via search (default: on)",
+)
 @click.option(
     "--limit",
     default=50,
@@ -472,9 +484,9 @@ def query(
     s_ids = list(series)
 
     if fuzzy:
-        m_ids = [resolve_id(m, client.search_metrics) for m in m_ids]
-        e_ids = [resolve_id(e, client.search_entities) for e in e_ids]
-        s_ids = [resolve_id(s, client.search_series) for s in s_ids]
+        m_ids = [resolve_id(m, client.search_metrics, client.get_metric) for m in m_ids]
+        e_ids = [resolve_id(e, client.search_entities, client.get_entity) for e in e_ids]
+        s_ids = [resolve_id(s, client.search_series, client.get_series) for s in s_ids]
 
     results = client.query(
         metric=m_ids or None,

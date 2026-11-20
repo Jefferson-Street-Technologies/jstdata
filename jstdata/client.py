@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
+from urllib.parse import quote
 
 import pandas as pd
 import requests
@@ -308,7 +309,7 @@ class JSTDataClient:
 
     def get_metric(self, metric_id: str) -> Metric:
         """Get details for a specific metric."""
-        data = self.make_request(f"metric/{metric_id}")
+        data = self.make_request(f"metric/{quote(metric_id, safe=':')}")
         return Metric.from_dict(data)
 
     def get_metric_series(
@@ -440,14 +441,14 @@ class JSTDataClient:
 
     def get_series(self, series_id: str) -> Series:
         """Get details for a specific series."""
-        data = self.make_request(f"series/{series_id}")
+        data = self.make_request(f"series/{quote(series_id, safe=':')}")
         return Series.from_dict(data)
 
     # --- Entities ---
 
     def get_entity(self, entity_id: str) -> Entity:
         """Get details for a specific entity."""
-        data = self.make_request(f"entity/{entity_id}")
+        data = self.make_request(f"entity/{quote(entity_id, safe=':')}")
         return Entity.from_dict(data)
 
     def get_entity_series(
