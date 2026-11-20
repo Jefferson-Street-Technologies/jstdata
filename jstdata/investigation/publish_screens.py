@@ -243,7 +243,7 @@ class PublishDraftScreen(Screen[str | None]):
         self.dismiss(None)
 
 
-def edit_publish_draft(inv: Investigation):
+def edit_publish_draft(inv: Investigation, web_versions=None):
     """Run the draft editor on its own (for `jst publish`).
 
     Returns ``(updated_investigation, changes)``, or None if the author
@@ -266,7 +266,7 @@ def edit_publish_draft(inv: Investigation):
                 self.exit,
             )
 
-    text, error = build_draft(inv), None
+    text, error = build_draft(inv, web_versions), None
     while True:
         result = _DraftApp(text, error).run()
         if result is None:

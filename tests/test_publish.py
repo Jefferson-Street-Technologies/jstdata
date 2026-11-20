@@ -365,9 +365,139 @@ def test_cli_publish_then_update(requests_mock, tmp_path, monkeypatch, inv):
     result = runner.invoke(cli_module.cli, ["publish", "plain-bagel", "--yes"])
     assert result.exit_code == 0, result.output
 
+    requests_mock.get(f"{SITE}/api/publications/{PUB_ID}/definition",
+                      json={"investigation": published_definition(inv), "updatedAt": None})
     requests_mock.patch(f"{SITE}/api/publications/{PUB_ID}",
                         json={"id": PUB_ID, "url": f"{SITE}/p/{PUB_ID}", "updatedAt": "t"})
     result = runner.invoke(cli_module.cli, ["publish", "plain-bagel", "--update", "--yes"])
     assert result.exit_code == 0, result.output
     assert "Updated." in result.output
     assert requests_mock.last_request.method == "PATCH"
+
+
+
+# --- Pulling edits made on the page (JEF-166) -------------------------------
+
+
+def test_pull_merges_field_by_field(inv):
+    from jstdata.publish_sync import pull_web_edits, text_of
+
+    base = text_of(inv)
+    local = Investigation.from_dict(inv.to_dict())
+    local.queries[1].annotations = "Edited locally"          # local only
+    web = published_definition(inv)
+    web["title"] = "Edited on the page"                       # web only
+    web["annotations"] = "Both: web version"                  # both
+    local.annotations = "Both: local version"
+
+    result = pull_web_edits(local, web, base)
+    assert result.investigation.title == "Edited on the page"
+    assert result.investigation.queries[1].annotations == "Edited locally"
+    assert result.investigation.annotations == "Both: local version"
+    assert result.pulled == ["title"]
+    assert result.conflicts == {"annotations": "Both: web version"}
+    # The original object isn't modified.
+    assert local.title == "Plain Bagel"
+
+
+def test_pull_without_a_base_never_overwrites(inv):
+    from jstdata.publish_sync import pull_web_edits
+
+    web = published_definition(inv)
+    web["title"] = "Edited on the page"
+    result = pull_web_edits(inv, web, None)
+    assert result.investigation.title == "Plain Bagel"
+    assert result.conflicts == {"title": "Edited on the page"}
+
+
+def test_draft_shows_web_versions_as_comments(inv):
+    from jstdata.publish_draft import apply_draft, build_draft
+
+    draft = build_draft(inv, {"annotations": "The page's overview -->x", "query:1:annotations": None})
+    assert "Also edited on the page" in draft
+    assert "The page's overview -- >x" in draft  # can't close the comment early
+    assert "(empty)" in draft
+    applied, changes = apply_draft(inv, draft)
+    assert not changes  # the comments are guidance, not text
+
+
+def _cli_setup(tmp_path, monkeypatch, inv):
+    from jstdata import cli as cli_module
+    from jstdata.investigation import active, store
+
+    monkeypatch.setattr(store, "INVESTIGATIONS_DIR", tmp_path / "investigations")
+    monkeypatch.setattr(active, "APP_DIR", tmp_path)
+    monkeypatch.setattr("jstdata.client.APP_DIR", tmp_path)
+    monkeypatch.setenv("JSTDATA_SITE_URL", SITE)
+    monkeypatch.setattr(type(cli_module.client), "api_key", property(lambda self: "k123"))
+    save_investigation(inv, root=tmp_path / "investigations")
+    return cli_module
+
+
+def test_cli_update_pulls_web_edits_first(requests_mock, tmp_path, monkeypatch, inv):
+    from jstdata.investigation import load_investigation
+    from jstdata.publish import record_publication
+    from jstdata.publish_sync import text_of
+
+    cli_module = _cli_setup(tmp_path, monkeypatch, inv)
+    record_publication("plain-bagel", {"id": PUB_ID, "url": f"{SITE}/p/{PUB_ID}"},
+                       text=text_of(inv), app_dir=tmp_path)
+    web = published_definition(inv)
+    web["title"] = "Fixed on the page"
+    requests_mock.get(f"{SITE}/api/publications/{PUB_ID}/definition",
+                      json={"investigation": web, "updatedAt": "2026-11-20T12:00:00Z"})
+    requests_mock.patch(f"{SITE}/api/publications/{PUB_ID}",
+                        json={"id": PUB_ID, "url": f"{SITE}/p/{PUB_ID}", "updatedAt": "t2"})
+
+    result = CliRunner().invoke(cli_module.cli, ["publish", "plain-bagel", "--update", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "Pulled edits made on the page: title" in result.output
+    # Saved locally, and the update sent the web's title rather than the old one.
+    assert load_investigation("plain-bagel", root=tmp_path / "investigations").title == "Fixed on the page"
+    assert requests_mock.last_request.json()["investigation"]["title"] == "Fixed on the page"
+
+
+def test_cli_update_refuses_to_overwrite_conflicting_web_edits(requests_mock, tmp_path, monkeypatch, inv):
+    from jstdata.publish import record_publication
+    from jstdata.publish_sync import text_of
+
+    cli_module = _cli_setup(tmp_path, monkeypatch, inv)
+    record_publication("plain-bagel", {"id": PUB_ID, "url": f"{SITE}/p/{PUB_ID}"},
+                       text=text_of(inv), app_dir=tmp_path)
+    inv.title = "Changed locally"
+    save_investigation(inv, root=tmp_path / "investigations")
+    web = published_definition(inv)
+    web["title"] = "Changed on the page"
+    requests_mock.get(f"{SITE}/api/publications/{PUB_ID}/definition",
+                      json={"investigation": web, "updatedAt": "t"})
+    patch = requests_mock.patch(f"{SITE}/api/publications/{PUB_ID}", json={})
+
+    result = CliRunner().invoke(cli_module.cli, ["publish", "plain-bagel", "--update", "--yes"])
+    assert result.exit_code == 1
+    assert "Edited both here and on the page: title" in result.output
+    assert not patch.called
+
+
+def test_stale_page_copy_is_refused(requests_mock, inv):
+    from jstdata.publish_sync import pull_for_publish
+
+    requests_mock.get(f"{SITE}/api/publications/{PUB_ID}/definition",
+                      json={"investigation": published_definition(inv), "updatedAt": "2026-11-20T11:39:40+00:00"})
+    previous = {"id": PUB_ID, "url": f"{SITE}/p/{PUB_ID}", "text": {}, "updated_at": "2026-11-20T11:40:13.2+00:00"}
+    with pytest.raises(PublishError, match="out-of-date copy"):
+        pull_for_publish(inv, previous)
+
+
+def test_update_refused_when_page_cant_be_checked(requests_mock, tmp_path, monkeypatch, inv):
+    from jstdata.publish import record_publication
+    from jstdata.publish_sync import text_of
+
+    cli_module = _cli_setup(tmp_path, monkeypatch, inv)
+    record_publication("plain-bagel", {"id": PUB_ID, "url": f"{SITE}/p/{PUB_ID}"},
+                       text=text_of(inv), app_dir=tmp_path)
+    requests_mock.get(f"{SITE}/api/publications/{PUB_ID}/definition", status_code=500, json={"error": "boom"})
+    patch = requests_mock.patch(f"{SITE}/api/publications/{PUB_ID}", json={})
+    result = CliRunner().invoke(cli_module.cli, ["publish", "plain-bagel", "--update", "--yes"])
+    assert result.exit_code == 1
+    assert "Not updating" in result.output
+    assert not patch.called

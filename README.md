@@ -130,7 +130,14 @@ link or make a **new** one. Updating replaces the page's text (title,
 description, overview, query names and notes) on the same link and keeps its
 results; the page shows "Edited". If you changed the queries themselves,
 publish a new link instead, so the results always match the page. `jst`
-remembers your links in `~/.jstdata/publications.json`. `jst clone` saves the published queries and
+remembers your links in `~/.jstdata/publications.json`.
+
+You can also edit a page's text in the browser (**Edit page**, shown to you
+as its publisher). The next time you publish that investigation, `jst` pulls
+those edits into your local copy first. If the same field changed in both
+places, your local text is kept and the page's version is shown in the draft
+as a comment so you can merge it; `--update --yes` refuses rather than
+overwrite it. `jst clone` saves the published queries and
 annotations as a new local investigation (adding `-clone` if the id is taken)
 and needs no API key.
 

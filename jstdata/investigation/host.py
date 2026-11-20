@@ -1196,19 +1196,66 @@ class InvestigationHost(App):
         error: Optional[str] = None,
     ) -> None:
         """The whole page as one Markdown draft; a retry keeps the author's text."""
+        from ..publish import PublishError, last_publication
         from ..publish_draft import build_draft
+        from ..publish_sync import label, pull_for_publish
 
         inv = self.investigation
         if not inv:
             return
+        web_versions = None
+        previous = last_publication(inv.id, app_dir=self.app_dir)
+        if text is None and previous is not None:
+            # Pull text edited on the page since the last publish (JEF-166).
+            try:
+                pull = pull_for_publish(inv, previous)
+            except PublishError as exc:
+                self.notify(
+                    escape(f"Couldn't check the page for edits: {exc}"),
+                    severity="warning",
+                )
+            else:
+                if pull.pulled:
+                    self._save_investigation(pull.investigation)
+                    inv = pull.investigation
+                    self.notify(
+                        "Pulled edits made on the page: "
+                        + ", ".join(label(k) for k in pull.pulled)
+                    )
+                if pull.conflicts:
+                    web_versions = pull.conflicts
+                    self.notify(
+                        "Edited both here and on the page: "
+                        + ", ".join(label(k) for k in pull.conflicts)
+                        + ". The page's version is in the draft.",
+                        severity="warning",
+                        timeout=10,
+                    )
         self.push_screen(
             PublishDraftScreen(
-                text if text is not None else build_draft(inv),
+                text if text is not None else build_draft(inv, web_versions),
                 title=inv.title,
                 error=error,
             ),
             lambda result: self._on_publish_draft(api_key, result),
         )
+
+    def _save_investigation(self, updated: Investigation) -> None:
+        """Persist ``updated`` as the current investigation and refresh views."""
+        self._suppress_poll = True
+        try:
+            persist_investigation(updated, app_dir=self.app_dir)
+            self.investigation = updated
+            try:
+                self._inv_mtime = self._inv_file().stat().st_mtime
+            except OSError:
+                pass
+        finally:
+            self._suppress_poll = False
+        self._refresh_annotation_surfaces()
+        for screen in self.screen_stack:
+            if isinstance(screen, HomeScreen):
+                screen.refresh_live()
 
     def _on_publish_draft(self, api_key: str, text: Optional[str]) -> None:
         from ..publish_draft import DraftError, apply_draft
@@ -1223,20 +1270,7 @@ class InvestigationHost(App):
         if changes:
             # Save the text to the investigation first, so it's kept even if
             # the user cancels the publish or it fails.
-            self._suppress_poll = True
-            try:
-                persist_investigation(updated, app_dir=self.app_dir)
-                self.investigation = updated
-                try:
-                    self._inv_mtime = self._inv_file().stat().st_mtime
-                except OSError:
-                    pass
-            finally:
-                self._suppress_poll = False
-            self._refresh_annotation_surfaces()
-            for screen in self.screen_stack:
-                if isinstance(screen, HomeScreen):
-                    screen.refresh_live()
+            self._save_investigation(updated)
             self.notify(f"Saved: {changes.summary()}")
         from ..publish import last_publication
 
@@ -1306,6 +1340,7 @@ class InvestigationHost(App):
             record_publication,
             update_publication,
         )
+        from ..publish_sync import text_of
 
         url: Optional[str] = None
         error: Optional[str] = None
@@ -1317,7 +1352,9 @@ class InvestigationHost(App):
             else:
                 result = publish_investigation(inv, api_key=api_key, site_url=site_url)
             url = result["url"]
-            record_publication(inv.id, result, app_dir=self.app_dir)
+            record_publication(
+                inv.id, result, text=text_of(inv), app_dir=self.app_dir
+            )
         except QueriesChangedError as exc:
             error = f"{exc} Run :publish again and press p for a new link."
         except PublishError as exc:
