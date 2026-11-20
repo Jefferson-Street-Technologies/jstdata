@@ -801,6 +801,7 @@ def publish_cmd(
         record_publication,
         update_publication,
     )
+    from .publish_sync import text_of
 
     try:
         if investigation_id is None:
@@ -829,12 +830,54 @@ def publish_cmd(
 
     interactive = sys.stdin.isatty() and sys.stdout.isatty()
 
+    # Pull text edited on the page since the last publish, so an update
+    # doesn't overwrite it (JEF-166).
+    web_versions = None
+    if previous is not None:
+        from .investigation import persist_investigation
+        from .publish_sync import label, pull_for_publish
+
+        try:
+            pull = pull_for_publish(inv, previous)
+        except PublishError as e:
+            click.secho(f"Couldn't check {previous['url']} for edits made on the page: {e}", fg="yellow", err=True)
+            # Updating without checking could overwrite edits made on the page.
+            if mode == "update" and (yes or not interactive):
+                click.echo("Not updating. Try again, or publish a new link with --new.", err=True)
+                sys.exit(1)
+            if mode == "update" and not click.confirm(
+                "Update anyway? Edits made on the page since your last publish would be replaced.",
+                default=False,
+            ):
+                click.echo("Not updated.")
+                return
+        else:
+            if pull.pulled:
+                inv = pull.investigation
+                persist_investigation(inv)
+                click.echo("Pulled edits made on the page: " + ", ".join(label(k) for k in pull.pulled) + ".")
+            if pull.conflicts:
+                web_versions = pull.conflicts
+                fields = ", ".join(label(k) for k in pull.conflicts)
+                click.secho(
+                    f"Edited both here and on the page: {fields}. Yours is kept; "
+                    "the page's version is shown in the draft to merge.",
+                    fg="yellow",
+                )
+                if mode == "update" and (yes or no_edit or not interactive):
+                    click.echo(
+                        "Not updating, so the page's edits aren't overwritten. Run `jst publish` "
+                        "without --yes/--no-edit to merge them in the draft.",
+                        err=True,
+                    )
+                    sys.exit(1)
+
     # The draft needs a terminal to edit in; scripts and agents skip it.
     if not (yes or no_edit) and interactive:
         from .investigation import persist_investigation
         from .investigation.publish_screens import edit_publish_draft
 
-        edited = edit_publish_draft(inv)
+        edited = edit_publish_draft(inv, web_versions)
         if edited is None:
             click.echo("Not published.")
             return
@@ -876,7 +919,7 @@ def publish_cmd(
             click.secho(f"Error: {e}", fg="red", err=True)
             sys.exit(1)
         else:
-            record_publication(inv.id, result)
+            record_publication(inv.id, result, text=text_of(inv))
             click.secho("Updated.", fg="green")
             click.echo(result["url"])
             return
@@ -895,7 +938,7 @@ def publish_cmd(
     except PublishError as e:
         click.secho(f"Error: {e}", fg="red", err=True)
         sys.exit(1)
-    record_publication(inv.id, result)
+    record_publication(inv.id, result, text=text_of(inv))
     click.secho("Published.", fg="green")
     click.echo(result["url"])
 

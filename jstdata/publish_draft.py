@@ -56,8 +56,27 @@ def _describe(q: Query) -> str:
     return " · ".join(parts)
 
 
-def build_draft(inv: Investigation) -> str:
-    """The publication as one editable Markdown document."""
+def _web_note(web_versions: dict[str, str | None] | None, *keys: str) -> list[str]:
+    """The page's version of fields edited in both places, as comments."""
+    lines = []
+    for key in keys:
+        if web_versions and key in web_versions:
+            text = (web_versions[key] or "(empty)").replace("-->", "-- >")
+            lines.append(
+                "<!-- Also edited on the page (yours above is kept; copy anything "
+                f"you want from here):\n{text}\n-->"
+            )
+    return lines
+
+
+def build_draft(
+    inv: Investigation, web_versions: dict[str, str | None] | None = None
+) -> str:
+    """The publication as one editable Markdown document.
+
+    ``web_versions`` maps fields changed both locally and on the page (see
+    publish_sync) to the page's text, shown as a comment under each field.
+    """
     lines = [
         "<!-- Fill this in, then press Ctrl+S to publish. It becomes the page's",
         "     text; the charts come from the queries. Markdown works: ## headings,",
@@ -65,9 +84,11 @@ def build_draft(inv: Investigation) -> str:
         "",
         f"# {inv.title}",
         f"> {inv.notes}" if inv.notes else "> One-line description shown under the title",
+        *_web_note(web_versions, "title", "notes"),
         "",
         "<!-- Overview: shown above the charts. -->",
         inv.annotations or PLACEHOLDER_OVERVIEW,
+        *_web_note(web_versions, "annotations"),
         "",
     ]
     for q in sorted(inv.queries.values(), key=lambda q: q.id):
@@ -75,6 +96,7 @@ def build_draft(inv: Investigation) -> str:
             f"## Query {q.id}: {q.name or f'Query {q.id}'}",
             f"<!-- Charts: {_describe(q)} -->",
             q.annotations or PLACEHOLDER_NOTE,
+            *_web_note(web_versions, f"query:{q.id}:name", f"query:{q.id}:annotations"),
             "",
         ]
     return "\n".join(lines).rstrip() + "\n"

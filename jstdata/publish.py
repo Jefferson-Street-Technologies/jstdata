@@ -214,16 +214,26 @@ def record_publication(
     investigation_id: str,
     result: dict[str, Any],
     *,
+    text: Optional[dict[str, Any]] = None,
     app_dir: Optional[Path] = None,
 ) -> None:
-    """Remember that ``investigation_id`` lives at this link, newest first."""
+    """Remember that ``investigation_id`` lives at this link, newest first.
+
+    ``text`` is the page text that was sent (see ``publish_sync.text_of``),
+    and the server's ``updatedAt`` is kept with it: together they let the
+    next publish tell web edits apart from local ones and pull them.
+    """
     log = _read_log(app_dir)
     entries = [
         e
         for e in log.get(investigation_id, [])
         if isinstance(e, dict) and e.get("id") != result.get("id")
     ]
-    entries.insert(0, {"id": result["id"], "url": result["url"]})
+    entry: dict[str, Any] = {"id": result["id"], "url": result["url"]}
+    if text is not None:
+        entry["text"] = text
+        entry["updated_at"] = result.get("updatedAt")
+    entries.insert(0, entry)
     log[investigation_id] = entries[:20]
     path = _log_path(app_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -277,20 +287,12 @@ def _available_id(base: str, root: Optional[Path]) -> str:
     return candidate
 
 
-def clone_publication(
-    ref: str,
-    *,
-    site_url: str = DEFAULT_SITE_URL,
-    root: Optional[Path] = None,
-    new_id: Optional[str] = None,
-) -> Investigation:
-    """Download a publication's definition and save it as a new investigation.
+def fetch_publication(origin: str, pub_id: str) -> dict[str, Any]:
+    """A publication's stored definition: ``{"investigation", "updatedAt", …}``.
 
-    The local copy is independent: editing or running it never touches the
-    publication. If the original id is taken locally, a ``-clone`` suffix is
-    added unless ``new_id`` is given.
+    Public, so no API key is sent. The reply comes from another server, so its
+    size is capped and its shape checked.
     """
-    origin, pub_id = parse_publication_ref(ref, site_url=site_url)
     try:
         response = requests.get(
             f"{origin}/api/publications/{pub_id}/definition",
@@ -307,16 +309,34 @@ def clone_publication(
         raise _unreachable(origin, exc) from exc
     if len(raw) > MAX_CLONE_BYTES:
         raise PublishError(f"The publication at {origin} is too large to clone.")
-
     try:
-        data = dict(json.loads(raw)["investigation"])
-        published_id = data["id"]
-        if not isinstance(published_id, str):
-            raise TypeError("id")
+        body = json.loads(raw)
+        data = body["investigation"]
+        if not isinstance(data, dict) or not isinstance(data["id"], str):
+            raise TypeError("investigation")
     except (ValueError, KeyError, TypeError) as exc:
         raise PublishError(
             f"{origin} didn't send a valid investigation for {pub_id!r}."
         ) from exc
+    return body
+
+
+def clone_publication(
+    ref: str,
+    *,
+    site_url: str = DEFAULT_SITE_URL,
+    root: Optional[Path] = None,
+    new_id: Optional[str] = None,
+) -> Investigation:
+    """Download a publication's definition and save it as a new investigation.
+
+    The local copy is independent: editing or running it never touches the
+    publication. If the original id is taken locally, a ``-clone`` suffix is
+    added unless ``new_id`` is given.
+    """
+    origin, pub_id = parse_publication_ref(ref, site_url=site_url)
+    data = dict(fetch_publication(origin, pub_id)["investigation"])
+    published_id = data["id"]
 
     if new_id is not None:
         validate_investigation_id(new_id)
