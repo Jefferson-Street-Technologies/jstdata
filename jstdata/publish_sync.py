@@ -17,6 +17,7 @@ that differs counts as changed in both places, so nothing is overwritten.
 from __future__ import annotations
 
 import copy
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional
@@ -130,9 +131,16 @@ def pull_for_publish(
 
 
 def _when(value: Any) -> Optional[datetime]:
+    """Parse an ISO timestamp from the server or our own records.
+
+    Python 3.10's fromisoformat only takes 3 or 6 fractional digits, and
+    Postgres trims trailing zeros (".2", ".24049"), so pad to 6 first.
+    """
     if not isinstance(value, str):
         return None
+    text = value.replace("Z", "+00:00")
+    text = re.sub(r"\.(\d+)", lambda m: "." + (m.group(1) + "000000")[:6], text, count=1)
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return datetime.fromisoformat(text)
     except ValueError:
         return None

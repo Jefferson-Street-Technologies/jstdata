@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "jstdata"
-version = "0.6.0"
+version = "0.6.1"
 description = "Python API, CLI, and investigation TUI for Jefferson Street financial and economic data."
 authors = ["Mahfuj Ahbab"]
 readme = "README.md"
