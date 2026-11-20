@@ -108,9 +108,15 @@ can open: its queries, annotations and results, with each observation's
 provenance and a CSV download. Signed-in visitors can refresh the results with
 their own API key. The website runs the queries with yours when you publish.
 
+When you publish, a **draft of the page** opens first: the title, a one-line
+description, an overview, and a note under each query's charts, all in one
+Markdown document laid out like the page. Fill it in and press `Ctrl+S`; the
+text is saved to the investigation, and you confirm before anything is shared.
+
 ```bash
-jst publish                  # the active investigation; asks before sharing
-jst publish plain-bagel --yes
+jst publish                  # the active investigation: draft, confirm, publish
+jst publish plain-bagel --no-edit   # skip the draft, use the saved text
+jst publish plain-bagel --yes       # no draft, no confirmation (scripts)
 jst clone https://www.jeffersonst.io/p/AbCdEf1234   # copy one into your environment
 ```
 

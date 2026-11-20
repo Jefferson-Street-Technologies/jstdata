@@ -761,17 +761,25 @@ def _site_url() -> str:
 @cli.command("publish")
 @click.argument("investigation_id", required=False, default=None)
 @click.option("--name", "publisher_name", help="Name shown as the publisher (default: from your account email)")
-@click.option("--yes", "-y", is_flag=True, help="Publish without asking for confirmation")
-def publish_cmd(investigation_id: str | None, publisher_name: str | None, yes: bool) -> None:
+@click.option("--yes", "-y", is_flag=True, help="Publish as-is: no draft, no confirmation (for scripts)")
+@click.option("--no-edit", is_flag=True, help="Skip the draft and publish the text already saved")
+def publish_cmd(
+    investigation_id: str | None, publisher_name: str | None, yes: bool, no_edit: bool
+) -> None:
     """Publish an investigation as a shareable web page.
 
-    Defaults to the active investigation. The website runs its queries with
-    your API key and returns a link. Anyone with the link can see the queries,
-    annotations and results, so check there's nothing private in them.
-    Publishing again creates a new link; earlier ones don't change.
+    Defaults to the active investigation. First a draft of the page opens:
+    title, description, an overview, and a note under each query's charts,
+    all in one Markdown document. Fill it in and press Ctrl+S; the text is
+    saved to the investigation and published with it.
+
+    The website runs the queries with your API key and returns a link. Anyone
+    with the link can see the queries, text and results. Publishing again
+    creates a new link; earlier ones don't change.
 
     \b
     jst publish
+    jst publish plain-bagel --no-edit
     jst publish plain-bagel --yes
     """
     from .investigation import InvestigationError, get_investigation
@@ -793,6 +801,24 @@ def publish_cmd(investigation_id: str | None, publisher_name: str | None, yes: b
     except ApiKeyNotSetError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(2)
+
+    if not inv.queries:
+        click.echo(f"Error: {inv.id!r} has no queries to publish. Add one with `jst query add`.", err=True)
+        sys.exit(2)
+
+    # The draft needs a terminal to edit in; scripts and agents skip it.
+    if not (yes or no_edit) and sys.stdin.isatty() and sys.stdout.isatty():
+        from .investigation import persist_investigation
+        from .investigation.publish_screens import edit_publish_draft
+
+        edited = edit_publish_draft(inv)
+        if edited is None:
+            click.echo("Not published.")
+            return
+        inv, changes = edited
+        if changes:
+            persist_investigation(inv)
+            click.echo(f"Saved to {inv.id}: {changes.summary()}.")
 
     queries = sorted(inv.queries.values(), key=lambda q: q.id)
     click.echo(f"Publishing {inv.title!r} ({inv.id}) with {len(queries)} quer{'y' if len(queries) == 1 else 'ies'}:")
