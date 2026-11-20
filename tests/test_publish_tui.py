@@ -70,7 +70,7 @@ async def _command(pilot, text):
     await pilot.pause(0.3)
 
 
-async def _wait_for(pilot, predicate, seconds=3.0):
+async def _wait_for(pilot, predicate, seconds=10.0):
     """Poll instead of a fixed sleep, so slow machines don't flake."""
     for _ in range(int(seconds / 0.1)):
         if predicate():

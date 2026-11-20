@@ -501,3 +501,15 @@ def test_update_refused_when_page_cant_be_checked(requests_mock, tmp_path, monke
     assert result.exit_code == 1
     assert "Not updating" in result.output
     assert not patch.called
+
+
+@pytest.mark.parametrize("raw", [
+    "2026-11-20T11:40:13.2+00:00",        # Postgres trims trailing zeros
+    "2026-11-20T11:40:13.24049+00:00",
+    "2026-11-20T11:40:13.240496+00:00",
+    "2026-11-20T11:40:13Z",
+])
+def test_timestamps_parse_on_every_python(raw):
+    from jstdata.publish_sync import _when
+
+    assert _when(raw) is not None
