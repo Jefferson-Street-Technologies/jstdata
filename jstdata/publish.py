@@ -24,6 +24,7 @@ from .investigation import (
     save_investigation,
     validate_investigation_id,
 )
+from . import client as _client
 from .investigation.model import ROOT_ACTION_ID
 
 if TYPE_CHECKING:
@@ -73,6 +74,10 @@ def configured_site_url(client: "JSTDataClient") -> str:
 
 class PublishError(Exception):
     """A publish or clone failed; the message is meant for the user."""
+
+
+class QueriesChangedError(PublishError):
+    """An in-place update was refused because the queries changed."""
 
 
 def _unreachable(site_url: str, exc: requests.RequestException) -> PublishError:
@@ -136,6 +141,108 @@ def publish_investigation(
             f"{site_url} answered, but not with a publication link."
         ) from exc
     return result
+
+
+def update_publication(
+    inv: Investigation,
+    publication_id: str,
+    *,
+    api_key: str,
+    site_url: str = DEFAULT_SITE_URL,
+    publisher_name: Optional[str] = None,
+) -> dict[str, Any]:
+    """Replace an existing publication's text with ``inv``'s (JEF-166).
+
+    Updates the title, description, overview and query names and notes on
+    the same link. The results aren't rerun, so the queries must be
+    unchanged; if they changed the server refuses with
+    :class:`QueriesChangedError`, and the author should publish a new link.
+    Only the publication's own publisher can update it.
+    """
+    site_url = check_site_url(site_url)
+    body: dict[str, Any] = {"investigation": inv.to_dict()}
+    if publisher_name:
+        body["publisherName"] = publisher_name
+    try:
+        response = requests.patch(
+            f"{site_url}/api/publications/{publication_id}",
+            json=body,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=PUBLISH_TIMEOUT_S,
+        )
+    except requests.RequestException as exc:
+        raise _unreachable(site_url, exc) from exc
+    if response.status_code == 409:
+        raise QueriesChangedError(_error_message(response))
+    if response.status_code == 404:
+        raise PublishError(
+            f"Publication {publication_id!r} wasn't found, or wasn't published "
+            "with your account."
+        )
+    if response.status_code != 200:
+        raise PublishError(_error_message(response))
+    try:
+        result = response.json()
+        if not isinstance(result.get("url"), str):
+            raise ValueError("no url")
+    except (ValueError, AttributeError) as exc:
+        raise PublishError(
+            f"{site_url} answered, but not with a publication link."
+        ) from exc
+    return result
+
+
+# --- Which links each local investigation was published to ----------------
+
+_LOG_FILE = "publications.json"
+
+
+def _log_path(app_dir: Optional[Path]) -> Path:
+    # Looked up at call time, so tests that patch client.APP_DIR are isolated.
+    return (app_dir if app_dir is not None else _client.APP_DIR) / _LOG_FILE
+
+
+def _read_log(app_dir: Optional[Path]) -> dict[str, list[dict[str, Any]]]:
+    try:
+        data = json.loads(_log_path(app_dir).read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def record_publication(
+    investigation_id: str,
+    result: dict[str, Any],
+    *,
+    app_dir: Optional[Path] = None,
+) -> None:
+    """Remember that ``investigation_id`` lives at this link, newest first."""
+    log = _read_log(app_dir)
+    entries = [
+        e
+        for e in log.get(investigation_id, [])
+        if isinstance(e, dict) and e.get("id") != result.get("id")
+    ]
+    entries.insert(0, {"id": result["id"], "url": result["url"]})
+    log[investigation_id] = entries[:20]
+    path = _log_path(app_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(log, indent=2))
+
+
+def last_publication(
+    investigation_id: str, *, app_dir: Optional[Path] = None
+) -> Optional[dict[str, Any]]:
+    """The link this investigation was most recently published or updated at."""
+    for entry in _read_log(app_dir).get(investigation_id, []):
+        if (
+            isinstance(entry, dict)
+            and isinstance(entry.get("id"), str)
+            and _PUBLICATION_ID.match(entry["id"])
+            and isinstance(entry.get("url"), str)
+        ):
+            return entry
+    return None
 
 
 def parse_publication_ref(

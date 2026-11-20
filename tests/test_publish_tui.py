@@ -297,3 +297,56 @@ def test_bad_draft_reopens_with_the_text_and_error(tmp_path, calls):
             assert calls == []
 
     asyncio.run(run())
+
+
+@pytest.fixture
+def updates(monkeypatch):
+    """Records in-place updates."""
+    recorded = []
+
+    def fake_update(inv, publication_id, *, api_key, site_url, publisher_name=None):
+        recorded.append(publication_id)
+        return {"id": publication_id, "url": f"https://site.test/p/{publication_id}", "updatedAt": "t"}
+
+    monkeypatch.setattr("jstdata.publish.update_publication", fake_update)
+    return recorded
+
+
+def test_republish_offers_update_and_updates_in_place(tmp_path, calls, updates):
+    from jstdata.publish import record_publication
+
+    async def run():
+        app = _host(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            record_publication(app.investigation.id, {"id": "PrevLink12", "url": "https://site.test/p/PrevLink12"}, app_dir=tmp_path)
+            await _to_confirm(pilot, app)
+            assert app.screen._previous == "https://site.test/p/PrevLink12"
+            await pilot.press("y")  # not an option once there's a previous link
+            await pilot.pause(0.2)
+            assert isinstance(app.screen, PublishConfirmModal)
+            await pilot.press("u")
+            await _wait_for(pilot, lambda: isinstance(app.screen, PublishedModal))
+            assert app.screen.updated and app.screen.url.endswith("PrevLink12")
+            assert updates == ["PrevLink12"] and calls == []
+
+    asyncio.run(run())
+
+
+def test_republish_can_still_make_a_new_link(tmp_path, calls, updates):
+    from jstdata.publish import last_publication, record_publication
+
+    async def run():
+        app = _host(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            record_publication(app.investigation.id, {"id": "PrevLink12", "url": "u"}, app_dir=tmp_path)
+            await _to_confirm(pilot, app)
+            await pilot.press("p")
+            await _wait_for(pilot, lambda: isinstance(app.screen, PublishedModal))
+            assert not app.screen.updated
+            assert len(calls) == 1 and updates == []
+            # The new link is now the one an update would target.
+            assert last_publication(app.investigation.id, app_dir=tmp_path)["id"] == "AbCdEf1234"
+
+    asyncio.run(run())

@@ -763,8 +763,14 @@ def _site_url() -> str:
 @click.option("--name", "publisher_name", help="Name shown as the publisher (default: from your account email)")
 @click.option("--yes", "-y", is_flag=True, help="Publish as-is: no draft, no confirmation (for scripts)")
 @click.option("--no-edit", is_flag=True, help="Skip the draft and publish the text already saved")
+@click.option("--update", "mode", flag_value="update", help="Update the text on this investigation's last link")
+@click.option("--new", "mode", flag_value="new", help="Publish to a new link even if it was published before")
 def publish_cmd(
-    investigation_id: str | None, publisher_name: str | None, yes: bool, no_edit: bool
+    investigation_id: str | None,
+    publisher_name: str | None,
+    yes: bool,
+    no_edit: bool,
+    mode: str | None,
 ) -> None:
     """Publish an investigation as a shareable web page.
 
@@ -774,17 +780,27 @@ def publish_cmd(
     saved to the investigation and published with it.
 
     The website runs the queries with your API key and returns a link. Anyone
-    with the link can see the queries, text and results. Publishing again
-    creates a new link; earlier ones don't change.
+    with the link can see the queries, text and results.
+
+    If the investigation was published before, you can update that page's
+    text in place (same link) or publish a new link. Updating keeps the
+    results; if you changed the queries, publish a new link instead.
 
     \b
     jst publish
-    jst publish plain-bagel --no-edit
-    jst publish plain-bagel --yes
+    jst publish plain-bagel --update
+    jst publish plain-bagel --new --yes
     """
     from .investigation import InvestigationError, get_investigation
     from .investigation.active import try_load_active
-    from .publish import PublishError, publish_investigation
+    from .publish import (
+        PublishError,
+        QueriesChangedError,
+        last_publication,
+        publish_investigation,
+        record_publication,
+        update_publication,
+    )
 
     try:
         if investigation_id is None:
@@ -806,8 +822,15 @@ def publish_cmd(
         click.echo(f"Error: {inv.id!r} has no queries to publish. Add one with `jst query add`.", err=True)
         sys.exit(2)
 
+    previous = last_publication(inv.id)
+    if mode == "update" and previous is None:
+        click.echo(f"Error: {inv.id!r} hasn't been published from this computer yet. Publish it first.", err=True)
+        sys.exit(2)
+
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+
     # The draft needs a terminal to edit in; scripts and agents skip it.
-    if not (yes or no_edit) and sys.stdin.isatty() and sys.stdout.isatty():
+    if not (yes or no_edit) and interactive:
         from .investigation import persist_investigation
         from .investigation.publish_screens import edit_publish_draft
 
@@ -820,7 +843,44 @@ def publish_cmd(
             persist_investigation(inv)
             click.echo(f"Saved to {inv.id}: {changes.summary()}.")
 
+    # Update the existing link, or publish a new one?
+    if mode is None:
+        mode = "new"
+        if previous is not None and not yes:
+            click.echo(f"{inv.id!r} was published at {previous['url']}")
+            choice = click.prompt(
+                "Update that page's text (u), or publish a new link (n)?",
+                type=click.Choice(["u", "n"]),
+                default="u",
+            )
+            mode = "update" if choice == "u" else "new"
+
     queries = sorted(inv.queries.values(), key=lambda q: q.id)
+    site = _site_url()
+
+    if mode == "update":
+        assert previous is not None
+        if not yes and not click.confirm(f"Update the text at {previous['url']}?", default=True):
+            click.echo("Not updated.")
+            return
+        try:
+            result = update_publication(
+                inv, previous["id"], api_key=api_key, site_url=site, publisher_name=publisher_name
+            )
+        except QueriesChangedError as e:
+            click.secho(f"Not updated: {e}", fg="yellow", err=True)
+            if yes or not interactive or not click.confirm("Publish a new link instead?", default=True):
+                sys.exit(1)
+            mode = "new"
+        except PublishError as e:
+            click.secho(f"Error: {e}", fg="red", err=True)
+            sys.exit(1)
+        else:
+            record_publication(inv.id, result)
+            click.secho("Updated.", fg="green")
+            click.echo(result["url"])
+            return
+
     click.echo(f"Publishing {inv.title!r} ({inv.id}) with {len(queries)} quer{'y' if len(queries) == 1 else 'ies'}:")
     for q in queries:
         click.echo(f"  {q.id}. {q.name or 'Query ' + str(q.id)}")
@@ -829,13 +889,13 @@ def publish_cmd(
         click.echo("Not published.")
         return
 
-    site = _site_url()
     click.echo("Running the queries…")
     try:
         result = publish_investigation(inv, api_key=api_key, site_url=site, publisher_name=publisher_name)
     except PublishError as e:
         click.secho(f"Error: {e}", fg="red", err=True)
         sys.exit(1)
+    record_publication(inv.id, result)
     click.secho("Published.", fg="green")
     click.echo(result["url"])
 
