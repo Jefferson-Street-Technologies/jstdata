@@ -44,7 +44,11 @@ from .model import (
 from .browsers import DestinationScreen, WorkspaceBrowser
 from .home import HomeScreen
 from .nav import DEST_IDS, parse_goto
-from .publish_screens import PublishConfirmModal, PublishedModal
+from .publish_screens import (
+    PublishConfirmModal,
+    PublishDraftScreen,
+    PublishedModal,
+)
 from .search_drawer import SearchDrawer
 from .store import investigation_path, load_investigation, save_investigation
 from .workspace_drawer import WorkspaceDrawer
@@ -1161,7 +1165,7 @@ class InvestigationHost(App):
             self.set_tips(not self._tips_on if state is None else bool(state))
 
     def _cmd_publish(self) -> None:
-        """Confirm, then publish the investigation in a background thread."""
+        """Draft the page's text, confirm, then publish in a background thread."""
         inv = self.investigation
         if not inv:
             self.notify("No investigation loaded", severity="error")
@@ -1183,9 +1187,60 @@ class InvestigationHost(App):
                 severity="error",
             )
             return
+        self._open_publish_draft(api_key)
+
+    def _open_publish_draft(
+        self,
+        api_key: str,
+        text: Optional[str] = None,
+        error: Optional[str] = None,
+    ) -> None:
+        """The whole page as one Markdown draft; a retry keeps the author's text."""
+        from ..publish_draft import build_draft
+
+        inv = self.investigation
+        if not inv:
+            return
+        self.push_screen(
+            PublishDraftScreen(
+                text if text is not None else build_draft(inv),
+                title=inv.title,
+                error=error,
+            ),
+            lambda result: self._on_publish_draft(api_key, result),
+        )
+
+    def _on_publish_draft(self, api_key: str, text: Optional[str]) -> None:
+        from ..publish_draft import DraftError, apply_draft
+
+        if text is None or not self.investigation:
+            return
+        try:
+            updated, changes = apply_draft(self.investigation, text)
+        except DraftError as exc:
+            self._open_publish_draft(api_key, text=text, error=str(exc))
+            return
+        if changes:
+            # Save the text to the investigation first, so it's kept even if
+            # the user cancels the publish or it fails.
+            self._suppress_poll = True
+            try:
+                persist_investigation(updated, app_dir=self.app_dir)
+                self.investigation = updated
+                try:
+                    self._inv_mtime = self._inv_file().stat().st_mtime
+                except OSError:
+                    pass
+            finally:
+                self._suppress_poll = False
+            self._refresh_annotation_surfaces()
+            for screen in self.screen_stack:
+                if isinstance(screen, HomeScreen):
+                    screen.refresh_live()
+            self.notify(f"Saved: {changes.summary()}")
         # Publish exactly what the dialog shows, even if the file reloads
         # (or another investigation opens) while it's open.
-        snapshot = copy.deepcopy(inv)
+        snapshot = copy.deepcopy(self.investigation)
         self.push_screen(
             PublishConfirmModal(snapshot),
             lambda ok: self._start_publish(snapshot, api_key) if ok else None,

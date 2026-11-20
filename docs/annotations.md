@@ -47,6 +47,9 @@ path on the site.
 
 Writing them:
 
+- When publishing: `jst publish` and `:publish` open a draft of the whole
+  page (title, description, overview, and a section per query) as one Markdown
+  document. Whatever you write there is saved into these fields.
 - In the TUI: `:annotate` (investigation) or `:annotate <query-id>`, or `a`
   on the Queries list.
 - From the CLI: `jst query add --annotations "…"`.

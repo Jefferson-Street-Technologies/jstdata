@@ -8,8 +8,8 @@ from rich.markup import escape
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
-from textual.screen import ModalScreen
-from textual.widgets import Label, Static
+from textual.screen import ModalScreen, Screen
+from textual.widgets import Label, Static, TextArea
 
 from .model import Investigation
 
@@ -143,3 +143,100 @@ class PublishedModal(ModalScreen[None]):
 
     def action_close(self) -> None:
         self.dismiss(None)
+
+
+class PublishDraftScreen(Screen[str | None]):
+    """The whole publication as one Markdown draft to fill in before publishing.
+
+    Dismisses with the edited text (ctrl+s) or None (esc). ``error`` is shown
+    above the editor when a previous attempt couldn't be applied, so the
+    author fixes it without losing their edits.
+    """
+
+    DEFAULT_CSS = """
+    PublishDraftScreen {
+        background: #0a0a0a;
+        padding: 1 2;
+    }
+    #draft-kicker { color: #4ade80; text-style: bold; height: 1; }
+    #draft-help { color: #888; height: auto; margin-bottom: 1; }
+    #draft-error { color: #f87171; height: auto; margin-bottom: 1; }
+    #draft-body {
+        height: 1fr;
+        background: #111111;
+        border: solid #333;
+    }
+    #draft-hint { color: #888; height: 1; margin-top: 1; }
+    """
+
+    BINDINGS = [
+        Binding("ctrl+s", "save", "Continue", show=False, priority=True),
+        Binding("escape", "cancel", "Cancel", show=False),
+    ]
+
+    def __init__(self, draft: str, *, title: str, error: str | None = None) -> None:
+        super().__init__()
+        self._draft = draft
+        self._title = title
+        self._error = error
+
+    def compose(self) -> ComposeResult:
+        yield Label(f"PUBLISH · {escape(self._title)}", id="draft-kicker")
+        yield Static(
+            "Write the page's text here: a title, a one-line description, an "
+            "overview, and a note for each query's charts. Markdown works. "
+            "Lines in <!-- --> are guidance and are left out.",
+            id="draft-help",
+            markup=False,
+        )
+        if self._error is not None:
+            yield Static(self._error, id="draft-error", markup=False)
+        yield TextArea(self._draft, id="draft-body", soft_wrap=True)
+        yield Label(
+            "[bold]ctrl+s[/bold] save and continue  ·  [bold]esc[/bold] cancel",
+            id="draft-hint",
+            markup=True,
+        )
+
+    def on_mount(self) -> None:
+        self.query_one("#draft-body", TextArea).focus()
+
+    def action_save(self) -> None:
+        self.dismiss(self.query_one("#draft-body", TextArea).text)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+def edit_publish_draft(inv: Investigation):
+    """Run the draft editor on its own (for `jst publish`).
+
+    Returns ``(updated_investigation, changes)``, or None if the author
+    cancelled. A draft that can't be applied reopens with the error and the
+    author's text, so nothing typed is lost.
+    """
+    from textual.app import App
+
+    from ..publish_draft import DraftError, apply_draft, build_draft
+
+    class _DraftApp(App[str | None]):
+        def __init__(self, text: str, error: str | None) -> None:
+            super().__init__()
+            self._text = text
+            self._error = error
+
+        def on_mount(self) -> None:
+            self.push_screen(
+                PublishDraftScreen(self._text, title=inv.title, error=self._error),
+                self.exit,
+            )
+
+    text, error = build_draft(inv), None
+    while True:
+        result = _DraftApp(text, error).run()
+        if result is None:
+            return None
+        try:
+            return apply_draft(inv, result)
+        except DraftError as exc:
+            text, error = result, str(exc)

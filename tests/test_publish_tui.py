@@ -7,6 +7,7 @@ import pytest
 from jstdata.investigation import add_query, open_investigation
 from jstdata.investigation.publish_screens import (
     PublishConfirmModal,
+    PublishDraftScreen,
     PublishedModal,
     describe_publication,
 )
@@ -77,12 +78,21 @@ async def _wait_for(pilot, predicate, seconds=3.0):
         await pilot.pause(0.1)
 
 
+async def _to_confirm(pilot, app):
+    """`:publish`, accept the draft as-is, and land on the confirmation."""
+    await _command(pilot, "publish")
+    await _wait_for(pilot, lambda: isinstance(app.screen, PublishDraftScreen))
+    assert isinstance(app.screen, PublishDraftScreen)
+    await pilot.press("ctrl+s")
+    await _wait_for(pilot, lambda: isinstance(app.screen, PublishConfirmModal))
+
+
 def test_publish_confirms_then_shows_link(tmp_path, calls):
     async def run():
         app = _host(tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
-            await _command(pilot, "publish")
+            await _to_confirm(pilot, app)
             assert isinstance(app.screen, PublishConfirmModal)
 
             await pilot.press("y")
@@ -106,7 +116,7 @@ def test_publish_cancel_sends_nothing(tmp_path, calls):
         app = _host(tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
-            await _command(pilot, "publish")
+            await _to_confirm(pilot, app)
             await pilot.press("n")
             await pilot.pause(0.3)
             assert not isinstance(app.screen, PublishConfirmModal)
@@ -134,7 +144,7 @@ def test_publish_error_is_shown_and_allows_retry(tmp_path, calls):
         app = _host(tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
-            await _command(pilot, "publish")
+            await _to_confirm(pilot, app)
             await pilot.press("y")
             await pilot.pause(0.1)
             await _wait_for(pilot, lambda: not app._publishing)
@@ -144,7 +154,7 @@ def test_publish_error_is_shown_and_allows_retry(tmp_path, calls):
 
             # A failed publish doesn't block trying again.
             calls.error = None
-            await _command(pilot, "publish")
+            await _to_confirm(pilot, app)
             assert isinstance(app.screen, PublishConfirmModal)
 
     asyncio.run(run())
@@ -216,7 +226,7 @@ def test_publish_aborts_if_investigation_changes_while_confirming(tmp_path, call
         app = _host(tmp_path)
         async with app.run_test() as pilot:
             await pilot.pause()
-            await _command(pilot, "publish")
+            await _to_confirm(pilot, app)
             assert isinstance(app.screen, PublishConfirmModal)
             # Another investigation becomes current (e.g. `jst open` elsewhere).
             app.investigation = create_investigation(app_dir=tmp_path, activate=False)
@@ -224,5 +234,66 @@ def test_publish_aborts_if_investigation_changes_while_confirming(tmp_path, call
             await pilot.pause(0.5)
             assert calls == []
             assert not isinstance(app.screen, PublishedModal)
+
+    asyncio.run(run())
+
+
+
+def test_draft_text_is_saved_then_published(tmp_path, calls):
+    async def run():
+        app = _host(tmp_path)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await _command(pilot, "publish")
+            await _wait_for(pilot, lambda: isinstance(app.screen, PublishDraftScreen))
+            area = app.screen.query_one("#draft-body")
+            area.text = area.text.replace(
+                "What question does this answer, and what did you find?",
+                "## Finding\nDebt rose.",
+            ).replace("What should a reader notice in this chart?", "Look at 2020.")
+            await pilot.press("ctrl+s")
+            await _wait_for(pilot, lambda: isinstance(app.screen, PublishConfirmModal))
+            assert isinstance(app.screen, PublishConfirmModal)
+            # Saved to the investigation file before publishing.
+            saved = open_investigation(app.investigation.id, app_dir=tmp_path)
+            assert saved.annotations == "## Finding\nDebt rose."
+            assert saved.queries[1].annotations == "Look at 2020."
+            await pilot.press("y")
+            await _wait_for(pilot, lambda: isinstance(app.screen, PublishedModal))
+            assert len(calls) == 1
+
+    asyncio.run(run())
+
+
+def test_cancelling_the_draft_publishes_nothing(tmp_path, calls):
+    async def run():
+        app = _host(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await _command(pilot, "publish")
+            await _wait_for(pilot, lambda: isinstance(app.screen, PublishDraftScreen))
+            await pilot.press("escape")
+            await pilot.pause(0.3)
+            assert not isinstance(app.screen, (PublishDraftScreen, PublishConfirmModal))
+            assert calls == []
+
+    asyncio.run(run())
+
+
+def test_bad_draft_reopens_with_the_text_and_error(tmp_path, calls):
+    async def run():
+        app = _host(tmp_path)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await _command(pilot, "publish")
+            await _wait_for(pilot, lambda: isinstance(app.screen, PublishDraftScreen))
+            area = app.screen.query_one("#draft-body")
+            area.text = area.text + "\n## Query 9: Typo\nmy note\n"
+            await pilot.press("ctrl+s")
+            await _wait_for(pilot, lambda: app.screen.query("#draft-error"))
+            assert isinstance(app.screen, PublishDraftScreen)
+            assert "Query 9" in str(app.screen.query_one("#draft-error").renderable)
+            assert "my note" in app.screen.query_one("#draft-body").text
+            assert calls == []
 
     asyncio.run(run())
