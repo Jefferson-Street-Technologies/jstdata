@@ -422,6 +422,123 @@ def test_investigation_and_query_annotations(tmp_path: Path):
     assert "notes:" not in dumped
 
 
+
+# --- Series and time-slice notes (JEF-167) ----------------------------------
+
+_NOTES_ON_YAML = (
+    "id: noted\n"
+    "title: Noted\n"
+    "queries:\n"
+    "- id: 2\n"
+    "  metric: [long-term-debt]\n"
+    "  entity: [cik:1652044, cik:789019]\n"
+    "  tail: 12\n"
+    "  notes_on:\n"
+    "  - series: edgar:0000789019:long-term-debt:usd:annual\n"
+    "    text: Microsoft reports on a June fiscal year end.\n"
+    "  - from: 2020-03-01\n"
+    "    to: 2020-12-31\n"
+    "    text: '  Pandemic-era bond issuance.  '\n"
+    "  - series: edgar:0001652044:long-term-debt:usd:quarterly\n"
+    "    from: '2024-01-01'\n"
+    "    text: Includes the 2024 bond offering.\n"
+    "actions:\n"
+    "- id: 0\n"
+    "  type: home\n"
+    "  args: {}\n"
+)
+
+
+def test_query_notes_on_round_trip(tmp_path: Path):
+    from jstdata.investigation import QueryNote
+
+    root = tmp_path / "investigations"
+    root.mkdir()
+    path = root / "noted.yaml"
+    path.write_text(_NOTES_ON_YAML, encoding="utf-8")
+
+    # Unquoted dates parse to ``date`` in YAML; both forms load as strings.
+    notes = load_investigation("noted", root=root).get_query(2).notes_on
+    assert notes == [
+        QueryNote(
+            series="edgar:0000789019:long-term-debt:usd:annual",
+            text="Microsoft reports on a June fiscal year end.",
+        ),
+        QueryNote(from_="2020-03-01", to="2020-12-31", text="Pandemic-era bond issuance."),
+        QueryNote(
+            series="edgar:0001652044:long-term-debt:usd:quarterly",
+            from_="2024-01-01",
+            text="Includes the 2024 bond offering.",
+        ),
+    ]
+
+    # Re-saving keeps them, with absent keys omitted and dates as strings.
+    save_investigation(load_investigation("noted", root=root), root=root)
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert raw["queries"][0]["notes_on"] == [
+        {
+            "series": "edgar:0000789019:long-term-debt:usd:annual",
+            "text": "Microsoft reports on a June fiscal year end.",
+        },
+        {"from": "2020-03-01", "to": "2020-12-31", "text": "Pandemic-era bond issuance."},
+        {
+            "series": "edgar:0001652044:long-term-debt:usd:quarterly",
+            "from": "2024-01-01",
+            "text": "Includes the 2024 bond offering.",
+        },
+    ]
+    assert load_investigation("noted", root=root).get_query(2).notes_on == notes
+
+
+@pytest.mark.parametrize("raw", [None, []])
+def test_query_without_notes_on_omits_the_key(raw):
+    query = Query.from_dict({"id": 1, "metric": ["gdp"], "notes_on": raw})
+    assert query.notes_on == []
+    assert "notes_on" not in query.to_dict()
+
+
+@pytest.mark.parametrize(
+    "note,message",
+    [
+        ({"series": "s1"}, "non-empty 'text'"),
+        ({"series": "s1", "text": "   "}, "non-empty 'text'"),
+        ({"series": "s1", "text": 3}, "text must be a string"),
+        ({"text": "No selector."}, "needs a 'series'"),
+        ({"series": None, "from": None, "text": "Nulls only."}, "needs a 'series'"),
+        ({"from": "2021-01-01", "to": "2020-01-01", "text": "Backwards."}, "is after"),
+        ({"from": "March 2020", "text": "Not ISO."}, "'from' must be a date"),
+        ({"to": "2020-02-30", "text": "No such day."}, "'to' must be a date"),
+        ({"series": ["s1"], "text": "List."}, "series must be a string"),
+        ("just text", "must be a mapping"),
+    ],
+)
+def test_query_notes_on_validation(note, message):
+    with pytest.raises(InvestigationError, match=message):
+        Query.from_dict({"id": 1, "metric": ["gdp"], "notes_on": [note]})
+
+
+def test_query_notes_on_must_be_a_list():
+    with pytest.raises(InvestigationError, match="notes_on must be a list"):
+        Query.from_dict({"id": 1, "metric": ["gdp"], "notes_on": {"text": "x"}})
+
+
+def test_query_note_open_ended_and_single_day():
+    query = Query.from_dict(
+        {
+            "id": 1,
+            "metric": ["gdp"],
+            "notes_on": [
+                {"to": "2019-12-31", "text": "Before."},
+                {"from": "2020-03-01", "to": "2020-03-01", "text": "One day."},
+            ],
+        }
+    )
+    assert [n.to_dict() for n in query.notes_on] == [
+        {"to": "2019-12-31", "text": "Before."},
+        {"from": "2020-03-01", "to": "2020-03-01", "text": "One day."},
+    ]
+
+
 def test_remove_requires_force_for_active_and_children(tmp_path: Path):
     ensure_bootstrap(app_dir=tmp_path)
     inv = create_investigation("force-rm", app_dir=tmp_path)

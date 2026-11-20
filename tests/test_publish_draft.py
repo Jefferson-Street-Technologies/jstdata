@@ -3,7 +3,7 @@
 import pytest
 
 from jstdata.investigation import Investigation
-from jstdata.investigation.model import Query
+from jstdata.investigation.model import Query, QueryNote
 from jstdata.publish_draft import (
     PLACEHOLDER_NOTE,
     PLACEHOLDER_OVERVIEW,
@@ -59,6 +59,14 @@ def test_filled_in_draft_updates_every_field(inv):
     # The original is untouched until the caller saves.
     assert inv.title == "G7 government debt"
 
+
+
+def test_draft_keeps_series_and_time_slice_notes(inv):
+    inv.queries[1].notes_on = [QueryNote(series="s1", text="Restated."), QueryNote(from_="2020-01-01", text="Since 2020.")]
+    draft = build_draft(inv).replace(PLACEHOLDER_NOTE, "Japan and Italy lead.", 1)
+    result, _ = apply_draft(inv, draft)
+    assert result.queries[1].notes_on == inv.queries[1].notes_on
+    assert result.to_dict()["queries"][0]["notes_on"] == inv.to_dict()["queries"][0]["notes_on"]
 
 def test_comments_are_ignored(inv):
     draft = build_draft(inv).replace(PLACEHOLDER_OVERVIEW, "Overview <!-- not this --> text", 1)

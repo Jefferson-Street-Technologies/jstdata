@@ -58,13 +58,13 @@ Writing them:
 Whitespace around an annotation is trimmed and an empty one is removed. A
 missing annotation never stops a publish.
 
-## Proposed next step: series and time-slice notes
+## Series and time-slice notes
 
-The PRD's longer-term model also annotates **one series** ("this filing was
-restated") or **a period** ("2020: pandemic distortion"). Series and dates
-aren't objects in the investigation (queries select them through metrics and
-entities), so these notes point at them with a **selector** instead of
-changing how queries are defined:
+Besides the query-level annotation, a query can annotate **one series** ("this
+filing was restated") or **a period** ("2020: pandemic distortion") (JEF-167).
+Series and dates aren't objects in the investigation (queries select them
+through metrics and entities), so these notes point at them with a
+**selector** instead of changing how queries are defined:
 
 ```yaml
 queries:
@@ -74,7 +74,7 @@ queries:
   metric: [long-term-debt]
   entity: [cik:1652044, cik:789019]
   tail: 12
-  notes_on:                       # proposed; not read yet
+  notes_on:
   - series: edgar:0000789019:long-term-debt:usd:annual
     text: Microsoft reports on a June fiscal year end.
   - from: 2020-03-01
@@ -86,18 +86,28 @@ queries:
 ```
 
 - A note has `text` plus at least one of `series` (a series id from the
-  query's results) and `from`/`to` (ISO dates, both inclusive; either may be
-  left open).
+  query's results) and `from`/`to` (`YYYY-MM-DD` dates, both inclusive;
+  either may be left open). Dates can be written quoted or unquoted;
+  `jst` saves them as quoted strings.
 - `series` only: shown next to that series in the chart legend and table.
 - `from`/`to` only: shaded on the query's time charts.
 - Both: marks that series over that period.
 - A selector that matches nothing (e.g. a series that left the results after
-  a refresh) is shown in a "notes" list under the query rather than dropped,
-  so the author's comment is never lost silently.
+  a refresh) is shown in a list under the query rather than dropped, so the
+  author's comment is never lost silently.
 
-This needs no change to `Query` execution or to the publication data
-contract beyond carrying `notes_on` through (the website currently keeps only
-known query fields, so it would drop the key). Older jstdata versions ignore
-the key when reading, but would lose it if they re-save the file, so the
-format should ship together with a jstdata release that preserves it. It
-isn't built yet: it should follow feedback from the first publications.
+Writing them: for now, edit `notes_on` in the investigation's YAML under
+`~/.jstdata/investigations/`. The publish draft doesn't show them, but
+publishing from it keeps them. They're kept when `jst` re-saves the file,
+sent with `jst publish` (including `--update`), and restored by `jst clone`.
+Absent keys are left out, and a query with no notes has no `notes_on` key.
+
+Unlike an empty annotation, a malformed note is an error rather than being
+dropped: the investigation won't load until it's fixed, and the message names
+the query and note. A note is malformed if its `text` is missing or blank, it
+has no `series`, `from` or `to`, a date isn't a real `YYYY-MM-DD` date, or
+`from` is after `to`. This matches how the rest of the file is checked, and
+means a typo never quietly deletes a note on the next save.
+
+Versions of `jst` before this feature ignore `notes_on` when reading, but
+drop it if they re-save the file, so upgrade before adding notes.
