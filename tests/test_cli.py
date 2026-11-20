@@ -148,6 +148,20 @@ def test_query_exact_lookup_uses_canonical_id_and_quotes_path(runner, mock_url):
         assert query_req.qs["series"] == ["a/b"]
 
 
+@pytest.mark.parametrize("value, path", [(".", "/metric/"), ("/", "/metric/%2F")])
+def test_query_list_shaped_lookup_falls_back_to_search(runner, mock_url, value, path):
+    """Values the server normalizes to the list endpoint are not exact ids."""
+    with requests_mock.Mocker() as m:
+        m.get(f"{mock_url}{path}", json={"limit": 100, "offset": 0, "records": []})
+        m.get(f"{mock_url}/search/metrics", json={"records": []})
+        m.get(f"{mock_url}/query", json={"records": []})
+
+        result = runner.invoke(cli, ["api", "query", "--metric", value])
+        assert result.exit_code == 0, result.output
+        assert any("/search/metrics" in r.url for r in m.request_history)
+        assert m.request_history[-1].qs["metric"] == [value]
+
+
 def test_query_no_fuzzy_passes_values_through(runner, mock_url):
     with requests_mock.Mocker() as m:
         m.get(f"{mock_url}/query", json={"records": []})

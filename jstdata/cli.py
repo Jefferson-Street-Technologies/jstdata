@@ -25,6 +25,10 @@ def resolve_id(value: str, search_func, get_func=None) -> str:
         except requests.HTTPError as e:
             if e.response is None or e.response.status_code != 404:
                 raise
+        except KeyError:
+            # Values like "", "." or "/" normalize to the list endpoint, which
+            # returns no "id": not a resource.
+            pass
     try:
         results = search_func(value, limit=1)
         if results:
