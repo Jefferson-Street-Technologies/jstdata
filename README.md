@@ -123,7 +123,9 @@ jst clone https://www.jeffersonst.io/p/AbCdEf1234   # copy one into your environ
 ```
 
 In the TUI, `:publish` does the same and shows the link, with `c` to copy it
-and `o` to open it.
+and `o` to open it. Quitting while it's publishing asks you to press `q`
+again; the TUI then closes right away and prints the link in the terminal
+when it arrives.
 
 Publishing an investigation again asks whether to **update** its existing
 link or make a **new** one. Updating replaces the page's text (title,
