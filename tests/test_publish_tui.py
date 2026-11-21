@@ -359,3 +359,180 @@ def test_republish_can_still_make_a_new_link(tmp_path, calls, updates):
             assert last_publication(app.investigation.id, app_dir=tmp_path)["id"] == "AbCdEf1234"
 
     asyncio.run(run())
+
+
+# Quitting mid-publish (JEF-170) --------------------------------------------
+
+
+@pytest.fixture
+def slow_publish(monkeypatch):
+    """A publish that blocks until `release` is set, like a slow server."""
+    import threading
+
+    release = threading.Event()
+    started = threading.Event()
+
+    def fake_publish(inv, *, api_key, site_url, publisher_name=None):
+        started.set()
+        release.wait(10)
+        return {"id": "AbCdEf1234", "url": URL, "recordCount": 4}
+
+    monkeypatch.setattr("jstdata.publish.publish_investigation", fake_publish)
+    monkeypatch.delenv("JSTDATA_SITE_URL", raising=False)
+    return started, release
+
+
+class _Exits(list):
+    """Records app.exit() calls instead of quitting, so the test can look.
+
+    Restore before the test ends: run_test() stops the app with exit().
+    """
+
+    def __init__(self, app):
+        super().__init__()
+        self._app = app
+        app.exit = lambda *args, **kwargs: self.append(args)
+
+    def restore(self):
+        del self._app.exit  # back to App.exit
+
+
+def test_quit_while_publishing_asks_first_then_does_not_wait(tmp_path, slow_publish):
+    import time
+
+    started, release = slow_publish
+
+    async def run():
+        app = _host(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await _to_confirm(pilot, app)
+            await pilot.press("y")
+            await _wait_for(pilot, started.is_set)
+            exits = _Exits(app)
+
+            await pilot.press("q")
+            await pilot.pause()
+            assert exits == []  # first q only warns
+            assert app._publishing is True
+
+            await pilot.press("q")
+            await pilot.pause()
+            assert len(exits) == 1
+            exits.restore()
+        return app
+
+    began = time.monotonic()
+    app = asyncio.run(run())
+    # The TUI closed while the request was still running: no 120 s wait.
+    assert time.monotonic() - began < 8
+    assert app.publish_thread.is_alive()
+    assert app.publish_outcome is None
+
+    release.set()
+    app.publish_thread.join(5)
+    assert app.publish_outcome.url == URL
+
+
+def test_quit_warning_expires(tmp_path, slow_publish):
+    started, release = slow_publish
+
+    async def run():
+        app = _host(tmp_path)
+        app._QUIT_AGAIN_TIMEOUT = 0.2
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await _to_confirm(pilot, app)
+            await pilot.press("y")
+            await _wait_for(pilot, started.is_set)
+            exits = _Exits(app)
+
+            await pilot.press("q")
+            await pilot.pause(0.4)
+            await pilot.press("q")  # too late: warns again
+            await pilot.pause()
+            assert exits == []
+            exits.restore()
+            release.set()
+
+    asyncio.run(run())
+
+
+def test_quit_when_not_publishing_is_immediate(tmp_path, calls):
+    async def run():
+        app = _host(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            exits = _Exits(app)
+            await pilot.press("q")
+            await pilot.pause()
+            assert len(exits) == 1
+            exits.restore()
+
+    asyncio.run(run())
+
+
+def test_link_is_printed_after_the_tui_closes(capsys):
+    import threading
+
+    from jstdata.investigation.host import PublishOutcome, finish_publish_after_exit
+
+    class Host:
+        publish_outcome = None
+
+    host = Host()
+
+    def finish():
+        import time
+
+        time.sleep(0.3)
+        host.publish_outcome = PublishOutcome(URL, None, False)
+
+    host.publish_thread = threading.Thread(target=finish, daemon=True)
+    host.publish_thread.start()
+    finish_publish_after_exit(host)
+    out = capsys.readouterr().out
+    assert "Still publishing" in out
+    assert f"Published: {URL}" in out
+
+
+def test_error_after_the_tui_closes_is_printed(capsys):
+    from jstdata.investigation.host import PublishOutcome, finish_publish_after_exit
+
+    class Host:
+        publish_thread = None
+        publish_outcome = PublishOutcome(None, "Network error", False)
+
+    finish_publish_after_exit(Host())
+    assert capsys.readouterr().out.strip() == "Publish failed: Network error"
+
+
+def test_ctrl_c_stops_waiting(capsys, monkeypatch):
+    from jstdata.investigation.host import finish_publish_after_exit
+
+    class Thread:
+        def is_alive(self):
+            return True
+
+        def join(self, timeout=None):
+            raise KeyboardInterrupt
+
+    class Host:
+        publish_thread = Thread()
+        publish_outcome = None
+
+    finish_publish_after_exit(Host())
+    out = capsys.readouterr().out
+    assert "Stopped waiting" in out
+    assert "Published" not in out
+
+
+def test_nothing_printed_when_the_tui_showed_the_link(capsys):
+    from jstdata.investigation.host import finish_publish_after_exit
+
+    class Host:
+        publish_thread = None
+        publish_outcome = None
+
+    finish_publish_after_exit(Host())
+    assert capsys.readouterr().out == ""

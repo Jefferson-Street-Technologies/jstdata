@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from rich.markup import escape
 
+import asyncio
+import contextvars
 import copy
+import threading
+import time
 from pathlib import Path
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from textual import events, on
 from textual.app import App, ComposeResult
@@ -301,6 +305,14 @@ class AnnotationModal(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+class PublishOutcome(NamedTuple):
+    """How a TUI publish ended: a link, or an error to show."""
+
+    url: Optional[str]
+    error: Optional[str]
+    updated: bool
+
+
 class InvestigationHost(App):
     """TUI host bound to one investigation file + ``.active.yaml``."""
 
@@ -333,6 +345,8 @@ class InvestigationHost(App):
 
     # Seconds to wait for the second ``d`` (vim-style).
     _DD_TIMEOUT = 0.45
+    # Seconds a second ``q`` has to quit while publishing (JEF-170).
+    _QUIT_AGAIN_TIMEOUT = 5.0
 
     def __init__(
         self,
@@ -364,6 +378,13 @@ class InvestigationHost(App):
         self._pending_command: ParsedCommand | None = None
         self._pending_goto: str | None = None
         self._publishing = False
+        # The publish request runs on its own daemon thread, so quitting
+        # mid-publish doesn't wait for it (JEF-170). If the TUI closes first,
+        # run_investigation_host waits for the thread and prints the outcome.
+        self.publish_thread: threading.Thread | None = None
+        self.publish_outcome: PublishOutcome | None = None
+        self._quitting = False
+        self._quit_armed_at: float | None = None
         self._nav_dest: str | None = None
         self._nav_return: str | None = None
         self._dest_index: dict[str, int] = {}
@@ -1317,13 +1338,21 @@ class InvestigationHost(App):
             else f"Publishing: running {n} quer{'y' if n == 1 else 'ies'}…",
             timeout=10,
         )
-        self.run_worker(
-            lambda: self._publish_in_thread(
-                snapshot, api_key, site_url, mode, previous_id
+        self.publish_outcome = None
+        loop = asyncio.get_running_loop()
+        # Textual's context (the active app), for the callback from the thread.
+        context = contextvars.copy_context()
+        # Not run_worker(thread=True): Textual waits for those threads when
+        # the app exits, so `q` hung until the request finished (JEF-170).
+        self.publish_thread = threading.Thread(
+            target=self._publish_in_thread,
+            args=(
+                snapshot, api_key, site_url, mode, previous_id, loop, context
             ),
-            thread=True,
-            name="publish",
+            name="jst-publish",
+            daemon=True,
         )
+        self.publish_thread.start()
 
     def _publish_in_thread(
         self,
@@ -1332,6 +1361,8 @@ class InvestigationHost(App):
         site_url: str,
         mode: str = "new",
         previous_id: Optional[str] = None,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
+        context: Optional[contextvars.Context] = None,
     ) -> None:
         from ..publish import (
             PublishError,
@@ -1361,13 +1392,43 @@ class InvestigationHost(App):
             error = str(exc)
         except Exception as exc:  # unexpected; keep the TUI alive
             error = f"Publish failed: {exc}"
+        # Kept until the TUI shows it; if the TUI has closed by now,
+        # run_investigation_host prints it instead.
+        self.publish_outcome = PublishOutcome(url, error, mode == "update")
+        if self._quitting or loop is None:
+            return
         try:
-            self.call_from_thread(self._on_publish_done, url, error, mode == "update")
+            # Doesn't wait for the TUI (call_from_thread would, and could
+            # block forever while the app is shutting down).
+            loop.call_soon_threadsafe(
+                self._show_publish_outcome, context=context
+            )
         except RuntimeError:
-            # The TUI was closed mid-publish. The publication may still have
-            # been created; say where, since the dialog can't show it.
-            if url is not None:
-                print(f"Published: {url}")
+            pass  # the event loop has closed
+
+    def _show_publish_outcome(self) -> None:
+        outcome = self.publish_outcome
+        if outcome is None or self._quitting:
+            return
+        self.publish_outcome = None
+        self._on_publish_done(outcome.url, outcome.error, outcome.updated)
+
+    async def action_quit(self) -> None:
+        """Quit; while publishing, only on a second `q` (JEF-170)."""
+        if self._publishing:
+            now = time.monotonic()
+            armed = self._quit_armed_at
+            if armed is None or now - armed > self._QUIT_AGAIN_TIMEOUT:
+                self._quit_armed_at = now
+                self.notify(
+                    "Publishing… press q again to quit anyway. "
+                    "The link will be printed in the terminal.",
+                    severity="warning",
+                    timeout=self._QUIT_AGAIN_TIMEOUT,
+                )
+                return
+        self._quitting = True
+        self.exit()
 
     def _on_publish_done(
         self, url: Optional[str], error: Optional[str], updated: bool = False
@@ -1890,4 +1951,40 @@ def run_investigation_host(
 ) -> None:
     """Launch the investigation TUI (after create/load has set active)."""
     ensure_bootstrap(app_dir=app_dir)
-    InvestigationHost(client, app_dir=app_dir).run()
+    host = InvestigationHost(client, app_dir=app_dir)
+    host.run()
+    finish_publish_after_exit(host)
+
+
+def finish_publish_after_exit(host: InvestigationHost) -> None:
+    """If the TUI closed mid-publish, wait here and print the link (JEF-170).
+
+    The terminal is back by now; Ctrl+C stops waiting.
+    """
+    thread = host.publish_thread
+    if thread is not None and thread.is_alive():
+        print(
+            "Still publishing… the link will be printed here. "
+            "Press Ctrl+C to stop waiting.",
+            flush=True,
+        )
+        try:
+            while thread.is_alive():
+                thread.join(0.2)
+        except KeyboardInterrupt:
+            print(
+                "\nStopped waiting. The page may still be created: check "
+                "Publications on your dashboard before publishing again."
+            )
+            return
+    outcome = host.publish_outcome
+    if outcome is None:
+        return
+    if outcome.error is not None:
+        error = outcome.error
+        if not error.startswith("Publish failed"):
+            error = f"Publish failed: {error}"
+        print(error)
+    else:
+        verb = "Updated" if outcome.updated else "Published"
+        print(f"{verb}: {outcome.url}")
