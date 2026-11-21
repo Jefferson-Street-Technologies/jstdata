@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import Enum
@@ -23,10 +24,13 @@ def _parse_datetime(value: Any) -> datetime:
     if isinstance(value, datetime):
         return value
     if isinstance(value, str):
-        # Before 3.11, fromisoformat rejects a trailing "Z" (the API's UTC suffix).
+        # Before 3.11, fromisoformat rejects a trailing "Z" (the API's UTC
+        # suffix) and fractions that aren't 3 or 6 digits, which Postgres
+        # produces by trimming trailing zeros (".54373").
         text = value.replace(" ", "T")
         if text.endswith("Z"):
             text = text[:-1] + "+00:00"
+        text = re.sub(r"\.(\d+)", lambda m: "." + (m.group(1) + "000000")[:6], text, count=1)
         try:
             return datetime.fromisoformat(text)
         except ValueError:
@@ -232,18 +236,7 @@ class Series:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Series":
-        # Handle datetime conversion
-        last_updated = data.get("last_updated")
-        if isinstance(last_updated, str):
-            try:
-                # API format: 2024-01-01 00:00:00 or ISO
-                last_updated = datetime.fromisoformat(last_updated.replace(" ", "T"))
-            except ValueError:
-                # Fallback for other potential formats
-                last_updated = datetime.strptime(last_updated, "%Y-%m-%d %H:%M:%S")
-        
-        if last_updated is None:
-            last_updated = datetime.min
+        last_updated = _parse_datetime(data.get("last_updated"))
 
         entities = [Entity.from_dict(e) for e in data.get("entities", [])]
 

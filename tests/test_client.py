@@ -532,3 +532,29 @@ def test_list_events(client, mock_url):
         qs = m.last_request.qs
         assert qs["item"] == ["2.02"]
         assert "include_amendments" not in qs
+
+
+@pytest.mark.parametrize(
+    "stamp, expected",
+    [
+        ("2026-09-15T00:00:00Z", datetime(2026, 9, 15, tzinfo=timezone.utc)),
+        ("2026-11-20T22:12:01.54373Z", datetime(2026, 11, 20, 22, 12, 1, 543730, tzinfo=timezone.utc)),
+        ("2026-11-20 22:12:01.2+00:00", datetime(2026, 11, 20, 22, 12, 1, 200000, tzinfo=timezone.utc)),
+        ("2024-01-01 00:00:00", datetime(2024, 1, 1)),
+        (None, datetime.min),
+    ],
+)
+def test_api_timestamps_parse_on_every_python(stamp, expected):
+    """Python 3.10 rejects "Z" and 5-digit fractions; the API sends both."""
+    record = {
+        "id": "s1", "label": "S", "frequency": "Annual", "source": "x",
+        "units": "u", "seasonal_adjustment": "", "metric_id": "m",
+        "last_updated": stamp, "entities": [],
+    }
+    assert Series.from_dict(record).last_updated == expected
+    if stamp:
+        obs = Observation.from_dict(
+            {"series_id": "s1", "observation_timestamp": stamp,
+             "release_timestamp": stamp, "value": 1.0}
+        )
+        assert obs.release_timestamp == expected
