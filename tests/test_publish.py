@@ -11,7 +11,7 @@ from jstdata.investigation import (
     load_investigation,
     save_investigation,
 )
-from jstdata.investigation.model import Query
+from jstdata.investigation.model import Query, QueryNote
 from jstdata.publish import (
     PublishError,
     clone_publication,
@@ -46,7 +46,14 @@ def published_definition(inv: Investigation) -> dict:
         for key in ("name", "annotations", "frequency", "taxonomy", "head", "tail",
                     "as_of", "sort_by", "order_by", "units", "source", "seasonal_adjustment"):
             q.setdefault(key, None)
+        q.setdefault("notes_on", [])
     return d
+
+
+NOTES_ON = [
+    QueryNote(series="edgar:0001652044:long-term-debt:usd:quarterly", text="Includes the 2024 bond offering."),
+    QueryNote(from_="2020-03-01", to="2020-12-31", text="Pandemic-era bond issuance."),
+]
 
 
 def test_publish_sends_definition_with_bearer_key(requests_mock, inv):
@@ -67,6 +74,32 @@ def test_publish_sends_definition_with_bearer_key(requests_mock, inv):
     assert body["investigation"]["id"] == "plain-bagel"
     assert body["investigation"]["queries"][0]["annotations"] == "Sorted by value."
 
+
+
+def test_publish_sends_series_and_time_slice_notes(requests_mock, inv):
+    inv.queries[1].notes_on = list(NOTES_ON)
+    requests_mock.post(
+        f"{SITE}/api/publications",
+        status_code=201,
+        json={"id": PUB_ID, "url": f"{SITE}/p/{PUB_ID}", "recordCount": 1},
+    )
+    publish_investigation(inv, api_key="k", site_url=SITE)
+
+    query = requests_mock.last_request.json()["investigation"]["queries"][0]
+    assert query["notes_on"] == [
+        {"series": "edgar:0001652044:long-term-debt:usd:quarterly", "text": "Includes the 2024 bond offering."},
+        {"from": "2020-03-01", "to": "2020-12-31", "text": "Pandemic-era bond issuance."},
+    ]
+
+
+def test_publish_omits_notes_on_when_there_are_none(requests_mock, inv):
+    requests_mock.post(
+        f"{SITE}/api/publications",
+        status_code=201,
+        json={"id": PUB_ID, "url": f"{SITE}/p/{PUB_ID}", "recordCount": 1},
+    )
+    publish_investigation(inv, api_key="k", site_url=SITE)
+    assert "notes_on" not in requests_mock.last_request.json()["investigation"]["queries"][0]
 
 def test_publish_surfaces_server_error(requests_mock, inv):
     requests_mock.post(
@@ -117,6 +150,19 @@ def test_clone_saves_independent_copy(requests_mock, tmp_path, inv):
     assert (q.name, q.annotations, q.tail, q.sort_by) == ("Latest debt", "Sorted by value.", 1, "value")
     assert q.entity == ["cik:1652044"]
 
+
+
+def test_clone_keeps_series_and_time_slice_notes(requests_mock, tmp_path, inv):
+    inv.queries[1].notes_on = list(NOTES_ON)
+    definition = published_definition(inv)
+    # The website may send absent selectors as nulls.
+    definition["queries"][0]["notes_on"][0].update({"from": None, "to": None})
+    requests_mock.get(f"{SITE}/api/publications/{PUB_ID}/definition", json={"investigation": definition})
+    clone_publication(PUB_ID, site_url=SITE, root=tmp_path)
+
+    assert load_investigation("plain-bagel", root=tmp_path).queries[1].notes_on == NOTES_ON
+    saved = (tmp_path / "plain-bagel.yaml").read_text()
+    assert "notes_on:" in saved and "from: '2020-03-01'" in saved
 
 def test_clone_picks_a_free_id_when_taken(requests_mock, tmp_path, inv):
     save_investigation(inv, root=tmp_path)  # the user's own copy

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import csv
+import re
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Mapping, Optional, Union
 
@@ -278,6 +279,88 @@ def _load_annotations(data: Mapping[str, Any], *, label: str) -> Optional[str]:
     return _normalize_text(raw)
 
 
+_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _load_note_date(value: Any, *, label: str) -> Optional[str]:
+    """``YYYY-MM-DD`` from a string or a YAML-parsed ``date``."""
+    if value is None:
+        return None
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, str) and _ISO_DATE.match(value.strip()):
+        try:
+            return date.fromisoformat(value.strip()).isoformat()
+        except ValueError:
+            pass
+    raise InvestigationError(f"{label} must be a date like 2020-03-01.")
+
+
+@dataclass
+class QueryNote:
+    """A note on one series and/or a period of a query's results (JEF-167).
+
+    Needs ``text`` and at least one selector: ``series`` (a series id) or
+    ``from_`` / ``to`` (inclusive ``YYYY-MM-DD`` dates, either may be open).
+    Serialized as ``series`` / ``from`` / ``to`` / ``text``; absent keys are
+    omitted.
+    """
+
+    text: str
+    series: Optional[str] = None
+    from_: Optional[str] = None
+    to: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {}
+        if self.series is not None:
+            data["series"] = self.series
+        if self.from_ is not None:
+            data["from"] = self.from_
+        if self.to is not None:
+            data["to"] = self.to
+        data["text"] = self.text
+        return data
+
+    @classmethod
+    def from_dict(cls, data: Any, *, label: str) -> QueryNote:
+        if not isinstance(data, Mapping):
+            raise InvestigationError(f"{label} must be a mapping.")
+        text = data.get("text")
+        if text is not None and not isinstance(text, str):
+            raise InvestigationError(f"{label} text must be a string.")
+        text = _normalize_text(text)
+        if text is None:
+            raise InvestigationError(f"{label} needs a non-empty 'text'.")
+        series = data.get("series")
+        if series is not None and not isinstance(series, str):
+            raise InvestigationError(f"{label} series must be a string.")
+        series = _normalize_text(series)
+        start = _load_note_date(data.get("from"), label=f"{label} 'from'")
+        end = _load_note_date(data.get("to"), label=f"{label} 'to'")
+        if series is None and start is None and end is None:
+            raise InvestigationError(
+                f"{label} needs a 'series', a 'from'/'to' date, or both."
+            )
+        if start is not None and end is not None and start > end:
+            raise InvestigationError(
+                f"{label} 'from' {start} is after 'to' {end}."
+            )
+        return cls(text=text, series=series, from_=start, to=end)
+
+
+def _load_notes_on(data: Mapping[str, Any], *, qid: int) -> list[QueryNote]:
+    raw = data.get("notes_on")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise InvestigationError(f"Query {qid} notes_on must be a list.")
+    return [
+        QueryNote.from_dict(item, label=f"Query {qid} note {n}")
+        for n, item in enumerate(raw, start=1)
+    ]
+
+
 @dataclass
 class Query:
     """A saved ``/query`` spec. Metric × entity is a cartesian product.
@@ -285,7 +368,8 @@ class Query:
     Optional ``units`` / ``source`` / ``seasonal_adjustment`` are persisted for
     later filtering; ``execute`` currently forwards the fields ``GET /query``
     already accepts. ``annotations`` is freeform researcher commentary
-    (YAML key ``annotations``; legacy ``notes`` still loads).
+    (YAML key ``annotations``; legacy ``notes`` still loads). ``notes_on``
+    annotates single series and/or periods of the results (``QueryNote``).
     """
 
     id: int
@@ -304,6 +388,7 @@ class Query:
     as_of: Optional[str] = None
     sort_by: Optional[str] = None
     order_by: Optional[str] = None
+    notes_on: list[QueryNote] = field(default_factory=list)
 
     def is_empty(self) -> bool:
         return not (self.metric or self.entity or self.series)
@@ -435,6 +520,7 @@ class Query:
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
+        data["notes_on"] = [note.to_dict() for note in self.notes_on]
         return {k: v for k, v in data.items() if v is not None and v != []}
 
     @classmethod
@@ -471,6 +557,7 @@ class Query:
             as_of=data.get("as_of"),
             sort_by=data.get("sort_by"),
             order_by=data.get("order_by"),
+            notes_on=_load_notes_on(data, qid=qid),
         )
 
 
