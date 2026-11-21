@@ -71,11 +71,16 @@ async def _command(pilot, text):
 
 
 async def _wait_for(pilot, predicate, seconds=10.0):
-    """Poll instead of a fixed sleep, so slow machines don't flake."""
+    """Poll instead of a fixed sleep, so slow machines don't flake.
+
+    Fails on timeout so a stall names the step that stalled (JEF-175).
+    """
     for _ in range(int(seconds / 0.1)):
         if predicate():
             return
         await pilot.pause(0.1)
+    if not predicate():
+        pytest.fail(f"timed out after {seconds}s waiting for {predicate.__code__.co_names}")
 
 
 async def _to_confirm(pilot, app):
@@ -254,8 +259,12 @@ def test_draft_text_is_saved_then_published(tmp_path, calls):
             await pilot.press("ctrl+s")
             await _wait_for(pilot, lambda: isinstance(app.screen, PublishConfirmModal))
             assert isinstance(app.screen, PublishConfirmModal)
-            # Saved to the investigation file before publishing.
-            saved = open_investigation(app.investigation.id, app_dir=tmp_path)
+            # Saved to the investigation file before publishing. Read it
+            # without activating: rewriting .active.yaml makes the host
+            # reload and drop the open dialog (JEF-175).
+            saved = open_investigation(
+                app.investigation.id, app_dir=tmp_path, activate=False
+            )
             assert saved.annotations == "## Finding\nDebt rose."
             assert saved.queries[1].annotations == "Look at 2020."
             await pilot.press("y")
