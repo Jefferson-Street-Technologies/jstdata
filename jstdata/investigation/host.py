@@ -27,6 +27,7 @@ from .active import ActiveContext, active_path, load_active, save_active
 from .api import (
     add_action,
     add_query,
+    create_investigation,
     remove_action,
     remove_query,
     persist_investigation,
@@ -38,6 +39,7 @@ from .bootstrap import ensure_bootstrap
 from .command_palette import CommandPalette
 from .commands import CommandError, ParsedCommand, parse_command_line
 from .model import (
+    DEFAULT_WORKSPACE_ID,
     Investigation,
     InvestigationError,
     ResearchContext,
@@ -55,9 +57,13 @@ from .publish_screens import (
 )
 from .search_drawer import SearchDrawer
 from .project_store import (
+    duplicate_investigation,
     find_investigation_project,
+    load_project,
     load_project_investigation,
+    move_investigation,
     project_investigations_dir,
+    remove_investigation_from_project,
     save_project_investigation,
 )
 from .project import Project
@@ -347,6 +353,9 @@ class InvestigationHost(App):
         Binding("right", "child_action", "Into child", show=False),
         Binding("left", "parent_action", "To parent", show=False),
         Binding("t", "tutorials", "Tutorials", key_display="t"),
+        # Investigation tabs within the open project (`{` / `}`).
+        Binding("{", "prev_investigation", "Prev investigation tab", show=False),
+        Binding("}", "next_investigation", "Next investigation tab", show=False),
         # ``dd`` is handled in on_key — Textual commas mean alternate keys, not chords.
     ]
 
@@ -366,6 +375,7 @@ class InvestigationHost(App):
         self.client = client
         self.app_dir = app_dir
         self.project_id: str | None = None
+        self.project: Project | None = None
         self.investigation: Investigation | None = None
         self.active: ActiveContext | None = None
         self.workspace = Workspace()
@@ -373,6 +383,10 @@ class InvestigationHost(App):
         self.labels: dict[str, str] = {}
         self._order: list[int] = []
         self._ws_order: list[int] = []
+        # investigation_id → display title for tab chrome
+        self._inv_titles: dict[str, str] = {}
+        # Per-tab resume: investigation_id → (workspace_id, action_id)
+        self._inv_resume: dict[str, tuple[int, int]] = {}
         self._inv_mtime: float | None = None
         self._active_mtime: float | None = None
         self._own_active_mtime: float | None = None
@@ -512,6 +526,8 @@ class InvestigationHost(App):
                     "not found in any project."
                 )
             self.project_id = project_id
+            self.project = load_project(project_id, app_dir=self.app_dir)
+            self._refresh_inv_titles()
             if self.active.project != project_id:
                 self.active.project = project_id
                 save_active(self.active, app_dir=self.app_dir)
@@ -567,6 +583,8 @@ class InvestigationHost(App):
     def _enter_invalid(self, message: str) -> None:
         self._invalid = True
         self.investigation = None
+        self.project = None
+        self._inv_titles = {}
         self._order = []
         self._ws_order = []
         while len(self.screen_stack) > 1:
@@ -632,12 +650,7 @@ class InvestigationHost(App):
             self.screen.enter_destination(dest)
             return
         if self.active and self.active.action != ROOT_ACTION_ID:
-            ctx = ActiveContext(
-                investigation=self.active.investigation,
-                workspace=self.active.workspace,
-                action=ROOT_ACTION_ID,
-            )
-            self._write_active(ctx)
+            self._write_active(self._make_active(action=ROOT_ACTION_ID))
         self._show_front()
 
     def open_action_from_nav(self, action_id: int) -> None:
@@ -759,7 +772,36 @@ class InvestigationHost(App):
         ):
             self.pop_screen()
 
+    def _make_active(
+        self,
+        *,
+        investigation: str | None = None,
+        workspace: int | None = None,
+        action: int | None = None,
+    ) -> ActiveContext:
+        """Build ActiveContext, always stamping the current project id."""
+        assert self.active is not None
+        return ActiveContext(
+            investigation=(
+                investigation
+                if investigation is not None
+                else self.active.investigation
+            ),
+            workspace=(
+                workspace if workspace is not None else self.active.workspace
+            ),
+            action=action if action is not None else self.active.action,
+            project=self.project_id,
+        )
+
     def _write_active(self, ctx: ActiveContext) -> None:
+        if ctx.project is None and self.project_id is not None:
+            ctx = ActiveContext(
+                investigation=ctx.investigation,
+                workspace=ctx.workspace,
+                action=ctx.action,
+                project=self.project_id,
+            )
         self._suppress_poll = True
         try:
             save_active(ctx, app_dir=self.app_dir)
@@ -771,6 +813,86 @@ class InvestigationHost(App):
                 pass
         finally:
             self._suppress_poll = False
+
+    def _refresh_inv_titles(self) -> None:
+        """Cache investigation titles for tab chrome (best-effort)."""
+        titles: dict[str, str] = {}
+        if self.project is None or self.project_id is None:
+            self._inv_titles = titles
+            return
+        for inv_id in self.project.investigations:
+            try:
+                inv = load_project_investigation(
+                    self.project_id, inv_id, app_dir=self.app_dir
+                )
+                titles[inv_id] = (inv.title or inv_id).strip() or inv_id
+            except (InvestigationError, OSError, KeyError):
+                titles[inv_id] = inv_id
+        self._inv_titles = titles
+
+    def investigation_tab_chips(self) -> list[str]:
+        """Rich markup chips for the investigation tab strip (footer)."""
+        if self.project is None or self.active is None:
+            return []
+        order = self.project.investigations
+        if len(order) < 2:
+            # Single-tab projects: still show the active inv id quietly.
+            label = self._inv_titles.get(
+                self.active.investigation, self.active.investigation
+            )
+            return [escape(label)]
+        chips: list[str] = []
+        for inv_id in order:
+            label = self._inv_titles.get(inv_id, inv_id)
+            safe = escape(label)
+            if inv_id == self.active.investigation:
+                chips.append(f"[bold #4ade80][{safe}][/]")
+            else:
+                chips.append(safe)
+        return chips
+
+    @staticmethod
+    def cycle_investigation_id(
+        order: list[str], current: str, delta: int
+    ) -> str | None:
+        """Return the next investigation id in ``order``, or None if unusable."""
+        if len(order) < 2:
+            return None
+        try:
+            idx = order.index(current)
+        except ValueError:
+            idx = 0
+        return order[(idx + delta) % len(order)]
+
+    def _cycle_investigation(self, delta: int) -> None:
+        if self._invalid or not self.project or not self.active:
+            self.notify("No project loaded", severity="warning")
+            return
+        order = list(self.project.investigations)
+        if len(order) < 2:
+            self.notify("Only one investigation in this project", severity="warning")
+            return
+        target = self.cycle_investigation_id(
+            order, self.active.investigation, delta
+        )
+        if target is None or target == self.active.investigation:
+            return
+        self._inv_resume[self.active.investigation] = (
+            self.active.workspace,
+            self.active.action,
+        )
+        workspace, action = self._inv_resume.get(
+            target, (DEFAULT_WORKSPACE_ID, ROOT_ACTION_ID)
+        )
+        self._switch_investigation(target, action, workspace=workspace)
+        label = self._inv_titles.get(target, target)
+        self.notify(f"Investigation {label}", timeout=2)
+
+    def action_next_investigation(self) -> None:
+        self._cycle_investigation(1)
+
+    def action_prev_investigation(self) -> None:
+        self._cycle_investigation(-1)
 
     def _persist_workspace_if_dirty(self) -> None:
         if self._invalid or not self.investigation or not self.active:
@@ -966,12 +1088,7 @@ class InvestigationHost(App):
     def _activate_action(self, action_id: int) -> None:
         self._leave_destination_for_action()
         assert self.active is not None
-        ctx = ActiveContext(
-            investigation=self.active.investigation,
-            workspace=self.active.workspace,
-            action=action_id,
-        )
-        self._write_active(ctx)
+        self._write_active(self._make_active(action=action_id))
         self._show_current_action(reset=True)
 
     def _navigate_sibling(self, delta: int) -> None:
@@ -1029,12 +1146,7 @@ class InvestigationHost(App):
             self.notify("Last workspace", severity="warning")
             return
         new_ws = self._ws_order[new_idx]
-        ctx = ActiveContext(
-            investigation=self.active.investigation,
-            workspace=new_ws,
-            action=self.active.action,
-        )
-        self._write_active(ctx)
+        self._write_active(self._make_active(workspace=new_ws))
         assert self.investigation is not None
         self._apply_workspace(self.investigation.get_workspace(new_ws))
         self._show_current_action(reset=True)
@@ -1051,6 +1163,8 @@ class InvestigationHost(App):
             "prev_sibling",
             "child_action",
             "parent_action",
+            "next_investigation",
+            "prev_investigation",
             "show_help",
         }
         if action in tree_actions:
@@ -1236,6 +1350,8 @@ class InvestigationHost(App):
             self._cmd_rm(parsed, force=bool(parsed.options.get("force")))
         elif parsed.name == "rename":
             self._cmd_rename(parsed)
+        elif parsed.name == "tab":
+            self._cmd_tab(parsed)
         elif parsed.name == "annotate":
             self._cmd_annotate(parsed)
         elif parsed.name == "publish":
@@ -1527,6 +1643,126 @@ class InvestigationHost(App):
             )
             return
         self._apply_rename(title=title, notes=description)
+
+    def _cmd_tab(self, parsed: ParsedCommand) -> None:
+        """Investigation-tab lifecycle: new / dup / rm / next / prev / left / right."""
+        if self._invalid or not self.project_id or not self.active:
+            self.notify("No project loaded", severity="error")
+            return
+        op = str(parsed.options.get("op") or "next")
+        if op == "next":
+            self._cycle_investigation(1)
+            return
+        if op == "prev":
+            self._cycle_investigation(-1)
+            return
+        if op == "left":
+            self._cmd_tab_move(-1)
+            return
+        if op == "right":
+            self._cmd_tab_move(1)
+            return
+        if op == "new":
+            self._cmd_tab_new(parsed)
+            return
+        if op == "dup":
+            self._cmd_tab_dup(parsed)
+            return
+        if op == "rm":
+            self._cmd_tab_rm(force=bool(parsed.options.get("force")))
+            return
+        self.notify(f"Unknown tab op {op!r}", severity="error")
+
+    def _cmd_tab_move(self, delta: int) -> None:
+        assert self.project_id is not None and self.active is not None
+        try:
+            project = move_investigation(
+                self.project_id,
+                self.active.investigation,
+                delta=delta,
+                app_dir=self.app_dir,
+            )
+        except InvestigationError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        self.project = project
+        self._refresh_inv_titles()
+        for screen in self.screen_stack:
+            refresh = getattr(screen, "refresh_footer", None)
+            if callable(refresh):
+                refresh()
+        self.notify("Tab order updated", timeout=2)
+
+    def _cmd_tab_new(self, parsed: ParsedCommand) -> None:
+        assert self.project_id is not None
+        title = parsed.options.get("title")
+        inv_id = parsed.options.get("investigation_id")
+        self._persist_workspace_if_dirty()
+        try:
+            inv = create_investigation(
+                inv_id,
+                title=title,
+                project_id=self.project_id,
+                activate=True,
+                app_dir=self.app_dir,
+            )
+        except InvestigationError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        self._nav_dest = None
+        self._reload_everything(force_screen=True)
+        self.notify(f"Created tab {inv.title or inv.id}")
+
+    def _cmd_tab_dup(self, parsed: ParsedCommand) -> None:
+        assert self.project_id is not None and self.active is not None
+        title = parsed.options.get("title")
+        inv_id = parsed.options.get("investigation_id")
+        self._persist_workspace_if_dirty()
+        try:
+            inv = duplicate_investigation(
+                self.project_id,
+                self.active.investigation,
+                investigation_id=inv_id,
+                title=title,
+                app_dir=self.app_dir,
+            )
+        except InvestigationError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        self._switch_investigation(inv.id, ROOT_ACTION_ID)
+        self.notify(f"Duplicated → {inv.title or inv.id}")
+
+    def _cmd_tab_rm(self, *, force: bool) -> None:
+        assert self.project_id is not None and self.active is not None
+        if not force:
+            label = self._inv_titles.get(
+                self.active.investigation, self.active.investigation
+            )
+            self.push_screen(
+                ConfirmForceModal(
+                    f"Remove investigation tab {label!r}? "
+                    "This deletes its workspace, queries, and actions. "
+                    "Press y to confirm (--force)."
+                ),
+                lambda ok: self._cmd_tab_rm(force=True) if ok else None,
+            )
+            return
+        inv_id = self.active.investigation
+        self._persist_workspace_if_dirty()
+        try:
+            remove_investigation_from_project(
+                self.project_id,
+                inv_id,
+                app_dir=self.app_dir,
+                activate_fallback=True,
+            )
+        except InvestigationError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        self._inv_resume.pop(inv_id, None)
+        self._nav_dest = None
+        self._reload_everything(force_screen=True)
+        self.notify(f"Removed tab {inv_id}")
 
     def _on_rename_submitted(self, result: tuple[str, str] | None) -> None:
         if not result:
@@ -1846,12 +2082,19 @@ class InvestigationHost(App):
         else:
             self.start_tutorial(load_tutorial(choice))
 
-    def _switch_investigation(self, investigation_id: str, action: int) -> None:
+    def _switch_investigation(
+        self,
+        investigation_id: str,
+        action: int,
+        *,
+        workspace: int = DEFAULT_WORKSPACE_ID,
+    ) -> None:
         self._persist_workspace_if_dirty()
         set_active(
             investigation_id,
             project=self.project_id,
             action=action,
+            workspace=workspace,
             app_dir=self.app_dir,
         )
         self._nav_dest = None

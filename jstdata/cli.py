@@ -824,17 +824,28 @@ def _resume_investigation() -> None:
 )
 @click.option("--title", default=None, help="Display title (defaults to Untitled)")
 @click.option("--notes", default=None, help="Freeform notes (for agents / later you)")
+@click.option(
+    "--project",
+    "project_id",
+    default=None,
+    help="Add a tab to this project instead of creating a new one",
+)
 def new_cmd(
-    investigation_id: str | None, title: str | None, notes: str | None
+    investigation_id: str | None,
+    title: str | None,
+    notes: str | None,
+    project_id: str | None,
 ) -> None:
     """Create an investigation, activate it, and open the TUI.
 
-    Id and title are optional.
+    Id and title are optional. Pass ``--project`` to add a tab to an
+    existing project.
 
     \b
     jst new
     jst new --title "European defense constraints"
     jst new --id housing-slowdown --title Housing
+    jst new --project ftai-aviation --title Peers
     """
     from .investigation import (
         InvestigationError,
@@ -843,11 +854,21 @@ def new_cmd(
     )
 
     try:
-        inv = create_investigation(investigation_id, title=title, notes=notes)
+        inv = create_investigation(
+            investigation_id,
+            title=title,
+            notes=notes,
+            project_id=project_id,
+        )
     except InvestigationError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(2)
-    click.echo(f"Created investigation {inv.id!r} ({inv.title})")
+    if project_id:
+        click.echo(
+            f"Added investigation {inv.id!r} ({inv.title}) to project {project_id!r}"
+        )
+    else:
+        click.echo(f"Created investigation {inv.id!r} ({inv.title})")
     run_investigation_host(client)
 
 

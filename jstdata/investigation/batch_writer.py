@@ -33,6 +33,7 @@ class ProjectBatchWriter:
         self.lock_timeout = lock_timeout
         self._project: Optional[Project] = None
         self._investigations: dict[str, Investigation] = {}
+        self._delete_investigations: set[str] = set()
         self._lock_fd: Optional[int] = None
 
     def stage_project(self, project: Project) -> None:
@@ -42,6 +43,12 @@ class ProjectBatchWriter:
     def stage_investigation(self, inv: Investigation) -> None:
         inv.validate()
         self._investigations[inv.id] = inv
+        self._delete_investigations.discard(inv.id)
+
+    def stage_delete_investigation(self, investigation_id: str) -> None:
+        """Remove ``investigations/<id>.yaml`` on commit."""
+        self._delete_investigations.add(investigation_id)
+        self._investigations.pop(investigation_id, None)
 
     def __enter__(self) -> ProjectBatchWriter:
         self.acquire()
@@ -49,7 +56,11 @@ class ProjectBatchWriter:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         try:
-            if exc_type is None and (self._project or self._investigations):
+            if exc_type is None and (
+                self._project
+                or self._investigations
+                or self._delete_investigations
+            ):
                 self.commit()
         finally:
             self.release()
@@ -105,8 +116,16 @@ class ProjectBatchWriter:
         for inv in self._investigations.values():
             _atomic_yaml(inv_dir / f"{inv.id}.yaml", inv.to_dict())
 
+        for inv_id in self._delete_investigations:
+            path = inv_dir / f"{inv_id}.yaml"
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+
         self._project = None
         self._investigations.clear()
+        self._delete_investigations.clear()
 
 
 def _lock_is_stale(lock_path: Path) -> bool:

@@ -164,6 +164,7 @@ class HomeScreen(BaseScreen):
 
     FOOTER_CHROME: tuple[str, ...] = (
         "[bold #e0e0e0]:[/] [#888]commands[/]",
+        "[bold #e0e0e0]{[/]/[bold #e0e0e0]}[/] [#888]tabs[/]",
         "[bold #e0e0e0]t[/] [#888]tutorials[/]",
         "[bold #e0e0e0]?[/] [#888]help[/]",
         "[bold #e0e0e0]q[/] [#888]quit[/]",
@@ -477,10 +478,19 @@ class HomeScreen(BaseScreen):
         return keys
 
     def footer_status(self) -> list[str]:
+        tab_fn = getattr(self.app, "investigation_tab_chips", None)
+        if callable(tab_fn):
+            chips = tab_fn()
+            if chips:
+                return [" ".join(chips)]
         return []
 
     def refresh_footer(self) -> None:
-        parts = [*self.footer_action_keys(), *self.FOOTER_CHROME]
+        parts = [
+            *self.footer_status(),
+            *self.footer_action_keys(),
+            *self.FOOTER_CHROME,
+        ]
         self.query_one("#help-hint", Label).update("    ".join(parts))
 
     def _investigation(self) -> Investigation:

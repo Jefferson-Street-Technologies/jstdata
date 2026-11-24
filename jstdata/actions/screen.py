@@ -20,6 +20,7 @@ class BaseScreen(Screen):
     FOOTER_CHROME: tuple[str, ...] = (
         "[bold]:[/bold] commands",
         "[bold]g[/bold] home",
+        "[bold]{[/bold]/[bold]}[/bold] tabs",
         "[bold]n[/bold]/[bold]p[/bold] siblings",
         "[bold]N[/bold]/[bold]P[/bold] depth",
         "[bold]dd[/bold] delete",
@@ -61,12 +62,19 @@ class BaseScreen(Screen):
         self.refresh_footer()
 
     def footer_status(self) -> list[str]:
-        """Leading status chips (action id, scope, …)."""
+        """Leading status chips (tabs, action id, scope, …)."""
+        parts: list[str] = []
+        tab_fn = getattr(self.app, "investigation_tab_chips", None)
+        if callable(tab_fn):
+            chips = tab_fn()
+            if chips:
+                parts.append(" ".join(chips))
         n = getattr(self.app, "action_count", 1)
         i = getattr(self.app, "action_index", 0) + 1
         spec = getattr(self.app, "current_action_spec", None)
         action_id = getattr(spec, "id", None) or "action"
-        return [f"{action_id} {i}/{n}"]
+        parts.append(f"{action_id} {i}/{n}")
+        return parts
 
     def footer_action_keys(self) -> list[str]:
         """Screen-local key hints (search, enter, …). Override per action."""

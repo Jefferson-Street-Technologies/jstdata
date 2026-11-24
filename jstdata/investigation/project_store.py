@@ -407,6 +407,153 @@ def add_investigation_to_project(
     return inv
 
 
+def reorder_investigations(
+    project_id: str,
+    order: list[str],
+    *,
+    app_dir: Optional[Path] = None,
+) -> Project:
+    """Replace investigation tab order. ``order`` must be a permutation."""
+    project = load_project(project_id, app_dir=app_dir)
+    if sorted(order) != sorted(project.investigations):
+        raise InvestigationError(
+            f"Reorder for project {project_id!r} must list each investigation "
+            "exactly once."
+        )
+    if order == project.investigations:
+        return project
+    project.investigations = list(order)
+    save_project(project, app_dir=app_dir)
+    return project
+
+
+def move_investigation(
+    project_id: str,
+    investigation_id: str,
+    *,
+    delta: int,
+    app_dir: Optional[Path] = None,
+) -> Project:
+    """Shift one tab left (``delta=-1``) or right (``delta=+1``) in tab order."""
+    project = load_project(project_id, app_dir=app_dir)
+    validate_investigation_id(investigation_id)
+    try:
+        idx = project.investigations.index(investigation_id)
+    except ValueError as exc:
+        raise InvestigationError(
+            f"Investigation {investigation_id!r} is not in project "
+            f"{project_id!r}."
+        ) from exc
+    new_idx = idx + delta
+    if new_idx < 0 or new_idx >= len(project.investigations):
+        return project
+    order = list(project.investigations)
+    order[idx], order[new_idx] = order[new_idx], order[idx]
+    return reorder_investigations(project_id, order, app_dir=app_dir)
+
+
+def duplicate_investigation(
+    project_id: str,
+    source_id: str,
+    *,
+    investigation_id: Optional[str] = None,
+    title: Optional[str] = None,
+    app_dir: Optional[Path] = None,
+) -> Investigation:
+    """Copy an investigation into a new tab (workspace, queries, actions, notes)."""
+    project = load_project(project_id, app_dir=app_dir)
+    validate_investigation_id(source_id)
+    if source_id not in project.investigations:
+        raise InvestigationError(
+            f"Investigation {source_id!r} is not in project {project_id!r}."
+        )
+    source = load_project_investigation(
+        project_id, source_id, app_dir=app_dir
+    )
+    root = project_investigations_dir(project_id, app_dir=app_dir)
+    if investigation_id is None:
+        investigation_id = allocate_investigation_id(root=root)
+    else:
+        validate_investigation_id(investigation_id)
+        if (root / f"{investigation_id}.yaml").is_file():
+            raise InvestigationError(
+                f"Investigation {investigation_id!r} already exists "
+                f"in project {project_id!r}."
+            )
+        if investigation_id in project.investigations:
+            raise InvestigationError(
+                f"Investigation {investigation_id!r} is already listed "
+                f"on project {project_id!r}."
+            )
+
+    payload = source.to_dict()
+    payload["id"] = investigation_id
+    if title is not None:
+        payload["title"] = title.strip() or investigation_id
+    else:
+        base_title = (source.title or source_id).strip() or source_id
+        payload["title"] = f"{base_title} (copy)"
+    clone = Investigation.from_dict(payload)
+    # Insert the copy immediately after the source tab.
+    insert_at = project.investigations.index(source_id) + 1
+    project.investigations.insert(insert_at, clone.id)
+    save_project_investigation(
+        project_id, clone, app_dir=app_dir, project=project
+    )
+    return clone
+
+
+def remove_investigation_from_project(
+    project_id: str,
+    investigation_id: str,
+    *,
+    app_dir: Optional[Path] = None,
+    activate_fallback: bool = True,
+) -> Project:
+    """Delete an investigation tab. Refuses to remove the last tab."""
+    project = load_project(project_id, app_dir=app_dir)
+    validate_investigation_id(investigation_id)
+    if investigation_id not in project.investigations:
+        raise InvestigationError(
+            f"Investigation {investigation_id!r} is not in project "
+            f"{project_id!r}."
+        )
+    if len(project.investigations) <= 1:
+        raise InvestigationError(
+            f"Cannot remove the last investigation from project "
+            f"{project_id!r}."
+        )
+
+    remaining = [i for i in project.investigations if i != investigation_id]
+    project.investigations = remaining
+    project.touch()
+    target_dir = project_dir(project_id, app_dir=app_dir)
+    with ProjectBatchWriter(target_dir) as writer:
+        writer.stage_project(project)
+        writer.stage_delete_investigation(investigation_id)
+
+    if activate_fallback:
+        from .active import ActiveContext, try_load_active, save_active
+        from .model import DEFAULT_WORKSPACE_ID, ROOT_ACTION_ID
+
+        current = try_load_active(app_dir=app_dir)
+        if (
+            current
+            and (current.project is None or current.project == project_id)
+            and current.investigation == investigation_id
+        ):
+            save_active(
+                ActiveContext(
+                    investigation=remaining[0],
+                    workspace=DEFAULT_WORKSPACE_ID,
+                    action=ROOT_ACTION_ID,
+                    project=project_id,
+                ),
+                app_dir=app_dir,
+            )
+    return project
+
+
 def remove_legacy_dir_if_empty(*, app_dir: Optional[Path] = None) -> None:
     """Best-effort cleanup after migration (keeps marker files)."""
     legacy_root = legacy_investigations_dir(app_dir=app_dir)
