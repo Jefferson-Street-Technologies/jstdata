@@ -1025,39 +1025,81 @@ def preview_cmd(investigation_id: str | None, no_open: bool) -> None:
 
 
 @cli.command("ls")
-def ls_cmd() -> None:
-    """List investigations on disk (active marked with *).
+@click.option(
+    "--plain",
+    is_flag=True,
+    help="Print a plain text listing instead of the interactive picker",
+)
+def ls_cmd(plain: bool) -> None:
+    """Browse projects interactively (Enter opens). Use ``--plain`` to print.
 
     \b
     jst ls
+    jst ls --plain
     """
     from .investigation import (
+        InvestigationError,
         ensure_bootstrap,
         get_active,
-        list_investigations,
-        load_investigation,
+        open_investigation,
+        run_investigation_host,
     )
-    from .investigation.store import investigations_dir
+    from .investigation.project_picker import run_project_picker
+    from .investigation.project_store import (
+        list_projects,
+        load_project,
+        load_project_investigation,
+    )
 
     ensure_bootstrap()
     try:
-        active_id = get_active().investigation
+        active = get_active()
+        active_project = active.project
+        active_inv = active.investigation
     except Exception:
-        active_id = None
+        active_project = None
+        active_inv = None
 
-    ids = list_investigations()
-    if not ids:
-        click.echo("No investigations.")
-        return
-    root = investigations_dir()
-    for inv_id in ids:
-        marker = "*" if inv_id == active_id else " "
+    if not plain:
+        selected = run_project_picker(active_project=active_project)
+        if selected is None:
+            return
         try:
-            inv = load_investigation(inv_id, root=root)
-            title = inv.title
+            inv = open_investigation(selected)
+        except InvestigationError as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(2)
+        click.echo(f"Opened investigation {inv.id!r} ({inv.title})")
+        run_investigation_host(client)
+        return
+
+    ids = list_projects()
+    if not ids:
+        click.echo("No projects.")
+        return
+    for pid in ids:
+        try:
+            project = load_project(pid)
+            title = project.title
         except Exception:
             title = "?"
-        click.echo(f"{marker} {inv_id:<28} {title}")
+            project = None
+        marker = "*" if pid == active_project or (
+            active_project is None and active_inv in (project.investigations if project else [])
+        ) else " "
+        click.echo(f"{marker} {pid:<28} {title}")
+        if project is None:
+            continue
+        for inv_id in project.investigations:
+            inv_marker = "*" if inv_id == active_inv and (
+                active_project is None or active_project == pid
+            ) else " "
+            try:
+                inv = load_project_investigation(pid, inv_id)
+                inv_title = inv.title
+            except Exception:
+                inv_title = "?"
+            click.echo(f"  {inv_marker} {inv_id:<26} {inv_title}")
 
 
 @cli.group("query")

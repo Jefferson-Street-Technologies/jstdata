@@ -54,7 +54,14 @@ from .publish_screens import (
     PublishedModal,
 )
 from .search_drawer import SearchDrawer
-from .store import investigation_path, load_investigation, save_investigation
+from .project_store import (
+    find_investigation_project,
+    load_project_investigation,
+    project_investigations_dir,
+    save_project_investigation,
+)
+from .project import Project
+from .store import investigation_path, load_investigation
 from .workspace_drawer import WorkspaceDrawer
 from ..actions.drill import DrillDownModal
 from ..actions.query_view import ObservationDetail
@@ -358,7 +365,7 @@ class InvestigationHost(App):
         super().__init__()
         self.client = client
         self.app_dir = app_dir
-        self.inv_root = None if app_dir is None else app_dir / "investigations"
+        self.project_id: str | None = None
         self.investigation: Investigation | None = None
         self.active: ActiveContext | None = None
         self.workspace = Workspace()
@@ -391,7 +398,7 @@ class InvestigationHost(App):
         # Onboarding: running tutorial coach + where to return on leave.
         self._initial_tutorial = load_tutorial(start_tutorial) if start_tutorial else None
         self.coach: TutorialCoach | None = None
-        self._pre_tutorial: tuple[str, int] | None = None
+        self._pre_tutorial: tuple[str, int, str | None] | None = None
         self._coach_bar: CoachBar | None = None
         self._coach_screen: Screen | None = None
         self._coach_shown: tuple[str, str, str] | None = None
@@ -404,9 +411,18 @@ class InvestigationHost(App):
     def _active_file(self) -> Path:
         return active_path(app_dir=self.app_dir)
 
+    def _inv_root(self) -> Path | None:
+        """Investigations directory for the active project (if resolved)."""
+        if self.project_id is None:
+            return None
+        return project_investigations_dir(self.project_id, app_dir=self.app_dir)
+
     def _inv_file(self) -> Path:
         assert self.active is not None
-        return investigation_path(self.active.investigation, root=self.inv_root)
+        root = self._inv_root()
+        if root is None:
+            raise InvestigationError("No active project to resolve investigation path.")
+        return investigation_path(self.active.investigation, root=root)
 
     @property
     def onboarding_dir(self) -> Path:
@@ -485,8 +501,24 @@ class InvestigationHost(App):
     def _reload_everything(self, *, force_screen: bool = False) -> None:
         try:
             self.active = load_active(app_dir=self.app_dir)
-            self.investigation = load_investigation(
-                self.active.investigation, root=self.inv_root
+            project_id = self.active.project
+            if project_id is None:
+                project_id = find_investigation_project(
+                    self.active.investigation, app_dir=self.app_dir
+                )
+            if project_id is None:
+                raise InvestigationError(
+                    f"Investigation {self.active.investigation!r} "
+                    "not found in any project."
+                )
+            self.project_id = project_id
+            if self.active.project != project_id:
+                self.active.project = project_id
+                save_active(self.active, app_dir=self.app_dir)
+            self.investigation = load_project_investigation(
+                project_id,
+                self.active.investigation,
+                app_dir=self.app_dir,
             )
             self.investigation.validate()
             ws = self.investigation.get_workspace(self.active.workspace)
@@ -1265,7 +1297,9 @@ class InvestigationHost(App):
         """Persist ``updated`` as the current investigation and refresh views."""
         self._suppress_poll = True
         try:
-            persist_investigation(updated, app_dir=self.app_dir)
+            persist_investigation(
+                updated, app_dir=self.app_dir, project_id=self.project_id
+            )
             self.investigation = updated
             try:
                 self._inv_mtime = self._inv_file().stat().st_mtime
@@ -1785,7 +1819,12 @@ class InvestigationHost(App):
 
     def _switch_investigation(self, investigation_id: str, action: int) -> None:
         self._persist_workspace_if_dirty()
-        set_active(investigation_id, action=action, app_dir=self.app_dir)
+        set_active(
+            investigation_id,
+            project=self.project_id,
+            action=action,
+            app_dir=self.app_dir,
+        )
         self._nav_dest = None
         self._reload_everything(force_screen=True)
 
@@ -1795,8 +1834,22 @@ class InvestigationHost(App):
         if self.active is not None and not self.active.investigation.startswith(
             TUTORIAL_PREFIX
         ):
-            self._pre_tutorial = (self.active.investigation, self.active.action)
-        save_investigation(tutorial.build_investigation(), root=self.inv_root)
+            self._pre_tutorial = (
+                self.active.investigation,
+                self.active.action,
+                self.project_id,
+            )
+        inv = tutorial.build_investigation()
+        project = Project.new(
+            inv.id,
+            title=inv.title or inv.id,
+            notes=inv.notes,
+            investigation_ids=[inv.id],
+        )
+        save_project_investigation(
+            inv.id, inv, app_dir=self.app_dir, project=project
+        )
+        self.project_id = inv.id
         self.coach = TutorialCoach(tutorial)
         self._switch_investigation(tutorial.investigation_id, tutorial.start_action)
 
@@ -1806,13 +1859,21 @@ class InvestigationHost(App):
         back, self._pre_tutorial = self._pre_tutorial, None
         self._sync_coach_bar()
         if back is not None:
+            inv_id, action, project_id = back[0], back[1], back[2] if len(back) > 2 else None
             try:
-                load_investigation(back[0], root=self.inv_root)
+                if project_id is None:
+                    project_id = find_investigation_project(
+                        inv_id, app_dir=self.app_dir
+                    )
+                if project_id is None:
+                    raise InvestigationError("missing project")
+                load_project_investigation(project_id, inv_id, app_dir=self.app_dir)
+                self.project_id = project_id
+                self._switch_investigation(inv_id, action)
+                return
             except (InvestigationError, OSError):
                 back = None
-        if back is not None:
-            self._switch_investigation(*back)
-        else:
+        if back is None:
             self.action_go_home()
 
     def coach_snapshot(self) -> CoachSnapshot:

@@ -275,13 +275,26 @@ def parse_publication_ref(
     return f"{parsed.scheme}://{parsed.netloc}", match.group(1)
 
 
+def _id_taken(candidate: str, root: Optional[Path]) -> bool:
+    """True when ``candidate`` is already used as an investigation or project id."""
+    if root is not None:
+        return investigation_exists(candidate, root=root)
+    from .investigation.project_store import find_investigation_project, project_exists
+
+    return (
+        find_investigation_project(candidate) is not None
+        or project_exists(candidate)
+        or investigation_exists(candidate, root=root)
+    )
+
+
 def _available_id(base: str, root: Optional[Path]) -> str:
     """``base`` if free locally, else ``base-clone``, ``base-clone-2``, ..."""
-    if not investigation_exists(base, root=root):
+    if not _id_taken(base, root):
         return base
     candidate = f"{base}-clone"
     n = 2
-    while investigation_exists(candidate, root=root):
+    while _id_taken(candidate, root):
         candidate = f"{base}-clone-{n}"
         n += 1
     return candidate
@@ -340,7 +353,7 @@ def clone_publication(
 
     if new_id is not None:
         validate_investigation_id(new_id)
-        if investigation_exists(new_id, root=root):
+        if _id_taken(new_id, root):
             raise InvestigationError(f"Investigation {new_id!r} already exists.")
         data["id"] = new_id
     else:
@@ -361,5 +374,19 @@ def clone_publication(
         ]
 
     inv = Investigation.from_dict(data)
-    save_investigation(inv, root=root)
+    if root is not None:
+        # Explicit root (tests / legacy callers): flat YAML under that directory.
+        save_investigation(inv, root=root)
+        return inv
+
+    from .investigation.project import Project
+    from .investigation.project_store import save_project_investigation
+
+    project = Project.new(
+        inv.id,
+        title=inv.title or inv.id,
+        notes=inv.notes,
+        investigation_ids=[inv.id],
+    )
+    save_project_investigation(inv.id, inv, project=project)
     return inv

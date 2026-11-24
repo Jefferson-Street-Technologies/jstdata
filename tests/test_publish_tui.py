@@ -301,7 +301,9 @@ def test_bad_draft_reopens_with_the_text_and_error(tmp_path, calls):
             await pilot.press("ctrl+s")
             await _wait_for(pilot, lambda: app.screen.query("#draft-error"))
             assert isinstance(app.screen, PublishDraftScreen)
-            assert "Query 9" in str(app.screen.query_one("#draft-error").renderable)
+            err = app.screen.query_one("#draft-error")
+            err_text = str(getattr(err, "renderable", None) or err.render())
+            assert "Query 9" in err_text
             assert "my note" in app.screen.query_one("#draft-body").text
             assert calls == []
 

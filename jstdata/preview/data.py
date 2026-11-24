@@ -167,6 +167,23 @@ class PreviewModel:
 
 def most_recent_investigation_id(*, root: Optional[Path] = None) -> str:
     """Return the investigation id with the newest YAML mtime."""
+    if root is None:
+        from ..investigation.project_store import (
+            list_all_investigations,
+            project_investigations_dir,
+        )
+
+        pairs = list_all_investigations()
+        if pairs:
+            ranked = sorted(
+                pairs,
+                key=lambda pair: (
+                    project_investigations_dir(pair[0]) / f"{pair[1]}.yaml"
+                ).stat().st_mtime,
+                reverse=True,
+            )
+            return ranked[0][1]
+
     ids = list_investigations(root=root)
     if not ids:
         raise InvestigationError("No investigations found.")
@@ -470,8 +487,23 @@ def build_preview_model(
     """Load investigation, fetch history for each query, return a render model."""
     _emit(progress, "Resolving investigation…")
     inv_id = resolve_investigation_id(investigation_id, root=root)
-    inv = load_investigation(inv_id, root=root)
-    path = investigation_path(inv_id, root=root)
+    if root is None:
+        from ..investigation.project_store import (
+            find_investigation_project,
+            load_project_investigation,
+            project_investigations_dir,
+        )
+
+        pid = find_investigation_project(inv_id)
+        if pid is not None:
+            inv = load_project_investigation(pid, inv_id)
+            path = project_investigations_dir(pid) / f"{inv_id}.yaml"
+        else:
+            inv = load_investigation(inv_id, root=root)
+            path = investigation_path(inv_id, root=root)
+    else:
+        inv = load_investigation(inv_id, root=root)
+        path = investigation_path(inv_id, root=root)
     published = datetime.fromtimestamp(path.stat().st_mtime)
     _emit(progress, f"Loaded {inv.id!r} ({inv.title})")
 

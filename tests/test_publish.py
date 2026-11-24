@@ -481,7 +481,6 @@ def _cli_setup(tmp_path, monkeypatch, inv):
 
 
 def test_cli_update_pulls_web_edits_first(requests_mock, tmp_path, monkeypatch, inv):
-    from jstdata.investigation import load_investigation
     from jstdata.publish import record_publication
     from jstdata.publish_sync import text_of
 
@@ -498,8 +497,13 @@ def test_cli_update_pulls_web_edits_first(requests_mock, tmp_path, monkeypatch, 
     result = CliRunner().invoke(cli_module.cli, ["publish", "plain-bagel", "--update", "--yes"])
     assert result.exit_code == 0, result.output
     assert "Pulled edits made on the page: title" in result.output
-    # Saved locally, and the update sent the web's title rather than the old one.
-    assert load_investigation("plain-bagel", root=tmp_path / "investigations").title == "Fixed on the page"
+    # Saved locally under the projects layout, and the update sent the web's title.
+    from jstdata.investigation.project_store import load_project_investigation
+
+    assert (
+        load_project_investigation("plain-bagel", "plain-bagel", app_dir=tmp_path).title
+        == "Fixed on the page"
+    )
     assert requests_mock.last_request.json()["investigation"]["title"] == "Fixed on the page"
 
 
