@@ -39,9 +39,14 @@ def test_query_group_retired(runner):
     assert "retired" in result.output.lower()
 
 
-def test_actions_search_entities_json(runner, monkeypatch):
+def test_actions_search_entities_json(runner, tmp_path, monkeypatch):
     from jstdata import cli_actions
     from jstdata.models import Entity
+    import jstdata.client as client_mod
+    import jstdata.investigation.active as active_mod
+
+    monkeypatch.setattr(client_mod, "APP_DIR", tmp_path)
+    monkeypatch.setattr(active_mod, "APP_DIR", tmp_path)
 
     fake = MagicMock()
     fake.search_entities.return_value = [
@@ -59,12 +64,18 @@ def test_actions_search_entities_json(runner, monkeypatch):
     assert payload["operation"] == "search.entities"
     assert payload["event_id"].startswith("evt_")
     assert payload["data"][0]["id"] == "united-states"
+    assert payload["artifact_id"]
     fake.search_entities.assert_called_once()
 
 
-def test_actions_relationships_passes_direction(runner, monkeypatch):
+def test_actions_relationships_passes_direction(runner, tmp_path, monkeypatch):
     from jstdata import cli_actions
     from jstdata.models import EntityRelationship
+    import jstdata.client as client_mod
+    import jstdata.investigation.active as active_mod
+
+    monkeypatch.setattr(client_mod, "APP_DIR", tmp_path)
+    monkeypatch.setattr(active_mod, "APP_DIR", tmp_path)
 
     fake = MagicMock()
     fake.get_entity_relations.return_value = [
@@ -89,11 +100,6 @@ def test_actions_relationships_passes_direction(runner, monkeypatch):
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["status"] == "success"
-    kwargs = fake.get_entity_relations.call_args.kwargs
-    assert kwargs.get("direction") == "incoming" or (
-        fake.get_entity_relations.call_args.args
-    )
-    # Accept positional entity_id + kwargs
     call_kwargs = fake.get_entity_relations.call_args.kwargs
     assert call_kwargs.get("direction") == "incoming"
     assert call_kwargs.get("relationship") == "classified_as"
@@ -131,9 +137,15 @@ def test_actions_workspace_show(tmp_path: Path, runner, monkeypatch):
     assert "united-states" in payload["data"]["entity"]
 
 
-def test_actions_log_stub(runner):
+def test_actions_log_lists_events(runner, tmp_path, monkeypatch):
+    import jstdata.client as client_mod
+    import jstdata.investigation.active as active_mod
+
+    monkeypatch.setattr(client_mod, "APP_DIR", tmp_path)
+    monkeypatch.setattr(active_mod, "APP_DIR", tmp_path)
     result = runner.invoke(cli, ["actions", "log"])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["operation"] == "actions.log"
-    assert payload["data"]["events"] == []
+    assert "events" in payload["data"]
+    assert payload["data"]["count"] == 0

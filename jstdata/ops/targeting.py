@@ -72,7 +72,11 @@ def resolve_target(
             project, investigation, app_dir=app_dir
         )
     except InvestigationError as exc:
-        raise OperationError(str(exc)) from exc
+        if require:
+            raise OperationError(str(exc)) from exc
+        # Stale .active.yaml or tests with isolated app_dir — discovery ops
+        # can proceed without a research target.
+        return None
     return ResearchTarget(
         project_id=project,
         investigation_id=investigation,

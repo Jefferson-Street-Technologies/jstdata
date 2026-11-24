@@ -93,7 +93,9 @@ def search_entities(
             results = client.search_entities(**kwargs)
         return _serialize(results)
 
-    return run_operation("search.entities", _run, inputs=inputs, target=target)
+    return run_operation(
+        "search.entities", _run, inputs=inputs, target=target, app_dir=app_dir
+    )
 
 
 def search_metrics(
@@ -133,7 +135,9 @@ def search_metrics(
             )
         )
 
-    return run_operation("search.metrics", _run, inputs=inputs, target=target)
+    return run_operation(
+        "search.metrics", _run, inputs=inputs, target=target, app_dir=app_dir
+    )
 
 
 def list_taxonomies(
@@ -160,6 +164,7 @@ def list_taxonomies(
         _run,
         inputs={"limit": limit, "offset": offset},
         target=target,
+        app_dir=app_dir,
     )
 
 
@@ -196,6 +201,7 @@ def taxonomy_entities(
             "offset": offset,
         },
         target=target,
+        app_dir=app_dir,
     )
 
 
@@ -258,7 +264,11 @@ def entity_relationships(
         return _serialize(results)
 
     return run_operation(
-        "entity.relationships", _run, inputs=inputs, target=target
+        "entity.relationships",
+        _run,
+        inputs=inputs,
+        target=target,
+        app_dir=app_dir,
     )
 
 
@@ -290,6 +300,7 @@ def get_entity_metadata(
         _run,
         inputs={"entity_id": entity_id},
         target=target,
+        app_dir=app_dir,
     )
 
 
@@ -321,6 +332,7 @@ def get_metric_metadata(
         _run,
         inputs={"metric_id": metric_id},
         target=target,
+        app_dir=app_dir,
     )
 
 
@@ -353,7 +365,7 @@ def workspace_show(
             },
         }
 
-    result = run_operation("workspace.show", _run, inputs={})
+    result = run_operation("workspace.show", _run, inputs={}, app_dir=app_dir)
     # Lift target ids onto the result when successful.
     if result.status == "success" and isinstance(result.data, dict):
         target_meta = result.data.pop("_target", None)
@@ -397,7 +409,7 @@ def list_saved_queries(
             },
         }
 
-    result = run_operation("query.list", _run, inputs={})
+    result = run_operation("query.list", _run, inputs={}, app_dir=app_dir)
     if result.status == "success" and isinstance(result.data, dict):
         target_meta = result.data.pop("_target", None)
         if target_meta:
@@ -407,24 +419,82 @@ def list_saved_queries(
     return result
 
 
-def actions_log_stub(
+def actions_log(
     *,
     project: Optional[str] = None,
     investigation: Optional[str] = None,
+    operation: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
     app_dir=None,
 ):
-    """Placeholder until Slice 3 persists the action log."""
+    """List recent action-log events (does not itself write a nested event)."""
+    from .logstore import ActionLogStore
+    from .result import OperationResult
+    from .runner import get_store
+
     target = resolve_target(
         project=project,
         investigation=investigation,
         app_dir=app_dir,
         require=False,
     )
+    store = get_store(app_dir=app_dir)
+    events = store.list_events(
+        project_id=target.project_id if target else project,
+        investigation_id=target.investigation_id if target else investigation,
+        operation=operation,
+        status=status,
+        limit=limit,
+        offset=offset,
+    )
+    return OperationResult(
+        operation="actions.log",
+        status="success",
+        event_id="evt_log_view",
+        data={"events": events, "count": len(events)},
+        inputs={
+            "project": project,
+            "investigation": investigation,
+            "operation": operation,
+            "status": status,
+            "limit": limit,
+            "offset": offset,
+        },
+        project_id=target.project_id if target else None,
+        investigation_id=target.investigation_id if target else None,
+    )
 
-    def _run():
-        return {
-            "events": [],
-            "note": "Action log persistence arrives in the next slice.",
-        }
 
-    return run_operation("actions.log", _run, inputs={}, target=target)
+def inspect_event(event_id: str, *, app_dir=None):
+    """Load a historical event and its artifact (no Data API call)."""
+    from .result import OperationResult
+    from .runner import get_store
+
+    store = get_store(app_dir=app_dir)
+    try:
+        event = store.get_event(event_id)
+    except KeyError as exc:
+        return OperationResult(
+            operation="actions.inspect",
+            status="error",
+            event_id="evt_inspect",
+            error=str(exc),
+            inputs={"event_id": event_id},
+        )
+    return OperationResult(
+        operation="actions.inspect",
+        status="success",
+        event_id="evt_inspect",
+        data=event,
+        inputs={"event_id": event_id},
+        project_id=event.get("project_id"),
+        investigation_id=event.get("investigation_id"),
+        artifact_id=event.get("artifact_id"),
+        cache_hit=False,
+    )
+
+
+# Back-compat alias used by early tests / callers.
+actions_log_stub = actions_log

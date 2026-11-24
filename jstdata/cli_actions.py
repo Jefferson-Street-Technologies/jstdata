@@ -344,15 +344,37 @@ def query_ls_cmd(
 
 
 @actions_group.command("log")
+@click.option("--operation", default=None, help="Filter by operation id")
+@click.option("--status", default=None, help="Filter by status")
+@click.option("--limit", default=50, show_default=True)
+@click.option("--offset", default=0, show_default=True)
 @_target_options
 @_format_option
 def log_cmd(
+    operation: Optional[str],
+    status: Optional[str],
+    limit: int,
+    offset: int,
     project: Optional[str],
     investigation: Optional[str],
     fmt: str,
 ) -> None:
-    """List recent action-log events (stub until SQLite slice)."""
-    result = disc.actions_log_stub(
-        project=project, investigation=investigation
+    """List recent action-log events from the local SQLite store."""
+    result = disc.actions_log(
+        project=project,
+        investigation=investigation,
+        operation=operation,
+        status=status,
+        limit=limit,
+        offset=offset,
     )
+    _echo_result(result, format=fmt)
+
+
+@actions_group.command("inspect")
+@click.argument("event_id")
+@_format_option
+def inspect_cmd(event_id: str, fmt: str) -> None:
+    """Inspect a historical event and its artifact (no Data API call)."""
+    result = disc.inspect_event(event_id)
     _echo_result(result, format=fmt)
