@@ -4,10 +4,31 @@ import requests
 from typing import List, Union, Optional
 
 from .add_options import apply_click_add_options
+from .cli_actions import actions_group
 from .client import ApiKeyNotSetError, JSTDataClient, InvalidApiKeyError
 from .utils import common_params, common_search_params, format_and_print
 
 client = JSTDataClient()
+
+
+class _RetiredGroup(click.Group):
+    """Click group that always exits with a migration pointer."""
+
+    def __init__(self, *args, retirement_message: str, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.retirement_message = retirement_message
+
+    def get_command(self, ctx, cmd_name):
+        click.echo(self.retirement_message, err=True)
+        ctx.exit(2)
+
+    def list_commands(self, ctx):
+        return []
+
+    def invoke(self, ctx):
+        click.echo(self.retirement_message, err=True)
+        ctx.exit(2)
+
 
 def resolve_id(value: str, search_func, get_func=None) -> str:
     """
@@ -47,6 +68,10 @@ def cli(ctx):
     """
     if ctx.invoked_subcommand is None:
         _resume_investigation()
+
+
+cli.add_command(actions_group, "actions")
+
 
 @cli.command()
 @click.option("--api-key", prompt="Enter your Jefferson Street API Key", hide_input=True, help="Your API Key")
@@ -114,12 +139,21 @@ def config_set(key, value):
     client._cfg.write(**{key: value})
     click.echo(f"Set {key} to {value}")
 
-# --- Low-level API (agent / power-user) ---
+# --- Low-level API (legacy; prefer ``jst actions``) ---
 
 @cli.group()
-def api():
-    """Direct API access. Prefer investigations for research; use api for resolution and queries."""
-    pass
+@click.pass_context
+def api(ctx):
+    """Direct API access (deprecated). Prefer ``jst actions`` for research.
+
+    Still available for ad-hoc resolution; agents should migrate to
+    ``jst actions search`` / ``metadata`` / ``relationships``.
+    """
+    if ctx.invoked_subcommand is not None:
+        click.echo(
+            "Note: `jst api` is deprecated; prefer `jst actions …`.",
+            err=True,
+        )
 
 # --- Metric Commands ---
 
@@ -556,9 +590,18 @@ def agent_install_cmd(target: str) -> None:
     click.echo("  Use the jst skill. Then run `jst agent-guide` and follow it.")
 
 
-@cli.group("action")
+@cli.group(
+    "action",
+    cls=_RetiredGroup,
+    retirement_message=(
+        "`jst action` is retired.\n"
+        "Use `jst actions …` for research operations "
+        "(search, metadata, relationships, workspace, query, log).\n"
+        "TUI view-tree edits happen inside `jst open` for now."
+    ),
+)
 def action_group() -> None:
-    """Catalog and mutate investigation actions."""
+    """Retired — see ``jst actions``."""
 
 
 @action_group.command("ls")
@@ -1102,9 +1145,18 @@ def ls_cmd(plain: bool) -> None:
             click.echo(f"  {inv_marker} {inv_id:<26} {inv_title}")
 
 
-@cli.group("query")
+@cli.group(
+    "query",
+    cls=_RetiredGroup,
+    retirement_message=(
+        "`jst query` is retired.\n"
+        "Use `jst actions query ls` (more query ops coming) "
+        "and `jst actions workspace show`.\n"
+        "Saved-query mutations also work inside `jst open` for now."
+    ),
+)
 def query_group() -> None:
-    """Saved investigation queries (cartesian metric × entity)."""
+    """Retired — see ``jst actions query``."""
 
 
 @query_group.command("ls")

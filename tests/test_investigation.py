@@ -590,6 +590,11 @@ def test_cli_ls_add_rm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from jstdata import investigation as inv_pkg
     from jstdata.investigation import api as api_mod
     from jstdata.investigation import project_store as project_store_mod
+    import jstdata.client as client_mod
+    import jstdata.investigation.active as active_mod
+
+    monkeypatch.setattr(client_mod, "APP_DIR", tmp_path)
+    monkeypatch.setattr(active_mod, "APP_DIR", tmp_path)
 
     def with_tmp(fn):
         def wrapped(*args, **kwargs):
@@ -638,72 +643,51 @@ def test_cli_ls_add_rm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     assert "alpha" in result.output
     assert "tutorial" in result.output
 
-    result = runner.invoke(
-        cli,
-        [
-            "action",
-            "add",
-            "console",
-            "--args",
-            '{"taxonomy":"country"}',
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    assert "Added action 1 type=console parent=0" in result.output
-    inv = get_investigation("alpha", app_dir=tmp_path)
-    assert inv.actions[1].args == {"taxonomy": "country"}
-    assert get_active(app_dir=tmp_path).action == ROOT_ACTION_ID
-
-    result = runner.invoke(cli, ["action", "add", "discover", "--activate"])
-    assert result.exit_code == 0, result.output
-    assert "(activated)" in result.output
-    assert get_active(app_dir=tmp_path).action == 2
-
-    result = runner.invoke(cli, ["action", "rm", "2"])
+    # Singular action/query CLIs are retired; mutations go through the API /
+    # actions layer (and eventually `jst actions …`).
+    result = runner.invoke(cli, ["action", "add", "console"])
     assert result.exit_code == 2
-    assert "--force" in result.output
-
-    result = runner.invoke(cli, ["action", "rm", "2", "--force"])
-    assert result.exit_code == 0, result.output
-    assert "Removed action 2" in result.output
-    assert get_active(app_dir=tmp_path).action == ROOT_ACTION_ID
-
-    result = runner.invoke(cli, ["action", "add", "not-a-step"])
-    assert result.exit_code == 2
-    assert "Unknown action" in result.output
-
-    result = runner.invoke(
-        cli,
-        [
-            "query",
-            "add",
-            "--metric",
-            "gdp",
-            "--entity",
-            "france",
-            "--entity",
-            "usa",
-            "--name",
-            "FR vs US",
-            "--tail",
-            "1",
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    assert "Added query 1" in result.output
-    stored = get_investigation("alpha", app_dir=tmp_path).get_query(1)
-    assert stored.metric == ["gdp"]
-    assert stored.entity == ["france", "usa"]
-    assert stored.expected_pairs() == [("gdp", "france"), ("gdp", "usa")]
+    assert "retired" in result.output.lower()
 
     result = runner.invoke(cli, ["query", "ls"])
+    assert result.exit_code == 2
+    assert "retired" in result.output.lower()
+
+    from jstdata.investigation import add_action, add_query
+
+    inv = get_investigation("alpha", app_dir=tmp_path)
+    add_action(
+        inv,
+        "console",
+        args={"taxonomy": "country"},
+        app_dir=tmp_path,
+    )
+    assert get_investigation("alpha", app_dir=tmp_path).actions[1].args == {
+        "taxonomy": "country"
+    }
+    add_query(
+        inv,
+        name="FR vs US",
+        metric=["gdp"],
+        entity=["france", "usa"],
+        tail=1,
+        app_dir=tmp_path,
+    )
+    result = runner.invoke(
+        cli,
+        [
+            "actions",
+            "query",
+            "ls",
+            "--project",
+            "alpha",
+            "--investigation",
+            "alpha",
+        ],
+    )
     assert result.exit_code == 0, result.output
     assert "FR vs US" in result.output
-
-    result = runner.invoke(cli, ["query", "show", "1"])
-    assert result.exit_code == 0, result.output
     assert "gdp" in result.output
-    assert "france" in result.output
 
 
 def test_home_step_registered():

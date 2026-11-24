@@ -459,12 +459,38 @@ class JSTDataClient:
         return [Series.from_dict(s) for s in data["records"]]
 
     def get_entity_relations(
-        self, entity_id: str, limit: int = 100, offset: int = 0
+        self,
+        entity_id: str,
+        limit: int = 100,
+        offset: int = 0,
+        *,
+        direction: Optional[str] = None,
+        relationship: Optional[str] = None,
+        relation_taxonomy: Optional[str] = None,
+        taxonomy: Optional[str] = None,
+        sort_order: str = "asc",
     ) -> List[EntityRelationship]:
-        """Get relationships for an entity (the graph view)."""
-        data = self.make_request(
-            f"entity/{entity_id}/relations", {"limit": limit, "offset": offset}
-        )
+        """Get relationships for an entity (the graph view).
+
+        ``direction`` is relative to ``entity_id`` (``outgoing`` default on the
+        server). ``relationship`` is an edge type (not ``identity``).
+        ``relation_taxonomy`` filters by edge taxonomy slug; ``taxonomy``
+        restricts related entities to a membership taxonomy.
+        """
+        params: Dict[str, Any] = {
+            "limit": limit,
+            "offset": offset,
+            "sort_order": sort_order,
+        }
+        if direction:
+            params["direction"] = direction
+        if relationship:
+            params["relationship"] = relationship
+        if relation_taxonomy:
+            params["relation_taxonomy"] = relation_taxonomy
+        if taxonomy:
+            params["taxonomy"] = taxonomy
+        data = self.make_request(f"entity/{entity_id}/relations", params)
         return [EntityRelationship.from_dict(r) for r in data["records"]]
 
     # --- Taxonomies ---
@@ -530,6 +556,9 @@ class JSTDataClient:
         mode: str = "union",
         limit: int = 5,
         offset: int = 0,
+        *,
+        relation_direction: Optional[str] = None,
+        relation_taxonomy: Optional[str] = None,
     ) -> List[Entity]:
         """Search or list entities.
 
@@ -538,6 +567,8 @@ class JSTDataClient:
         when more than one metric is given.
         ``relation`` filters to entities with a typed edge to an anchor
         (``<relationship_type>:<to_entity_id>``). Multiple relations are OR'd.
+        ``relation_direction`` is relative to the candidate (default outgoing).
+        ``relation_taxonomy`` filters by edge taxonomy slug (requires relation).
         """
         params: Dict[str, Any] = {"limit": limit, "offset": offset}
         if query is not None and str(query).strip():
@@ -551,6 +582,10 @@ class JSTDataClient:
         relations = _as_id_list(relation)
         if relations:
             params["relation"] = relations
+        if relation_direction:
+            params["relation_direction"] = relation_direction
+        if relation_taxonomy:
+            params["relation_taxonomy"] = relation_taxonomy
         data = self.make_request("search/entities", params)
         return [Entity.from_dict(e) for e in data["records"]]
 
