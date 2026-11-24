@@ -10,6 +10,7 @@ from ..client import APP_DIR
 from .data import (
     PreviewModel,
     build_preview_model,
+    build_project_preview_model,
     most_recent_investigation_id,
     resolve_investigation_id,
 )
@@ -30,6 +31,7 @@ __all__ = [
     "PreviewModel",
     "ProgressSpinner",
     "build_preview_model",
+    "build_project_preview_model",
     "default_export_dir",
     "most_recent_investigation_id",
     "preview_investigation",
@@ -54,10 +56,34 @@ def preview_investigation(
     open_browser: bool = True,
     progress: Optional[ProgressFn] = None,
 ) -> Path:
-    """Build the preview HTML for an investigation and optionally open it."""
-    model = build_preview_model(
-        client, investigation_id, root=root, progress=progress
-    )
+    """Build the preview HTML for an investigation (or multi-tab project)."""
+    model: PreviewModel
+    if investigation_id is not None and root is None:
+        from ..investigation.project_store import project_exists
+
+        if project_exists(investigation_id):
+            from ..investigation.project_store import load_project
+
+            project = load_project(investigation_id)
+            if len(project.investigations) > 1:
+                model = build_project_preview_model(
+                    client, investigation_id, progress=progress
+                )
+            else:
+                model = build_preview_model(
+                    client,
+                    project.investigations[0],
+                    root=root,
+                    progress=progress,
+                )
+        else:
+            model = build_preview_model(
+                client, investigation_id, root=root, progress=progress
+            )
+    else:
+        model = build_preview_model(
+            client, investigation_id, root=root, progress=progress
+        )
     if progress is not None:
         n_charts = sum(len(p.charts) for p in model.panels)
         progress(

@@ -86,6 +86,11 @@ COMMANDS: tuple[CommandSpec, ...] = (
         "Show or hide the pop-out tips (no argument toggles)",
         usage="tips [on|off]",
     ),
+    CommandSpec(
+        "feedback",
+        "Queue local product feedback (outbox until remote ingest)",
+        usage="feedback <message>",
+    ),
 )
 
 _TAB_SUBCOMMANDS = (
@@ -401,6 +406,12 @@ def parse_command_line(raw: str) -> ParsedCommand:
             raise CommandError("Usage: tips [on|off]")
         state = None if not rest else rest[0].lower() == "on"
         return ParsedCommand(name=name, options={"state": state})
+    if name == "feedback":
+        if not rest:
+            raise CommandError("Usage: feedback <message>")
+        return ParsedCommand(
+            name=name, options={"message": " ".join(rest).strip()}
+        )
     if name == "tutorial":
         if len(tokens) > 1:
             raise CommandError("Usage: tutorial")

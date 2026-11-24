@@ -113,12 +113,17 @@ def publish_investigation(
     key's usage like any other query. Each call creates a new publication;
     earlier ones are never changed.
     """
-    if not inv.queries:
+    from .ops.curation import publication_projection
+
+    projected = publication_projection(inv)
+    if not projected.get("queries"):
         raise PublishError(
-            f"{inv.id!r} has no queries to publish. Add one with `jst query add`."
+            f"{inv.id!r} has no report queries to publish. "
+            "Save one with `:query` / `jst query add`, or "
+            "`jst actions promote --query <id>`."
         )
     site_url = check_site_url(site_url)
-    body: dict[str, Any] = {"investigation": inv.to_dict()}
+    body: dict[str, Any] = {"investigation": projected}
     if publisher_name:
         body["publisherName"] = publisher_name
     try:
@@ -159,8 +164,10 @@ def update_publication(
     :class:`QueriesChangedError`, and the author should publish a new link.
     Only the publication's own publisher can update it.
     """
+    from .ops.curation import publication_projection
+
     site_url = check_site_url(site_url)
-    body: dict[str, Any] = {"investigation": inv.to_dict()}
+    body: dict[str, Any] = {"investigation": publication_projection(inv)}
     if publisher_name:
         body["publisherName"] = publisher_name
     try:

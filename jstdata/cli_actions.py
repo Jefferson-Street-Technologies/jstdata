@@ -377,6 +377,137 @@ def query_ls_cmd(
     _echo_result(result, format=fmt)
 
 
+@actions_group.command("promote")
+@click.argument("event_id", required=False, default=None)
+@click.option(
+    "--query",
+    "query_id",
+    type=int,
+    default=None,
+    help="Promote an existing saved query into the report",
+)
+@click.option("--name", default=None, help="Name when promoting a query-shaped event")
+@_target_options
+@_format_option
+def promote_cmd(
+    event_id: Optional[str],
+    query_id: Optional[int],
+    name: Optional[str],
+    project: Optional[str],
+    investigation: Optional[str],
+    fmt: str,
+) -> None:
+    """Promote an action-log event or saved query into the report."""
+    from .ops import curation as cur
+
+    if query_id is not None:
+        result = cur.promote_query(
+            query_id,
+            project=project,
+            investigation=investigation,
+        )
+    elif event_id:
+        result = cur.promote_event(
+            event_id,
+            name=name,
+            project=project,
+            investigation=investigation,
+        )
+    else:
+        click.echo(
+            "Usage: jst actions promote <event-id> | --query <id>",
+            err=True,
+        )
+        sys.exit(2)
+    _echo_result(result, format=fmt)
+
+
+@actions_group.command("copy")
+@click.option("--project", required=True, help="Project id")
+@click.option("--from", "source_id", required=True, help="Source investigation id")
+@click.option("--to", "dest_id", required=True, help="Destination investigation id")
+@click.option("--metric", multiple=True)
+@click.option("--entity", multiple=True)
+@click.option("--series", multiple=True)
+@click.option("--query", "query_ids", multiple=True, type=int)
+@_format_option
+def copy_cmd(
+    project: str,
+    source_id: str,
+    dest_id: str,
+    metric: tuple[str, ...],
+    entity: tuple[str, ...],
+    series: tuple[str, ...],
+    query_ids: tuple[int, ...],
+    fmt: str,
+) -> None:
+    """Copy workspace ids / queries across investigations (no API calls)."""
+    from .ops import curation as cur
+
+    result = cur.copy_across_investigations(
+        project_id=project,
+        source_id=source_id,
+        dest_id=dest_id,
+        metric=metric or None,
+        entity=entity or None,
+        series=series or None,
+        query_ids=query_ids or None,
+    )
+    _echo_result(result, format=fmt)
+
+
+@actions_group.group("feedback")
+def feedback_group() -> None:
+    """Local feedback outbox (queued until Workstream C ingest)."""
+
+
+@feedback_group.command("submit")
+@click.argument("message")
+@click.option("--screen", default=None, help="Optional screen / view id")
+@_target_options
+@_format_option
+def feedback_submit_cmd(
+    message: str,
+    screen: Optional[str],
+    project: Optional[str],
+    investigation: Optional[str],
+    fmt: str,
+) -> None:
+    from .ops import feedback as fb
+
+    result = fb.submit_feedback(
+        message,
+        project_id=project,
+        investigation_id=investigation,
+        screen=screen,
+    )
+    _echo_result(result, format=fmt)
+
+
+@feedback_group.command("ls")
+@click.option("--status", default=None)
+@click.option("--limit", default=50, show_default=True)
+@click.option("--offset", default=0, show_default=True)
+@_format_option
+def feedback_ls_cmd(
+    status: Optional[str], limit: int, offset: int, fmt: str
+) -> None:
+    from .ops import feedback as fb
+
+    result = fb.list_feedback(status=status, limit=limit, offset=offset)
+    _echo_result(result, format=fmt)
+
+
+@feedback_group.command("inspect")
+@click.argument("feedback_id")
+@_format_option
+def feedback_inspect_cmd(feedback_id: str, fmt: str) -> None:
+    from .ops import feedback as fb
+
+    result = fb.inspect_feedback(feedback_id)
+    _echo_result(result, format=fmt)
+
+
 @actions_group.command("log")
 @click.option("--operation", default=None, help="Filter by operation id")
 @click.option("--status", default=None, help="Filter by status")

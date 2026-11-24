@@ -1361,6 +1361,35 @@ class InvestigationHost(App):
         elif parsed.name == "tips":
             state = parsed.options.get("state")
             self.set_tips(not self._tips_on if state is None else bool(state))
+        elif parsed.name == "feedback":
+            self._cmd_feedback(str(parsed.options.get("message") or ""))
+
+    def _cmd_feedback(self, message: str) -> None:
+        from ..ops import feedback as fb
+
+        result = fb.submit_feedback(
+            message,
+            project_id=self.project_id,
+            investigation_id=(
+                self.active.investigation if self.active else None
+            ),
+            screen=type(self.screen).__name__,
+            diagnostics=fb.capture_diagnostics(
+                screen=type(self.screen).__name__,
+                extra={
+                    "action": self.active.action if self.active else None,
+                },
+            ),
+            app_dir=self.app_dir,
+        )
+        if result.status == "error":
+            self.notify(result.error or "Feedback failed", severity="error")
+            return
+        fid = (result.data or {}).get("feedback_id")
+        self.notify(
+            f"Feedback queued locally ({fid}). "
+            "Inspect with `jst actions feedback ls`."
+        )
 
     def _cmd_publish(self) -> None:
         """Draft the page's text, confirm, then publish in a background thread."""
@@ -1371,9 +1400,22 @@ class InvestigationHost(App):
         if self._publishing:
             self.notify("Already publishing…")
             return
-        if not inv.queries:
+        # Multi-tab remote publish awaits Workstream C — never silently flatten.
+        if self.project and len(self.project.investigations) > 1:
             self.notify(
-                "Nothing to publish yet. Save a query first with :query.",
+                "This project has multiple investigation tabs. "
+                "Remote multi-tab publish awaits Workstream C. "
+                "Use `jst preview` for a local multi-tab preview, "
+                "or publish a single-tab project for now.",
+                severity="warning",
+                timeout=12,
+            )
+            return
+        report_queries = [q for q in inv.queries.values() if q.in_report]
+        if not report_queries:
+            self.notify(
+                "Nothing to publish yet. Save a report query with :query, "
+                "or promote one with `jst actions promote`.",
                 severity="warning",
             )
             return

@@ -112,6 +112,9 @@ class PreviewModel:
     published: datetime
     query_count: int
     panels: list[QueryPanel] = field(default_factory=list)
+    # Multi-investigation local preview (Workstream B; remote awaits C).
+    project_id: Optional[str] = None
+    tab_labels: list[str] = field(default_factory=list)
 
     @property
     def active_panel(self) -> Optional[QueryPanel]:
@@ -214,9 +217,13 @@ def pick_primary_query(inv: Investigation) -> Optional[Query]:
 
 
 def list_previewable_queries(inv: Investigation) -> list[Query]:
-    """Saved queries that have both metric and entity selectors."""
+    """Report-membership queries that have both metric and entity selectors."""
     return sorted(
-        (q for q in inv.queries.values() if q.metric and q.entity),
+        (
+            q
+            for q in inv.queries.values()
+            if q.in_report and q.metric and q.entity
+        ),
         key=lambda q: q.id,
     )
 
@@ -550,6 +557,72 @@ def build_preview_model(
         title=inv.title,
         subtitle=inv.notes,
         published=published,
-        query_count=len(inv.queries),
+        query_count=len([q for q in inv.queries.values() if q.in_report]),
         panels=panels,
+    )
+
+
+def build_project_preview_model(
+    client: JSTDataClient,
+    project_id: str,
+    *,
+    app_dir: Optional[Path] = None,
+    progress: Optional[ProgressFn] = None,
+) -> PreviewModel:
+    """Local multi-investigation preview (remote multi-tab awaits Workstream C)."""
+    from ..investigation.project_store import (
+        load_project,
+        load_project_investigation,
+        project_dir,
+    )
+
+    project = load_project(project_id, app_dir=app_dir)
+    _emit(progress, f"Loaded project {project.id!r} ({project.title})")
+    obs_cache: dict[str, list[Observation]] = {}
+    metric_name_cache: dict[str, str] = {}
+    panels: list[QueryPanel] = []
+    tab_labels: list[str] = []
+    total_queries = 0
+
+    for inv_id in project.investigations:
+        inv = load_project_investigation(
+            project_id, inv_id, app_dir=app_dir
+        )
+        tab_labels.append(inv.title or inv_id)
+        queries = list_previewable_queries(inv)
+        total_queries += len(queries)
+        for query in queries:
+            label = f"{inv.title or inv_id} · {_query_label(query)}"
+            _emit(progress, f"Building {label}…")
+            panel = _build_query_panel(
+                client,
+                query,
+                fallback_series=inv.workspace.series,
+                obs_cache=obs_cache,
+                metric_name_cache=metric_name_cache,
+                progress=progress,
+            )
+            if panel is not None:
+                # Preserve query id uniqueness across tabs in the panel label.
+                panel.label = label
+                panels.append(panel)
+
+    if not panels:
+        raise InvestigationError(
+            f"Project {project_id!r} has no report queries to preview."
+        )
+
+    published = datetime.fromtimestamp(
+        project_dir(project_id, app_dir=app_dir).stat().st_mtime
+    )
+    return PreviewModel(
+        investigation_id=project.id,
+        title=project.title,
+        subtitle=project.notes
+        or "Local multi-tab preview (remote publish awaits Workstream C)",
+        published=published,
+        query_count=total_queries,
+        panels=panels,
+        project_id=project.id,
+        tab_labels=tab_labels,
     )

@@ -389,6 +389,9 @@ class Query:
     sort_by: Optional[str] = None
     order_by: Optional[str] = None
     notes_on: list[QueryNote] = field(default_factory=list)
+    # Report membership: False = exploratory (local only); True = in published report.
+    # Missing on load → True (legacy saved queries were always report members).
+    in_report: bool = True
 
     def is_empty(self) -> bool:
         return not (self.metric or self.entity or self.series)
@@ -521,7 +524,10 @@ class Query:
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["notes_on"] = [note.to_dict() for note in self.notes_on]
-        return {k: v for k, v in data.items() if v is not None and v != []}
+        # Always emit in_report so projection/adapters see membership explicitly.
+        out = {k: v for k, v in data.items() if v is not None and v != []}
+        out["in_report"] = bool(self.in_report)
+        return out
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Query:
@@ -540,6 +546,11 @@ class Query:
             raise InvestigationError(f"Query {qid} entity must be a list of strings.")
         if not isinstance(series, list) or not all(isinstance(x, str) for x in series):
             raise InvestigationError(f"Query {qid} series must be a list of strings.")
+        in_report = data.get("in_report", True)
+        if not isinstance(in_report, bool):
+            raise InvestigationError(
+                f"Query {qid} 'in_report' must be a boolean when set."
+            )
         return cls(
             id=qid,
             name=data.get("name"),
@@ -558,6 +569,7 @@ class Query:
             sort_by=data.get("sort_by"),
             order_by=data.get("order_by"),
             notes_on=_load_notes_on(data, qid=qid),
+            in_report=in_report,
         )
 
 

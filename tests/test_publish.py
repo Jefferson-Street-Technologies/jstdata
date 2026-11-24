@@ -112,7 +112,7 @@ def test_publish_surfaces_server_error(requests_mock, inv):
 
 
 def test_publish_refuses_investigation_without_queries():
-    with pytest.raises(PublishError, match="no queries"):
+    with pytest.raises(PublishError, match="no report queries"):
         publish_investigation(Investigation.new("empty"), api_key="k", site_url=SITE)
 
 

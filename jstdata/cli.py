@@ -956,6 +956,25 @@ def publish_cmd(
                 sys.exit(2)
             investigation_id = ctx.investigation
         inv = get_investigation(investigation_id)
+        # Multi-tab remote publish awaits Workstream C — never silently flatten.
+        from .investigation.project_store import (
+            find_investigation_project,
+            load_project,
+        )
+
+        pid = find_investigation_project(investigation_id)
+        if pid is not None:
+            project = load_project(pid)
+            if len(project.investigations) > 1:
+                click.echo(
+                    "Error: project "
+                    f"{pid!r} has multiple investigation tabs. "
+                    "Remote multi-tab publish awaits Workstream C. "
+                    "Use `jst preview` for a local multi-tab preview, "
+                    "or publish from a single-tab project.",
+                    err=True,
+                )
+                sys.exit(2)
         api_key = client.api_key
     except InvestigationError as e:
         click.echo(f"Error: {e}", err=True)

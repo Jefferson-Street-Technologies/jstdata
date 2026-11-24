@@ -42,6 +42,7 @@ def test_complete_command_names():
         "rm",
         "tutorial",
         "tips",
+        "feedback",
     ]
     assert complete_command_line("se") == ["search"]
     assert complete_command_line("tu") == ["tutorial"]
