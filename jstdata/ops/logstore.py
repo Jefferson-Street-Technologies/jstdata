@@ -151,7 +151,7 @@ class ActionLogStore:
                 SELECT artifact_id, path, created_at, content_hash
                 FROM artifacts
                 WHERE operation = ? AND content_hash = ?
-                ORDER BY created_at DESC
+                ORDER BY created_at DESC, rowid DESC
                 LIMIT 1
                 """,
                 (operation, digest),
@@ -310,7 +310,7 @@ class ActionLogStore:
                        artifact_id, cache_hit, duration_ms
                 FROM events
                 {where}
-                ORDER BY completed_at DESC, event_id DESC
+                ORDER BY completed_at DESC, rowid DESC
                 LIMIT ? OFFSET ?
                 """,
                 params,

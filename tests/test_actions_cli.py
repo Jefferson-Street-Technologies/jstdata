@@ -105,6 +105,134 @@ def test_actions_relationships_passes_direction(runner, tmp_path, monkeypatch):
     assert call_kwargs.get("relationship") == "classified_as"
 
 
+def test_actions_relationships_refresh_skips_cache(runner, tmp_path, monkeypatch):
+    from jstdata import cli_actions
+    from jstdata.models import EntityRelationship
+    import jstdata.client as client_mod
+    import jstdata.investigation.active as active_mod
+
+    monkeypatch.setattr(client_mod, "APP_DIR", tmp_path)
+    monkeypatch.setattr(active_mod, "APP_DIR", tmp_path)
+
+    fake = MagicMock()
+    fake.get_entity_relations.return_value = [
+        EntityRelationship.from_dict(
+            {"id": "cik:1", "relationship": "classified_as", "taxonomy": "sic"}
+        )
+    ]
+    monkeypatch.setattr(cli_actions, "_client", lambda: fake)
+
+    # Seed a cache hit path first.
+    seeded = runner.invoke(
+        cli,
+        ["actions", "relationships", "sic:3674", "--direction", "incoming"],
+    )
+    assert seeded.exit_code == 0, seeded.output
+    assert json.loads(seeded.output)["cache_hit"] is False
+    assert fake.get_entity_relations.call_count == 1
+
+    cached = runner.invoke(
+        cli,
+        ["actions", "relationships", "sic:3674", "--direction", "incoming"],
+    )
+    assert cached.exit_code == 0, cached.output
+    assert json.loads(cached.output)["cache_hit"] is True
+    assert fake.get_entity_relations.call_count == 1
+
+    refreshed = runner.invoke(
+        cli,
+        [
+            "actions",
+            "relationships",
+            "sic:3674",
+            "--direction",
+            "incoming",
+            "--refresh",
+        ],
+    )
+    assert refreshed.exit_code == 0, refreshed.output
+    payload = json.loads(refreshed.output)
+    assert payload["cache_hit"] is False
+    assert fake.get_entity_relations.call_count == 2
+
+
+def test_actions_search_passes_relation_direction(runner, tmp_path, monkeypatch):
+    from jstdata import cli_actions
+    from jstdata.models import Entity
+    import jstdata.client as client_mod
+    import jstdata.investigation.active as active_mod
+
+    monkeypatch.setattr(client_mod, "APP_DIR", tmp_path)
+    monkeypatch.setattr(active_mod, "APP_DIR", tmp_path)
+
+    fake = MagicMock()
+    fake.search_entities.return_value = [
+        Entity.from_dict({"id": "cik:1", "label": "Acme"})
+    ]
+    monkeypatch.setattr(cli_actions, "_client", lambda: fake)
+
+    result = runner.invoke(
+        cli,
+        [
+            "actions",
+            "search",
+            "entities",
+            "--relation",
+            "classified_as:sic:3674",
+            "--relation-direction",
+            "outgoing",
+            "--relation-taxonomy",
+            "standard-industrial-classification-sic",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    kwargs = fake.search_entities.call_args.kwargs
+    assert kwargs.get("relation") == ["classified_as:sic:3674"]
+    assert kwargs.get("relation_direction") == "outgoing"
+    assert kwargs.get("relation_taxonomy") == (
+        "standard-industrial-classification-sic"
+    )
+
+
+def test_api_entity_relations_passes_filters(runner, tmp_path, monkeypatch):
+    """Legacy ``jst api entity relations`` forwards A's filter params."""
+    from jstdata.models import EntityRelationship
+    import jstdata.cli as cli_mod
+    import jstdata.client as client_mod
+
+    monkeypatch.setattr(client_mod, "APP_DIR", tmp_path)
+    fake = MagicMock()
+    fake.get_entity_relations.return_value = [
+        EntityRelationship.from_dict(
+            {"id": "cik:1", "relationship": "classified_as", "taxonomy": "sic"}
+        )
+    ]
+    monkeypatch.setattr(cli_mod, "client", fake)
+
+    result = runner.invoke(
+        cli,
+        [
+            "api",
+            "entity",
+            "relations",
+            "sic:3674",
+            "--direction",
+            "incoming",
+            "--relationship",
+            "classified_as",
+            "--taxonomy",
+            "sec-central-index-key",
+            "--format",
+            "json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    kwargs = fake.get_entity_relations.call_args.kwargs
+    assert kwargs.get("direction") == "incoming"
+    assert kwargs.get("relationship") == "classified_as"
+    assert kwargs.get("taxonomy") == "sec-central-index-key"
+
+
 def test_actions_workspace_show(tmp_path: Path, runner, monkeypatch):
     inv = create_investigation("demo", title="Demo", app_dir=tmp_path)
     inv.workspace.add_entity("united-states")

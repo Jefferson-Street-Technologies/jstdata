@@ -858,6 +858,35 @@ class InvestigationHost(App):
             self._d_timer.stop()
             self._d_timer = None
 
+    def _screen_action_for_key(self, key: str) -> str | None:
+        """Return the focused screen's binding action name for ``key``, if any."""
+        bindings = getattr(self.screen, "BINDINGS", None) or ()
+        for binding in bindings:
+            if getattr(binding, "key", None) == key:
+                action = getattr(binding, "action", None)
+                if isinstance(action, str) and action:
+                    # Textual allows ``action`` or ``action(params)``.
+                    return action.split("(", 1)[0]
+        return None
+
+    def _expire_pending_d(self) -> None:
+        """First ``d`` timed out with no second — forward to the screen binding.
+
+        Host owns ``dd`` (delete). Screens like entity view also bind ``d``
+        (toggle relation direction); a lone ``d`` must reach them after the
+        chord window closes.
+        """
+        if not self._pending_d:
+            return
+        self._pending_d = False
+        self._d_timer = None
+        action_name = self._screen_action_for_key("d")
+        if not action_name:
+            return
+        method = getattr(self.screen, f"action_{action_name}", None)
+        if callable(method):
+            method()
+
     def _delete_action_allowed(self) -> bool:
         """Same gates as check_action for delete — used by the ``dd`` chord."""
         if self._invalid or not self.active or not self.investigation:
@@ -896,7 +925,7 @@ class InvestigationHost(App):
             self.action_delete_action()
             return
         self._pending_d = True
-        self._d_timer = self.set_timer(self._DD_TIMEOUT, self._clear_pending_d)
+        self._d_timer = self.set_timer(self._DD_TIMEOUT, self._expire_pending_d)
         event.prevent_default()
         event.stop()
 

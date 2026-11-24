@@ -22,10 +22,13 @@ def test_console_is_registered():
     assert "console" in ids
     console = get_action("console")
     assert console.name == "Console"
-    assert "action add console" in console.to_dict()["example"]
+    assert "actions search entities" in console.to_dict()["example"]
     assert any(b["key"] == "/" for b in console.to_dict()["bindings"])
     assert any(a["name"] == "taxonomy" for a in console.to_dict()["arguments"])
     assert any(a["name"] == "relation" for a in console.to_dict()["arguments"])
+    assert any(
+        a["name"] == "relation_direction" for a in console.to_dict()["arguments"]
+    )
     resource_type = next(
         a for a in console.to_dict()["arguments"] if a["name"] == "resource_type"
     )
@@ -51,6 +54,9 @@ def test_metric_and_entity_views_registered():
     entity = get_action("entity")
     assert metric.name == "Metric"
     assert entity.name == "Entity"
+    entity_args = {a["name"] for a in entity.to_dict()["arguments"]}
+    assert {"direction", "relationship", "relation_taxonomy", "taxonomy"} <= entity_args
+    assert any(b["key"] == "d" for b in entity.to_dict()["bindings"])
     ids = {s.id for s in list_actions()}
     assert {"metric", "entity", "table", "release"} <= ids
 
@@ -196,9 +202,10 @@ def test_table_short_headers():
 def test_format_action_help_console():
     text = format_action_help(get_action("console"))
     assert "Console" in text
-    assert "jst action add console" in text
+    assert "jst actions search entities" in text
     assert "--taxonomy" in text
     assert "--relation" in text
+    assert "--relation-direction" in text
     assert "--resource-type" in text
     assert "Keybindings:" in text
     assert "/" in text

@@ -293,11 +293,22 @@ def show_entity(id, format):
 
 @entity.command("search")
 @click.argument("query", required=False, default=None)
-@click.option("--taxonomy", help="Restrict search to entities in a taxonomy")
+@click.option("--taxonomy", help="Membership taxonomy slug (not a relationship filter)")
 @click.option(
     "--relation",
     multiple=True,
     help="Filter by relationship anchor (<relationship_type>:<to_entity_id>). Repeatable; OR'd.",
+)
+@click.option(
+    "--relation-direction",
+    type=click.Choice(["outgoing", "incoming"]),
+    default=None,
+    help="Direction relative to the candidate (default outgoing)",
+)
+@click.option(
+    "--relation-taxonomy",
+    default=None,
+    help="Edge taxonomy slug (requires --relation)",
 )
 @click.option(
     "--metric",
@@ -311,7 +322,18 @@ def show_entity(id, format):
     help="How to combine multiple --metric values",
 )
 @common_search_params
-def search_entities(query, taxonomy, relation, metric, mode, limit, offset, format):
+def search_entities(
+    query,
+    taxonomy,
+    relation,
+    relation_direction,
+    relation_taxonomy,
+    metric,
+    mode,
+    limit,
+    offset,
+    format,
+):
     """Search for entities by intent. Omit QUERY to list the matching set."""
     results = client.search_entities(
         query,
@@ -321,6 +343,8 @@ def search_entities(query, taxonomy, relation, metric, mode, limit, offset, form
         mode=mode,
         limit=limit,
         offset=offset,
+        relation_direction=relation_direction,
+        relation_taxonomy=relation_taxonomy,
     )
     format_and_print(results, format)
 
@@ -334,10 +358,51 @@ def entity_series(id, limit, offset, format):
 
 @entity.command("relations")
 @click.argument("id")
+@click.option(
+    "--direction",
+    type=click.Choice(["outgoing", "incoming"]),
+    default=None,
+    help="Relative to the path entity (default outgoing)",
+)
+@click.option(
+    "--relationship",
+    type=click.Choice(
+        ["classified_as", "equivalent_to", "part_of", "has_security"]
+    ),
+    default=None,
+    help="Edge type (not identity)",
+)
+@click.option(
+    "--relation-taxonomy",
+    default=None,
+    help="Edge taxonomy slug",
+)
+@click.option(
+    "--taxonomy",
+    default=None,
+    help="Membership taxonomy of the related entity",
+)
 @common_params
-def entity_relations(id, limit, offset, format):
-    """Walk the entity graph."""
-    results = client.get_entity_relations(id, limit=limit, offset=offset)
+def entity_relations(
+    id,
+    direction,
+    relationship,
+    relation_taxonomy,
+    taxonomy,
+    limit,
+    offset,
+    format,
+):
+    """Walk the entity graph (prefer ``jst actions relationships``)."""
+    results = client.get_entity_relations(
+        id,
+        limit=limit,
+        offset=offset,
+        direction=direction,
+        relationship=relationship,
+        relation_taxonomy=relation_taxonomy,
+        taxonomy=taxonomy,
+    )
     format_and_print(results, format)
 
 # --- Taxonomy Commands ---

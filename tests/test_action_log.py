@@ -78,6 +78,57 @@ def test_run_operation_persists_and_caches(tmp_path: Path):
     assert events[1]["cache_hit"] is False
 
 
+def test_run_operation_refresh_bypasses_cache(tmp_path: Path):
+    store = ActionLogStore(app_dir=tmp_path)
+    calls = {"n": 0}
+
+    def fetch():
+        calls["n"] += 1
+        return [{"id": f"id-{calls['n']}", "label": f"v{calls['n']}"}]
+
+    first = run_operation(
+        "search.entities",
+        fetch,
+        inputs={"query": "x"},
+        store=store,
+    )
+    assert first.cache_hit is False
+    assert calls["n"] == 1
+
+    cached = run_operation(
+        "search.entities",
+        fetch,
+        inputs={"query": "x"},
+        store=store,
+    )
+    assert cached.cache_hit is True
+    assert calls["n"] == 1
+
+    refreshed = run_operation(
+        "search.entities",
+        fetch,
+        inputs={"query": "x"},
+        store=store,
+        use_cache=False,
+    )
+    assert refreshed.cache_hit is False
+    assert calls["n"] == 2
+    assert refreshed.data[0]["id"] == "id-2"
+    # Fresh artifact becomes the cache head for later hits.
+    assert refreshed.artifact_id != first.artifact_id
+
+    after = run_operation(
+        "search.entities",
+        fetch,
+        inputs={"query": "x"},
+        store=store,
+    )
+    assert after.cache_hit is True
+    assert after.artifact_id == refreshed.artifact_id
+    assert after.data[0]["id"] == "id-2"
+    assert calls["n"] == 2
+
+
 def test_failed_ops_are_logged(tmp_path: Path):
     store = ActionLogStore(app_dir=tmp_path)
 

@@ -58,6 +58,19 @@ def _format_option(fn):
     )(fn)
 
 
+def _refresh_option(fn):
+    """Bypass the local artifact cache and hit the Data API again."""
+    return click.option(
+        "--refresh/--no-refresh",
+        "refresh",
+        default=False,
+        help=(
+            "Skip the local action-log artifact cache and re-fetch from the "
+            "Data API (also writes a fresh artifact)"
+        ),
+    )(fn)
+
+
 @click.group(invoke_without_command=True)
 @click.pass_context
 def actions_group(ctx) -> None:
@@ -96,6 +109,7 @@ def search_group() -> None:
 )
 @click.option("--limit", default=20, show_default=True)
 @click.option("--offset", default=0, show_default=True)
+@_refresh_option
 @_target_options
 @_format_option
 def search_entities_cmd(
@@ -106,6 +120,7 @@ def search_entities_cmd(
     relation_taxonomy: Optional[str],
     limit: int,
     offset: int,
+    refresh: bool,
     project: Optional[str],
     investigation: Optional[str],
     fmt: str,
@@ -122,6 +137,7 @@ def search_entities_cmd(
         offset=offset,
         project=project,
         investigation=investigation,
+        use_cache=not refresh,
     )
     _echo_result(result, format=fmt)
 
@@ -132,6 +148,7 @@ def search_entities_cmd(
 @click.option("--entity", multiple=True)
 @click.option("--limit", default=20, show_default=True)
 @click.option("--offset", default=0, show_default=True)
+@_refresh_option
 @_target_options
 @_format_option
 def search_metrics_cmd(
@@ -140,6 +157,7 @@ def search_metrics_cmd(
     entity: tuple[str, ...],
     limit: int,
     offset: int,
+    refresh: bool,
     project: Optional[str],
     investigation: Optional[str],
     fmt: str,
@@ -154,6 +172,7 @@ def search_metrics_cmd(
         offset=offset,
         project=project,
         investigation=investigation,
+        use_cache=not refresh,
     )
     _echo_result(result, format=fmt)
 
@@ -166,11 +185,13 @@ def taxonomy_group() -> None:
 @taxonomy_group.command("ls")
 @click.option("--limit", default=50, show_default=True)
 @click.option("--offset", default=0, show_default=True)
+@_refresh_option
 @_target_options
 @_format_option
 def taxonomy_ls_cmd(
     limit: int,
     offset: int,
+    refresh: bool,
     project: Optional[str],
     investigation: Optional[str],
     fmt: str,
@@ -181,6 +202,7 @@ def taxonomy_ls_cmd(
         offset=offset,
         project=project,
         investigation=investigation,
+        use_cache=not refresh,
     )
     _echo_result(result, format=fmt)
 
@@ -189,12 +211,14 @@ def taxonomy_ls_cmd(
 @click.argument("taxonomy_id")
 @click.option("--limit", default=50, show_default=True)
 @click.option("--offset", default=0, show_default=True)
+@_refresh_option
 @_target_options
 @_format_option
 def taxonomy_entities_cmd(
     taxonomy_id: str,
     limit: int,
     offset: int,
+    refresh: bool,
     project: Optional[str],
     investigation: Optional[str],
     fmt: str,
@@ -206,6 +230,7 @@ def taxonomy_entities_cmd(
         offset=offset,
         project=project,
         investigation=investigation,
+        use_cache=not refresh,
     )
     _echo_result(result, format=fmt)
 
@@ -232,6 +257,7 @@ def taxonomy_entities_cmd(
 )
 @click.option("--limit", default=50, show_default=True)
 @click.option("--offset", default=0, show_default=True)
+@_refresh_option
 @_target_options
 @_format_option
 def relationships_cmd(
@@ -242,6 +268,7 @@ def relationships_cmd(
     taxonomy: Optional[str],
     limit: int,
     offset: int,
+    refresh: bool,
     project: Optional[str],
     investigation: Optional[str],
     fmt: str,
@@ -258,6 +285,7 @@ def relationships_cmd(
         offset=offset,
         project=project,
         investigation=investigation,
+        use_cache=not refresh,
     )
     _echo_result(result, format=fmt)
 
@@ -269,10 +297,12 @@ def metadata_group() -> None:
 
 @metadata_group.command("entity")
 @click.argument("entity_id")
+@_refresh_option
 @_target_options
 @_format_option
 def metadata_entity_cmd(
     entity_id: str,
+    refresh: bool,
     project: Optional[str],
     investigation: Optional[str],
     fmt: str,
@@ -282,16 +312,19 @@ def metadata_entity_cmd(
         entity_id,
         project=project,
         investigation=investigation,
+        use_cache=not refresh,
     )
     _echo_result(result, format=fmt)
 
 
 @metadata_group.command("metric")
 @click.argument("metric_id")
+@_refresh_option
 @_target_options
 @_format_option
 def metadata_metric_cmd(
     metric_id: str,
+    refresh: bool,
     project: Optional[str],
     investigation: Optional[str],
     fmt: str,
@@ -301,6 +334,7 @@ def metadata_metric_cmd(
         metric_id,
         project=project,
         investigation=investigation,
+        use_cache=not refresh,
     )
     _echo_result(result, format=fmt)
 

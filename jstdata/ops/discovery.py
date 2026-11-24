@@ -53,6 +53,7 @@ def search_entities(
     project: Optional[str] = None,
     investigation: Optional[str] = None,
     app_dir=None,
+    use_cache: bool = True,
 ):
     inputs = {
         "query": query,
@@ -94,7 +95,12 @@ def search_entities(
         return _serialize(results)
 
     return run_operation(
-        "search.entities", _run, inputs=inputs, target=target, app_dir=app_dir
+        "search.entities",
+        _run,
+        inputs=inputs,
+        target=target,
+        app_dir=app_dir,
+        use_cache=use_cache,
     )
 
 
@@ -109,6 +115,7 @@ def search_metrics(
     project: Optional[str] = None,
     investigation: Optional[str] = None,
     app_dir=None,
+    use_cache: bool = True,
 ):
     inputs = {
         "query": query,
@@ -136,7 +143,12 @@ def search_metrics(
         )
 
     return run_operation(
-        "search.metrics", _run, inputs=inputs, target=target, app_dir=app_dir
+        "search.metrics",
+        _run,
+        inputs=inputs,
+        target=target,
+        app_dir=app_dir,
+        use_cache=use_cache,
     )
 
 
@@ -148,6 +160,7 @@ def list_taxonomies(
     project: Optional[str] = None,
     investigation: Optional[str] = None,
     app_dir=None,
+    use_cache: bool = True,
 ):
     target = resolve_target(
         project=project,
@@ -165,6 +178,7 @@ def list_taxonomies(
         inputs={"limit": limit, "offset": offset},
         target=target,
         app_dir=app_dir,
+        use_cache=use_cache,
     )
 
 
@@ -177,6 +191,7 @@ def taxonomy_entities(
     project: Optional[str] = None,
     investigation: Optional[str] = None,
     app_dir=None,
+    use_cache: bool = True,
 ):
     target = resolve_target(
         project=project,
@@ -202,6 +217,7 @@ def taxonomy_entities(
         },
         target=target,
         app_dir=app_dir,
+        use_cache=use_cache,
     )
 
 
@@ -218,6 +234,7 @@ def entity_relationships(
     project: Optional[str] = None,
     investigation: Optional[str] = None,
     app_dir=None,
+    use_cache: bool = True,
 ):
     if relationship == "identity":
         raise OperationError(
@@ -269,6 +286,7 @@ def entity_relationships(
         inputs=inputs,
         target=target,
         app_dir=app_dir,
+        use_cache=use_cache,
     )
 
 
@@ -279,6 +297,7 @@ def get_entity_metadata(
     project: Optional[str] = None,
     investigation: Optional[str] = None,
     app_dir=None,
+    use_cache: bool = True,
 ):
     target = resolve_target(
         project=project,
@@ -301,6 +320,7 @@ def get_entity_metadata(
         inputs={"entity_id": entity_id},
         target=target,
         app_dir=app_dir,
+        use_cache=use_cache,
     )
 
 
@@ -311,6 +331,7 @@ def get_metric_metadata(
     project: Optional[str] = None,
     investigation: Optional[str] = None,
     app_dir=None,
+    use_cache: bool = True,
 ):
     target = resolve_target(
         project=project,
@@ -333,6 +354,7 @@ def get_metric_metadata(
         inputs={"metric_id": metric_id},
         target=target,
         app_dir=app_dir,
+        use_cache=use_cache,
     )
 
 
