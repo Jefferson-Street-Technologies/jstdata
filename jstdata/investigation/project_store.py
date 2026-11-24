@@ -12,7 +12,7 @@ import yaml
 from .. import client as _client
 from .batch_writer import ProjectBatchWriter
 from .model import Investigation, InvestigationError
-from .project import DEFAULT_INVESTIGATION_ID, Project
+from .project import DEFAULT_INVESTIGATION_ID, Project, parse_project_timestamp
 from .store import (
     allocate_investigation_id,
     investigation_path,
@@ -106,6 +106,7 @@ def save_project(project: Project, *, app_dir: Optional[Path] = None) -> Path:
     """Write ``project.yaml`` only (investigations unchanged)."""
     project.validate()
     validate_project_id(project.id)
+    project.touch()
     target_dir = project_dir(project.id, app_dir=app_dir)
     with ProjectBatchWriter(target_dir) as writer:
         writer.stage_project(project)
@@ -133,15 +134,66 @@ def load_project(project_id: str, *, app_dir: Optional[Path] = None) -> Project:
     return project
 
 
+def _project_activity_mtime(
+    project_id: str, *, app_dir: Optional[Path] = None
+) -> float:
+    """Newest mtime among project.yaml and investigation YAMLs (filesystem fallback)."""
+    base = project_dir(project_id, app_dir=app_dir)
+    newest = 0.0
+    yaml_path = base / "project.yaml"
+    if yaml_path.is_file():
+        try:
+            newest = max(newest, yaml_path.stat().st_mtime)
+        except OSError:
+            pass
+    inv_dir = base / "investigations"
+    if inv_dir.is_dir():
+        for path in inv_dir.glob("*.yaml"):
+            try:
+                newest = max(newest, path.stat().st_mtime)
+            except OSError:
+                continue
+    return newest
+
+
+def project_sort_key(
+    project: Project, *, app_dir: Optional[Path] = None
+) -> tuple[float, float, str]:
+    """Sort key: updated_at, then created_at, then filesystem mtime; descending via negation."""
+    updated = parse_project_timestamp(project.updated_at)
+    created = parse_project_timestamp(project.created_at)
+    mtime = _project_activity_mtime(project.id, app_dir=app_dir)
+    # Prefer explicit updated_at; else created_at; else mtime.
+    primary = updated if updated is not None else (
+        created if created is not None else mtime
+    )
+    secondary = created if created is not None else mtime
+    return (-primary, -secondary, project.id)
+
+
 def list_projects(*, app_dir: Optional[Path] = None) -> list[str]:
+    """Return project ids, most recently updated first.
+
+    Uses ``updated_at`` when present, else ``created_at``, else the newest
+    mtime among ``project.yaml`` and investigation files.
+    """
     base = projects_dir(app_dir=app_dir)
     if not base.exists():
         return []
-    ids: list[str] = []
-    for path in sorted(base.iterdir()):
-        if path.is_dir() and (path / "project.yaml").is_file():
-            ids.append(path.name)
-    return ids
+    ranked: list[tuple[tuple[float, float, str], str]] = []
+    for path in base.iterdir():
+        if not (path.is_dir() and (path / "project.yaml").is_file()):
+            continue
+        pid = path.name
+        try:
+            project = load_project(pid, app_dir=app_dir)
+            key = project_sort_key(project, app_dir=app_dir)
+        except InvestigationError:
+            mtime = _project_activity_mtime(pid, app_dir=app_dir)
+            key = (-mtime, -mtime, pid)
+        ranked.append((key, pid))
+    ranked.sort(key=lambda item: item[0])
+    return [pid for _, pid in ranked]
 
 
 def save_project_investigation(
@@ -151,15 +203,25 @@ def save_project_investigation(
     app_dir: Optional[Path] = None,
     project: Optional[Project] = None,
 ) -> Path:
-    """Persist an investigation under a project; optionally refresh project.yaml."""
+    """Persist an investigation under a project; refresh project timestamps."""
     validate_project_id(project_id)
     validate_investigation_id(inv.id)
     target_dir = project_dir(project_id, app_dir=app_dir)
+    if project is None:
+        try:
+            project = load_project(project_id, app_dir=app_dir)
+        except InvestigationError:
+            project = Project.new(
+                project_id,
+                title=inv.title or project_id,
+                notes=inv.notes,
+                investigation_ids=[inv.id],
+            )
+    if inv.id not in project.investigations:
+        project.investigations.append(inv.id)
+    project.touch()
     with ProjectBatchWriter(target_dir) as writer:
-        if project is not None:
-            if inv.id not in project.investigations:
-                project.investigations.append(inv.id)
-            writer.stage_project(project)
+        writer.stage_project(project)
         writer.stage_investigation(inv)
     return project_investigations_dir(project_id, app_dir=app_dir) / f"{inv.id}.yaml"
 

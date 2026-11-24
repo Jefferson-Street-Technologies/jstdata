@@ -12,6 +12,9 @@ from jstdata.investigation.project_picker import (
 
 
 def test_load_project_rows_marks_active(tmp_path: Path):
+    from jstdata.investigation.batch_writer import ProjectBatchWriter
+    from jstdata.investigation.project_store import load_project, project_dir
+
     create_project_with_investigation(
         project_id="alpha",
         title="Alpha",
@@ -24,11 +27,23 @@ def test_load_project_rows_marks_active(tmp_path: Path):
         investigation_id="beta",
         app_dir=tmp_path,
     )
+    alpha = load_project("alpha", app_dir=tmp_path)
+    beta = load_project("beta", app_dir=tmp_path)
+    alpha.updated_at = "2024-01-01T00:00:00+00:00"
+    alpha.created_at = "2024-01-01T00:00:00+00:00"
+    beta.updated_at = "2024-06-01T00:00:00+00:00"
+    beta.created_at = "2024-01-02T00:00:00+00:00"
+    with ProjectBatchWriter(project_dir("alpha", app_dir=tmp_path)) as w:
+        w.stage_project(alpha)
+    with ProjectBatchWriter(project_dir("beta", app_dir=tmp_path)) as w:
+        w.stage_project(beta)
+
+    # Most recently updated first.
     rows = load_project_rows(app_dir=tmp_path, active_project="beta")
-    assert [r.project_id for r in rows] == ["alpha", "beta"]
-    assert rows[0].title == "Alpha"
-    assert rows[1].active is True
-    assert rows[0].active is False
+    assert [r.project_id for r in rows] == ["beta", "alpha"]
+    assert rows[0].title == "Beta Research"
+    assert rows[0].active is True
+    assert rows[1].active is False
 
 
 def test_picker_enter_returns_project_id(tmp_path: Path):

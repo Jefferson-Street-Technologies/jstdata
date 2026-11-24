@@ -46,15 +46,21 @@ def test_project_round_trip(tmp_path: Path):
     assert project.id == "ftai-aviation"
     assert project.investigations == ["fundamentals"]
     assert inv.id == "fundamentals"
+    assert project.created_at
+    assert project.updated_at
 
     loaded = load_project("ftai-aviation", app_dir=tmp_path)
     assert loaded.title == "FTAI Aviation"
     assert loaded.notes == "peer research"
+    assert loaded.created_at == project.created_at
+    assert loaded.updated_at
 
     yaml_path = project_yaml_path("ftai-aviation", app_dir=tmp_path)
     assert yaml_path.is_file()
     data = yaml.safe_load(yaml_path.read_text())
     assert data["investigations"] == ["fundamentals"]
+    assert "created_at" in data
+    assert "updated_at" in data
 
     inv_path = project_investigations_dir("ftai-aviation", app_dir=tmp_path) / "fundamentals.yaml"
     assert inv_path.is_file()
@@ -77,6 +83,41 @@ def test_add_investigation_tab(tmp_path: Path):
     assert peers.id == "peers"
     project = load_project("ftai-aviation", app_dir=tmp_path)
     assert project.investigations == ["fundamentals", "peers"]
+
+
+def test_list_projects_sorts_by_updated_at(tmp_path: Path):
+    from jstdata.investigation.project_store import save_project
+
+    older, _ = create_project_with_investigation(
+        project_id="older",
+        title="Older",
+        investigation_id="older",
+        app_dir=tmp_path,
+    )
+    newer, _ = create_project_with_investigation(
+        project_id="newer",
+        title="Newer",
+        investigation_id="newer",
+        app_dir=tmp_path,
+    )
+    older.created_at = "2024-01-01T00:00:00+00:00"
+    older.updated_at = "2024-01-01T00:00:00+00:00"
+    newer.created_at = "2024-01-02T00:00:00+00:00"
+    newer.updated_at = "2024-06-01T00:00:00+00:00"
+    # Bypass touch() so our timestamps stick.
+    from jstdata.investigation.batch_writer import ProjectBatchWriter
+    from jstdata.investigation.project_store import project_dir
+
+    with ProjectBatchWriter(project_dir("older", app_dir=tmp_path)) as w:
+        w.stage_project(older)
+    with ProjectBatchWriter(project_dir("newer", app_dir=tmp_path)) as w:
+        w.stage_project(newer)
+
+    assert list_projects(app_dir=tmp_path)[:2] == ["newer", "older"]
+
+    # Touching older bumps it to the top.
+    save_project(load_project("older", app_dir=tmp_path), app_dir=tmp_path)
+    assert list_projects(app_dir=tmp_path)[0] == "older"
 
 
 def test_batch_writer_atomic(tmp_path: Path):
