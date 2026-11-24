@@ -667,7 +667,8 @@ class QueryScreen(BaseScreen):
         Binding("a", "annotate", "Annotate", show=False),
         Binding("t", "mode_table", "Table", show=False),
         Binding("c", "mode_chart", "Chart", show=False),
-        Binding("v", "mode_raw", "Raw JSON", show=False),
+        Binding("d", "mode_definition", "Definition", show=False),
+        Binding("v", "mode_raw", "Raw / History", show=False),
         Binding("space", "collect", "Collect into workspace", show=False),
         Binding("j", "cursor_down", "Cursor Down", show=False),
         Binding("k", "cursor_up", "Cursor Up", show=False),
@@ -677,30 +678,28 @@ class QueryScreen(BaseScreen):
         Binding("right", "obs_right", "Newer observation", show=False),
         Binding("x", "toggle_series", "Hide or show series", show=False),
         Binding("o", "toggle_sort", "Sort observations", show=False),
-        Binding("e", "export_csv", "Export CSV", show=False),
+        Binding("E", "export_csv", "Export CSV", show=False),
         Binding("y", "copy_python", "Copy Python", show=False),
         Binding("[", "prev_group", "Previous chart group", show=False),
         Binding("]", "next_group", "Next chart group", show=False),
         Binding("enter", "inspect", "Inspect", priority=True),
     ]
 
-    FOOTER_CHROME: tuple[str, ...] = (
-        "[bold #e0e0e0]:[/] [#888]commands[/]",
-        "[bold #e0e0e0]g[/] [#888]home[/]",
-        "[bold #e0e0e0]?[/] [#888]help[/]",
-        "[bold #e0e0e0]q[/] [#888]quit[/]",
-    )
+    FOOTER_CHROME: tuple[str, ...] = BaseScreen.FOOTER_CHROME
 
     DEFAULT_CSS = """
     #query-body { height: 1fr; padding: 1 2 0 2; }
     #query-kicker { color: #4ade80; text-style: bold; height: 1; }
     #query-title { color: #e0e0e0; text-style: bold; height: 1; }
     #query-spec { color: #888; height: 1; }
+    #query-layers { color: #666; height: 1; margin-bottom: 0; }
     #query-annotations {
         color: #c0c0c0;
         height: auto;
-        max-height: 6;
+        max-height: 8;
         margin-bottom: 1;
+        border-top: solid #222;
+        padding-top: 1;
     }
     #query-status { color: #888; height: 1; margin-bottom: 1; }
     #query-summary {
@@ -787,7 +786,7 @@ class QueryScreen(BaseScreen):
         self._records: list[dict[str, Any]] = []
         self._groups: list[PlotGroup] = []
         self._loaded = False
-        self._mode = "table"
+        self._mode = "chart"
         self._series_i = 0
         self._group_i = 0
         self._hidden: set[str] = set()
@@ -800,9 +799,14 @@ class QueryScreen(BaseScreen):
             yield Label("QUERY", id="query-kicker")
             yield Label("", id="query-title")
             yield Static("", id="query-spec")
+            yield Static(
+                "[Chart] [Table] [Definition] [History]",
+                id="query-layers",
+                markup=True,
+            )
             yield Static("", id="query-annotations", markup=True)
             yield Static(
-                "Idle — press [bold]r[/bold] to run",
+                "Loading…",
                 id="query-status",
                 markup=True,
             )
@@ -845,6 +849,13 @@ class QueryScreen(BaseScreen):
         self._render_idle()
         self._apply_mode()
         self.query_one("#query-obs", ListView).focus()
+        # Chart-first: auto-run when the query has something to execute.
+        try:
+            query = self._resolve_query()
+            if not query.is_empty():
+                self.call_later(self.action_load)
+        except Exception:  # noqa: BLE001
+            pass
 
     def footer_status(self) -> list[str]:
         return []
@@ -876,7 +887,8 @@ class QueryScreen(BaseScreen):
                 keys.append("[bold #e0e0e0]o[/] [#888]sort[/]")
             keys.extend(
                 [
-                    "[bold #e0e0e0]e[/] [#888]csv[/]",
+                    "[bold #e0e0e0]d[/] [#888]definition[/]",
+                    "[bold #e0e0e0]E[/] [#888]csv[/]",
                     "[bold #e0e0e0]y[/] [#888]python[/]",
                     "[bold #e0e0e0]↵[/] [#888]inspect[/]",
                     "[bold #e0e0e0]space[/] [#888]collect[/]",
@@ -914,12 +926,27 @@ class QueryScreen(BaseScreen):
 
     def _render_annotations(self, query: Query) -> None:
         panel = self.query_one("#query-annotations", Static)
-        if query.id:
-            panel.update(annotations_panel(query.annotations))
-            panel.display = True
-        else:
-            panel.update("")
-            panel.display = False
+        lines: list[str] = ["[bold #4ade80]ANNOTATIONS[/]"]
+        if query.annotations:
+            lines.append(escape(query.annotations))
+        for i, note in enumerate(query.notes_on or [], start=1):
+            span = ""
+            if note.from_ or note.to:
+                span = f" · {note.from_ or '…'} – {note.to or '…'}"
+            series = f" · {note.series}" if note.series else ""
+            lines.append(
+                f"[bold]{i:02d}[/] {escape(note.text)}[dim]{series}{span}[/]"
+            )
+        if len(lines) == 1 and query.id:
+            body = annotations_panel(query.annotations)
+            if body:
+                lines.append(body)
+            else:
+                lines.append("[dim](none — press a to annotate)[/]")
+        elif len(lines) == 1:
+            lines.append("[dim](none)[/]")
+        panel.update("\n".join(lines))
+        panel.display = True
 
     def refresh_annotations(self) -> None:
         """Host hook after annotation edits."""
@@ -983,7 +1010,7 @@ class QueryScreen(BaseScreen):
         self._group_i = 0
         self._hidden.clear()
         self._cursor_i = -1
-        self._mode = "chart" if len(self._groups) <= 1 else "table"
+        self._mode = "chart"
         line = coverage_status(query, self._records)
         status.update(line)
         if not self._records:
@@ -1186,7 +1213,7 @@ class QueryScreen(BaseScreen):
     def _apply_mode(self) -> None:
         table = self._mode == "table"
         chart = self._mode == "chart"
-        raw = self._mode == "raw"
+        raw = self._mode in ("raw", "definition")
         self.query_one("#query-obs-header").display = table
         self.query_one("#query-obs").display = table
         self.query_one("#query-chart").display = chart
@@ -1194,6 +1221,26 @@ class QueryScreen(BaseScreen):
         self.query_one("#query-cursor").display = (
             chart and self._loaded and bool(self._visible_records())
         )
+        # Layer strip highlight
+        layers = {
+            "chart": "[bold #4ade80]\\[Chart\\][/] [Table] [Definition] [History]",
+            "table": "[Chart] [bold #4ade80]\\[Table\\][/] [Definition] [History]",
+            "definition": "[Chart] [Table] [bold #4ade80]\\[Definition\\][/] [History]",
+            "raw": "[Chart] [Table] [Definition] [bold #4ade80]\\[History\\][/]",
+        }
+        try:
+            self.query_one("#query-layers", Static).update(
+                layers.get(self._mode, layers["chart"])
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        if self._mode == "definition":
+            try:
+                query = self._resolve_query()
+                body = json.dumps(query.to_dict(), indent=2, default=str)
+                self.query_one("#query-raw-body", Static).update(body)
+            except Exception as exc:  # noqa: BLE001
+                self.query_one("#query-raw-body", Static).update(str(exc))
         order = "latest first" if self._newest_first else "oldest first"
         self.query_one("#query-obs-header", Label).update(
             f"{'Period':<14}{'Value':>14}{'Released':>16}     {order}"
@@ -1235,6 +1282,11 @@ class QueryScreen(BaseScreen):
 
     def action_mode_raw(self) -> None:
         self._mode = "raw"
+        self._fill_nav()
+        self._show_selected()
+
+    def action_mode_definition(self) -> None:
+        self._mode = "definition"
         self._fill_nav()
         self._show_selected()
 
@@ -1401,7 +1453,7 @@ class QueryScreen(BaseScreen):
         }
         if action in loaded:
             return self._loaded and not self._busy
-        return True
+        return super().check_action(action, parameters)
 
     @on(ListView.Highlighted, "#query-series")
     def on_series_highlighted(self, event: ListView.Highlighted) -> None:

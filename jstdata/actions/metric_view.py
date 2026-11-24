@@ -45,7 +45,7 @@ class MetricScreen(BaseScreen):
 
     BINDINGS = [
         Binding("r", "load", "Load", key_display="r"),
-        Binding("slash", "focus_filter", "Search entities", key_display="/"),
+        Binding("f", "focus_filter", "Search entities", key_display="f"),
         Binding("escape", "leave_filter", "Leave search", show=False),
         Binding("enter", "confirm", "Open entity", priority=True),
         Binding("j", "cursor_down", "Cursor Down", show=False),
@@ -295,7 +295,7 @@ class MetricScreen(BaseScreen):
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action == "collect" and isinstance(self.focused, Input):
             return False
-        return True
+        return super().check_action(action, parameters)
 
     def action_collect_self(self) -> None:
         """Stage the focused metric (this page), not a list associate."""
@@ -345,6 +345,17 @@ class MetricScreen(BaseScreen):
         entity = self._highlighted_entity()
         if entity is None:
             self.notify("No entity highlighted", severity="warning")
+            return
+        # Chart-first: Enter on an entity opens a draft query for this metric.
+        chart_fn = getattr(self.app, "open_direct_query_chart", None)
+        metric_ids = []
+        ctx = getattr(self, "_input_context", None) or getattr(
+            self, "_parent_overrides", None
+        )
+        if ctx is not None:
+            metric_ids = list(getattr(ctx, "metric", None) or [])
+        if callable(chart_fn) and metric_ids:
+            chart_fn(metric_ids=metric_ids, entity_ids=[entity.id])
             return
         open_fn = getattr(self.app, "open_child_view", None)
         if open_fn is None:

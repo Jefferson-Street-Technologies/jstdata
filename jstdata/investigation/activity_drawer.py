@@ -30,7 +30,8 @@ class ActivityDrawer(ModalScreen[Optional[str]]):
 
     BINDINGS = [
         Binding("escape", "dismiss_drawer", "Close", show=True),
-        Binding("enter", "open_event", "Inspect", show=True),
+        Binding("enter", "open_event", "Inspect historical", show=True),
+        Binding("r", "rerun_event", "Rerun against current data", show=True),
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
         Binding("down", "cursor_down", "Down", show=False),
@@ -113,7 +114,15 @@ class ActivityDrawer(ModalScreen[Optional[str]]):
         listing = self.query_one("#activity-list", ListView)
         item = listing.highlighted_child
         if isinstance(item, _EventItem):
-            self.dismiss(item.event.get("event_id"))
+            self.dismiss({"event_id": item.event.get("event_id"), "mode": "inspect"})
+            return
+        self.dismiss(None)
+
+    def action_rerun_event(self) -> None:
+        listing = self.query_one("#activity-list", ListView)
+        item = listing.highlighted_child
+        if isinstance(item, _EventItem):
+            self.dismiss({"event_id": item.event.get("event_id"), "mode": "rerun"})
             return
         self.dismiss(None)
 
@@ -121,4 +130,6 @@ class ActivityDrawer(ModalScreen[Optional[str]]):
     def _selected(self, event: ListView.Selected) -> None:
         item = event.item
         if isinstance(item, _EventItem):
-            self.dismiss(item.event.get("event_id"))
+            self.dismiss(
+                {"event_id": item.event.get("event_id"), "mode": "inspect"}
+            )

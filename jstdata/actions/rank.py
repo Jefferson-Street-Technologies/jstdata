@@ -539,7 +539,7 @@ class RankScreen(BaseScreen):
         # Priority Enter must reach the filter Input so it can submit.
         if action in ("confirm", "add_entity") and isinstance(self.focused, Input):
             return False
-        return True
+        return super().check_action(action, parameters)
 
     def _highlighted_rank(self) -> Optional[RankEntry]:
         child = self.query_one("#rank-list", ListView).highlighted_child

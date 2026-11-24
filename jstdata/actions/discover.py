@@ -458,7 +458,7 @@ class DiscoverScreen(BaseScreen):
             self.focused, Input
         ):
             return False
-        return True
+        return super().check_action(action, parameters)
 
     def _highlighted_metric(self) -> Optional[Metric]:
         child = self.query_one("#metrics-list", ListView).highlighted_child

@@ -343,9 +343,10 @@ class InvestigationHost(App):
         Binding("question_mark", "show_help", "Action help", key_display="?"),
         Binding(":", "command_palette", "Command", key_display=":"),
         Binding("g", "go_home", "Home", key_display="g"),
-        # Tree: siblings laterally, depth via N/P (and arrows).
-        Binding("n", "next_sibling", "Next sibling"),
-        Binding("p", "prev_sibling", "Prev sibling"),
+        # Tree depth via N/P (and arrows). Sibling nav moved to Ctrl+n/p
+        # so plain ``n`` can mean new draft query in the research shell.
+        Binding("ctrl+n", "next_sibling", "Next sibling", show=False),
+        Binding("ctrl+p", "prev_sibling", "Prev sibling", show=False),
         Binding("down", "next_sibling", "Next sibling", show=False),
         Binding("up", "prev_sibling", "Prev sibling", show=False),
         Binding("N", "child_action", "Into child", key_display="N"),
@@ -357,6 +358,12 @@ class InvestigationHost(App):
         Binding("{", "prev_investigation", "Prev investigation tab", show=False),
         Binding("}", "next_investigation", "Next investigation tab", show=False),
         Binding("A", "show_activity", "Activity", key_display="A"),
+        Binding("H", "show_activity", "History", key_display="H"),
+        Binding("slash", "universal_search", "Search", show=False),
+        Binding("F", "feedback_prompt", "Feedback", key_display="F"),
+        Binding("n", "new_draft_query", "New query", show=False),
+        Binding("s", "save_active_query", "Save query", show=False),
+        Binding("e", "edit_active_query", "Edit query", show=False),
         # ``dd`` is handled in on_key — Textual commas mean alternate keys, not chords.
     ]
 
@@ -386,6 +393,8 @@ class InvestigationHost(App):
         self._ws_order: list[int] = []
         # investigation_id → display title for tab chrome
         self._inv_titles: dict[str, str] = {}
+        # investigation_id → activity mark (●, !, …)
+        self._tab_activity_marks: dict[str, str] = {}
         # Per-tab resume: investigation_id → (workspace_id, action_id)
         self._inv_resume: dict[str, tuple[int, int]] = {}
         self._inv_mtime: float | None = None
@@ -449,6 +458,7 @@ class InvestigationHost(App):
         self.set_interval(POLL_INTERVAL, self._poll_files)
         self._tips_on = tips_enabled(self.onboarding_dir)
         self.set_interval(COACH_INTERVAL, self._poll_coach)
+        self.set_interval(5.0, self._poll_activity_marks)
         if self._invalid:
             return
         first_run = should_prompt(self.onboarding_dir)
@@ -626,6 +636,7 @@ class InvestigationHost(App):
             while len(self.screen_stack) > 2:
                 self.pop_screen()
             self.switch_screen(screen)
+        self.call_later(self.refresh_shell_chrome)
 
     def remember_dest_index(self, dest: str, index: int) -> None:
         self._dest_index[dest] = index
@@ -1155,7 +1166,15 @@ class InvestigationHost(App):
         self.notify(f"Workspace {label}", timeout=2)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        if action == "go_home" and isinstance(self.focused, Input):
+        if action in {
+            "go_home",
+            "universal_search",
+            "new_draft_query",
+            "save_active_query",
+            "edit_active_query",
+            "feedback_prompt",
+            "show_activity",
+        } and isinstance(self.focused, Input):
             return False
         tree_actions = {
             "tutorials",
@@ -1194,22 +1213,318 @@ class InvestigationHost(App):
         return True
 
     def action_go_home(self) -> None:
-        """Reorient: dismiss overlays and activate the root home action."""
+        """Reorient: dismiss overlays and activate the research root."""
         if self._invalid or not self.investigation or not self.active:
             return
         self._nav_dest = None
         self._nav_return = None
         while len(self.screen_stack) > 2:
             self.pop_screen()
-        if isinstance(self.screen, HomeScreen) and self.active.action == ROOT_ACTION_ID:
-            self.screen.leave_destination()
-            self.notify("Home", timeout=1)
+        # Prefer last saved/draft query when returning to research context.
+        preferred = self._preferred_query_id()
+        if preferred is not None and self.active.action == ROOT_ACTION_ID:
+            self.open_query_view(preferred)
             return
         if self.active.action == ROOT_ACTION_ID:
             self._show_front(reset=True)
-            self.notify("Home", timeout=1)
+            self.notify("Research", timeout=1)
             return
         self._activate_action(ROOT_ACTION_ID)
+
+    def _preferred_query_id(self) -> int | None:
+        if not self.investigation or not self.investigation.queries:
+            return None
+        # Prefer report queries, else any draft, highest id first.
+        queries = sorted(
+            self.investigation.queries.values(),
+            key=lambda q: (not q.in_report, -q.id),
+        )
+        return queries[0].id if queries else None
+
+    def refresh_shell_chrome(self, screen: Screen | None = None) -> None:
+        """Push project/tabs/sidebar state into the front BaseScreen shell."""
+        from ..actions.screen import BaseScreen
+        from .shell import ProjectHeader, ResearchSidebar, TabBar
+
+        target = screen or self.screen
+        if not isinstance(target, BaseScreen) or not target.SHELL_ENABLED:
+            return
+        try:
+            header = target.query_one("#shell-header", ProjectHeader)
+            tabs = target.query_one("#shell-tabs", TabBar)
+            sidebar = target.query_one("#shell-sidebar", ResearchSidebar)
+        except Exception:  # noqa: BLE001
+            return
+
+        title = "JST"
+        if self.investigation:
+            title = self.investigation.title or self.investigation.id
+        if self.project and self.project_id:
+            title = self.project.title or self.project_id
+        header.set_project(title)
+
+        order = list(self.project.investigations) if self.project else []
+        if not order and self.active:
+            order = [self.active.investigation]
+        marks: dict[str, str] = {}
+        for inv_id, mark in getattr(self, "_tab_activity_marks", {}).items():
+            marks[inv_id] = mark
+        tabs.set_tabs(
+            order,
+            labels=self._inv_titles,
+            active=self.active.investigation if self.active else None,
+            marks=marks,
+        )
+
+        queries = []
+        active_qid = None
+        if self.investigation:
+            for q in sorted(self.investigation.queries.values(), key=lambda x: x.id):
+                queries.append(
+                    {
+                        "id": q.id,
+                        "name": q.name or f"Query {q.id}",
+                        "in_report": bool(q.in_report),
+                    }
+                )
+            # Detect active query view.
+            try:
+                action = self.investigation.get_action(self.active.action)
+                if action.type == "query":
+                    active_qid = action.args.get("query_id")
+            except Exception:  # noqa: BLE001
+                active_qid = None
+        sidebar.refresh_queries(queries, active_query_id=active_qid)
+
+        ws = self.workspace
+        labels = self.labels
+
+        def _rows(ids: list[str]) -> list[tuple[str, str]]:
+            return [(rid, labels.get(rid, rid)) for rid in ids]
+
+        sidebar.refresh_workspace(
+            entities=_rows(list(ws.entity)),
+            metrics=_rows(list(ws.metric)),
+            series=_rows(list(ws.series)),
+        )
+
+    def action_universal_search(self) -> None:
+        """Open universal search (global context)."""
+        self._open_universal_search(context="global")
+
+    def _open_universal_search(
+        self,
+        *,
+        context: str = "global",
+        resource: str = "all",
+    ) -> None:
+        from .universal_search import UniversalSearchModal
+
+        def _done(result: object | None) -> None:
+            if not result:
+                return
+            if isinstance(result, dict):
+                action = result.get("action")
+                if action == "inspect":
+                    self.open_resource_view(
+                        str(result.get("type")),
+                        str(result.get("id")),
+                        label=result.get("label"),
+                    )
+                elif action == "collect":
+                    self._collect_resource(
+                        str(result.get("type")), str(result.get("id"))
+                    )
+                elif action == "add_to_query":
+                    self._add_resource_to_active_query(
+                        str(result.get("type")), str(result.get("id"))
+                    )
+
+        self.push_screen(
+            UniversalSearchModal(
+                self.client,
+                context=context,
+                resource=resource,
+                app_dir=self.app_dir,
+                project_id=self.project_id,
+                investigation_id=(
+                    self.active.investigation if self.active else None
+                ),
+            ),
+            _done,
+        )
+
+    def _collect_resource(self, resource_type: str, resource_id: str) -> None:
+        ws = self.workspace
+        added = False
+        if resource_type == "metric":
+            added = ws.add_metric(resource_id)
+        elif resource_type == "entity":
+            added = ws.add_entity(resource_id)
+        elif resource_type == "series":
+            added = ws.add_series(resource_id)
+        if added:
+            self.persist_active_workspace()
+            self.refresh_shell_chrome()
+            self.notify(f"Collected {resource_id}")
+        else:
+            self.notify(f"{resource_id} already in workspace")
+
+    def _add_resource_to_active_query(
+        self, resource_type: str, resource_id: str
+    ) -> None:
+        """Append a resource onto the active query draft and reopen."""
+        if not self.investigation or not self.active:
+            self.notify("No investigation loaded", severity="error")
+            return
+        try:
+            action = self.investigation.get_action(self.active.action)
+        except InvestigationError:
+            action = None
+        qid = None
+        if action and action.type == "query":
+            qid = action.args.get("query_id")
+        if qid is None:
+            # Create a fresh draft around this resource.
+            kwargs: dict = {"persist": False, "app_dir": self.app_dir}
+            if resource_type == "metric":
+                kwargs["metric"] = [resource_id]
+            elif resource_type == "entity":
+                kwargs["entity"] = [resource_id]
+            elif resource_type == "series":
+                kwargs["series"] = [resource_id]
+            else:
+                self.notify(f"Cannot add {resource_type} to query", severity="warning")
+                return
+            query = add_query(self.investigation, **kwargs)
+            query.in_report = False
+            persist_investigation(self.investigation, app_dir=self.app_dir)
+            self.open_query_view(query.id)
+            self.refresh_shell_chrome()
+            return
+        query = self.investigation.get_query(int(qid))
+        if resource_type == "metric" and resource_id not in query.metric:
+            query.metric.append(resource_id)
+        elif resource_type == "entity" and resource_id not in query.entity:
+            query.entity.append(resource_id)
+        elif resource_type == "series" and resource_id not in query.series:
+            query.series.append(resource_id)
+        else:
+            self.notify(f"{resource_id} already on query {qid}")
+            return
+        persist_investigation(self.investigation, app_dir=self.app_dir)
+        self.notify(f"Added {resource_id} to query {qid}")
+        self.open_query_view(int(qid))
+        self.refresh_shell_chrome()
+
+    def action_new_draft_query(self) -> None:
+        """Create a draft query (from workspace) or search to seed one."""
+        if self._invalid or not self.investigation:
+            self.notify("No investigation loaded", severity="error")
+            return
+        if self.workspace.is_empty():
+            self.notify("Search for a metric or entity to start a query")
+            self._open_universal_search(context="new_query", resource="all")
+            return
+        try:
+            query = add_query(
+                self.investigation,
+                from_workspace=True,
+                name=None,
+                app_dir=self.app_dir,
+                persist=False,
+            )
+            query.in_report = False
+            persist_investigation(self.investigation, app_dir=self.app_dir)
+        except InvestigationError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        self.notify(f"Draft query {query.id}")
+        self.open_query_view(query.id)
+        self.refresh_shell_chrome()
+
+    def action_save_active_query(self) -> None:
+        """Promote the active query draft to saved (in_report=True)."""
+        if not self.investigation or not self.active:
+            return
+        try:
+            action = self.investigation.get_action(self.active.action)
+        except InvestigationError:
+            self.notify("No active query", severity="warning")
+            return
+        if action.type != "query":
+            self.notify("Open a query to save it", severity="warning")
+            return
+        qid = action.args.get("query_id")
+        if qid is None:
+            return
+        query = self.investigation.get_query(int(qid))
+        if not query.name:
+            query.name = f"Query {query.id}"
+        query.in_report = True
+        persist_investigation(self.investigation, app_dir=self.app_dir)
+        # Log via promote_query for audit trail.
+        try:
+            from ..ops.curation import promote_query
+
+            promote_query(
+                int(qid),
+                project=self.project_id,
+                investigation=self.active.investigation,
+                app_dir=self.app_dir,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        self.notify(f"Saved query {qid}")
+        self.refresh_shell_chrome()
+
+    def action_edit_active_query(self) -> None:
+        """Open incremental edit overlay for the active query."""
+        if not self.investigation or not self.active:
+            return
+        try:
+            action = self.investigation.get_action(self.active.action)
+        except InvestigationError:
+            self.notify("No active query", severity="warning")
+            return
+        if action.type != "query":
+            self.notify("Open a query to edit it", severity="warning")
+            return
+        qid = action.args.get("query_id")
+        if qid is None:
+            return
+        from .query_edit import QueryEditModal
+
+        def _done(result: object | None) -> None:
+            if not result:
+                return
+            self.open_query_view(int(qid))
+            self.refresh_shell_chrome()
+            # Auto-run after edit.
+            run = getattr(self.screen, "action_load", None)
+            if callable(run):
+                self.call_later(run)
+
+        self.push_screen(
+            QueryEditModal(
+                self.investigation.get_query(int(qid)),
+                investigation=self.investigation,
+                app_dir=self.app_dir,
+                project_id=self.project_id,
+                investigation_id=self.active.investigation,
+            ),
+            _done,
+        )
+
+    def action_feedback_prompt(self) -> None:
+        """Prompt for feedback text then queue the local outbox."""
+        from .feedback_modal import FeedbackModal
+
+        def _done(message: str | None) -> None:
+            if message:
+                self._cmd_feedback(message)
+
+        self.push_screen(FeedbackModal(), _done)
 
     def ensure_action(
         self,
@@ -1266,6 +1581,38 @@ class InvestigationHost(App):
             match="args",
         )
 
+    def open_direct_query_chart(
+        self,
+        *,
+        metric_ids: list[str],
+        entity_ids: list[str],
+        name: str | None = None,
+    ) -> None:
+        """Create a draft query from metric×entity and open the chart view."""
+        if self._invalid or not self.investigation:
+            self.notify("No investigation loaded", severity="error")
+            return
+        if not metric_ids or not entity_ids:
+            self.notify("Need metric and entity for a chart", severity="warning")
+            return
+        try:
+            query = add_query(
+                self.investigation,
+                name=name,
+                metric=list(metric_ids),
+                entity=list(entity_ids),
+                tail=20,
+                app_dir=self.app_dir,
+                persist=False,
+            )
+            query.in_report = False
+            persist_investigation(self.investigation, app_dir=self.app_dir)
+        except InvestigationError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        self.open_query_view(query.id)
+        self.refresh_shell_chrome()
+
     def query_from_workspace(self) -> None:
         """Snapshot the workspace bag into a saved query and open it."""
         if self._invalid or not self.investigation:
@@ -1282,12 +1629,16 @@ class InvestigationHost(App):
                 self.investigation,
                 from_workspace=True,
                 app_dir=self.app_dir,
+                persist=False,
             )
+            query.in_report = False  # draft until explicitly saved
+            persist_investigation(self.investigation, app_dir=self.app_dir)
         except InvestigationError as exc:
             self.notify(str(exc), severity="error")
             return
-        self.notify(f"Saved query {query.id}")
+        self.notify(f"Draft query {query.id}")
         self.open_query_view(query.id)
+        self.refresh_shell_chrome()
 
     def action_command_palette(self) -> None:
         if self._invalid:
@@ -1985,15 +2336,42 @@ class InvestigationHost(App):
                 refresh()
 
     def action_show_activity(self) -> None:
-        """Open the action-log activity drawer (does not steal the active view)."""
+        """Open the action-log history drawer (H / A)."""
         from .activity_drawer import ActivityDrawer
         from .artifact_modal import ArtifactModal
 
-        def _opened(event_id: str | None) -> None:
+        def _opened(result: object | None) -> None:
+            if not result:
+                return
+            if isinstance(result, str):
+                event_id, mode = result, "inspect"
+            elif isinstance(result, dict):
+                event_id = result.get("event_id")
+                mode = result.get("mode") or "inspect"
+            else:
+                return
             if not event_id:
                 return
+            if mode == "rerun":
+                try:
+                    from ..ops.rerun import rerun_event
+
+                    out = rerun_event(
+                        str(event_id),
+                        refresh=True,
+                        client=self.client,
+                        app_dir=self.app_dir,
+                    )
+                    if out.status == "error":
+                        self.notify(out.error or "Rerun failed", severity="error")
+                    else:
+                        self.notify(f"Reran → {out.event_id}")
+                        self.refresh_shell_chrome()
+                except Exception as exc:  # noqa: BLE001
+                    self.notify(str(exc), severity="error")
+                return
             self.push_screen(
-                ArtifactModal(event_id, app_dir=self.app_dir)
+                ArtifactModal(str(event_id), app_dir=self.app_dir)
             )
 
         self.push_screen(
@@ -2274,6 +2652,30 @@ class InvestigationHost(App):
             home_dest=self._nav_dest,
             screen_flags=frozenset(flags() if callable(flags) else ()),
         )
+
+    def _poll_activity_marks(self) -> None:
+        """Refresh tab ● marks from recent action-log activity."""
+        if self._invalid or not self.project_id:
+            return
+        try:
+            from ..ops.runner import get_store
+
+            store = get_store(app_dir=self.app_dir)
+            events = store.list_events(project_id=self.project_id, limit=30)
+        except Exception:  # noqa: BLE001
+            return
+        marks: dict[str, str] = {}
+        for event in events:
+            inv_id = event.get("investigation_id")
+            if not inv_id or inv_id in marks:
+                continue
+            if event.get("status") == "error":
+                marks[inv_id] = "!"
+            else:
+                marks[inv_id] = "●"
+        if marks != self._tab_activity_marks:
+            self._tab_activity_marks = marks
+            self.refresh_shell_chrome()
 
     def _poll_coach(self) -> None:
         snap = None

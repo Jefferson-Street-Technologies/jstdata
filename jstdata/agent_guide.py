@@ -116,9 +116,10 @@ _DATA_MODEL = """\
   and an action / view tree. Independent of sibling tabs.
 - **Workspace** — the **global** bag of staged resource ids inside an investigation
   (no observations). Mutated by TUI staging; never mutated by view drills.
-- **Query** — a saved `GET /query` spec (cartesian metric × entity, optional series).
-  **`in_report`** gates local preview / publish membership. Exploratory results stay
-  out until `jst actions promote`.
+- **Query** — a `GET /query` spec (cartesian metric × entity, optional series).
+  Ladder: **Draft** (`in_report=false`) → **Saved** (`in_report=true`, publication-
+  eligible). Direct/incremental exploration creates drafts; `s` / `jst actions
+  promote` saves. Local preview stays saved-only.
 - **Action log / artifact** — every `jst actions` op appends an event; cacheable ops
   store an immutable artifact. Inspect historical payloads without another API call.
 - **Action / View** — reusable TUI screens in the investigation tree (`table`,
@@ -255,9 +256,10 @@ jst actions promote --query 1 --project PROJ --investigation INV
 jst preview
 ```
 
-- **Humans** use the TUI: `g` home, `esc` back, `{` / `}` or `:tab next|prev` to
-  switch tabs, `:tab new|dup|rm`, `:feedback <message>`, Space to stage, `r` to
-  load views. Host `dd` is the delete chord; entity screens bind plain `d`.
+- **Humans** use the chart-first shell: sidebar queries/workspace, `/` search,
+  `n` new draft, `e` edit, `s` save, `a` annotate, `H` history, `F` feedback,
+  `{`/`}` tabs, `g` research root. Enter on a metric/entity opens a draft chart.
+  Host `dd` is the delete chord.
 - **Agents** use `jst actions …` with explicit `--project` / `--investigation`.
   Do not steal the human viewport.
 - **Curation:** exploratory by default; `in_report` only after promote. Copy with

@@ -3,8 +3,9 @@
 No network until the user presses ``r`` (load). ``/`` searches metrics.
 j/k on the last metrics row fetches the next page.
 
+Relationships load in both directions (outgoing and incoming) and list together.
+
 Relationship filters (Data API):
-* ``direction`` — outgoing (default) or incoming relative to this entity
 * ``relationship`` — edge type (never ``identity``; use membership taxonomy)
 * ``relation_taxonomy`` — edge taxonomy slug
 * ``taxonomy`` — membership taxonomy of the *related* entity
@@ -93,7 +94,7 @@ class EntityScreen(BaseScreen):
 
     BINDINGS = [
         Binding("r", "load", "Load", key_display="r"),
-        Binding("slash", "focus_filter", "Search metrics", key_display="/"),
+        Binding("f", "focus_filter", "Search metrics", key_display="f"),
         Binding("escape", "leave_filter", "Leave search", show=False),
         Binding("enter", "confirm", "Open metric / related entity", priority=True),
         Binding("j", "cursor_down", "Cursor Down", show=False),
@@ -106,7 +107,6 @@ class EntityScreen(BaseScreen):
             show=False,
             priority=True,
         ),
-        Binding("d", "toggle_direction", "Toggle relation direction", show=False),
         Binding("space", "collect", "Collect highlighted metric", show=False),
         Binding("a", "collect_self", "Add this entity to workspace", show=False),
     ]
@@ -194,7 +194,8 @@ class EntityScreen(BaseScreen):
         self._input_context = input_context
         self._entity_id: Optional[str] = None
         self._label: str = ""
-        self._relations: list[EntityRelationship] = []
+        # (direction, edge) — both outgoing and incoming are shown together.
+        self._relations: list[tuple[RelationDirection, EntityRelationship]] = []
         self._metrics: list[Metric] = []
         self._pane: Pane = "metrics"
         self._loaded = False
@@ -205,6 +206,7 @@ class EntityScreen(BaseScreen):
         self.page_offset = 0
         self.has_more = False
         self.loading_more = False
+        # Kept for ActionSpec / agent args; UI always loads both directions.
         direction_norm = (direction or "outgoing").strip().lower()
         self.direction: RelationDirection = (
             "incoming" if direction_norm == "incoming" else "outgoing"
@@ -249,7 +251,7 @@ class EntityScreen(BaseScreen):
                 )
                 yield ListView(id="metrics-list")
                 yield Label(
-                    "RELATIONSHIPS (outgoing)",
+                    "RELATIONSHIPS (out + in)",
                     id="relations-header",
                 )
                 yield ListView(id="relations-list")
@@ -293,7 +295,6 @@ class EntityScreen(BaseScreen):
         if self._loaded:
             keys.append("[bold]/[/bold] search")
             keys.append("[bold]tab[/bold] metrics/rels")
-            keys.append(f"[bold]d[/bold] {self.direction}")
             keys.append("[bold]j[/bold]/[bold]k[/bold] move")
             if self._pane == "metrics":
                 keys.append("[bold]enter[/bold] metric")
@@ -305,7 +306,9 @@ class EntityScreen(BaseScreen):
 
     def footer_status(self) -> list[str]:
         parts = super().footer_status()
-        parts.append(f"rels {self.direction}")
+        n_out = sum(1 for d, _ in self._relations if d == "outgoing")
+        n_in = sum(1 for d, _ in self._relations if d == "incoming")
+        parts.append(f"rels →{n_out} ←{n_in}")
         if self.relationship:
             parts.append(self.relationship)
         if self.relation_taxonomy:
@@ -315,7 +318,7 @@ class EntityScreen(BaseScreen):
         return parts
 
     def _relations_header_text(self) -> str:
-        bits = [f"RELATIONSHIPS ({self.direction})"]
+        bits = ["RELATIONSHIPS (out + in)"]
         if self.relationship:
             bits.append(self.relationship)
         if self.relation_taxonomy:
@@ -369,18 +372,6 @@ class EntityScreen(BaseScreen):
     def action_cycle_pane_reverse(self) -> None:
         self.action_cycle_pane()
 
-    def action_toggle_direction(self) -> None:
-        """Flip relation direction and reload edges (membership unchanged)."""
-        self.direction = (
-            "incoming" if self.direction == "outgoing" else "outgoing"
-        )
-        self.query_one("#relations-header", Label).update(
-            self._relations_header_text()
-        )
-        self.refresh_footer()
-        if self._loaded and self._entity_id:
-            self._reload_relations()
-
     def action_cursor_down(self) -> None:
         if isinstance(self.focused, Input):
             return
@@ -404,7 +395,7 @@ class EntityScreen(BaseScreen):
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action == "collect" and isinstance(self.focused, Input):
             return False
-        return True
+        return super().check_action(action, parameters)
 
     def action_collect_self(self) -> None:
         """Stage the focused entity (this page), not a list associate."""
@@ -484,6 +475,12 @@ class EntityScreen(BaseScreen):
         if metric is None:
             self.notify("No metric highlighted", severity="warning")
             return
+        # Chart-first: Enter on a metric opens a draft query chart immediately.
+        chart_fn = getattr(self.app, "open_direct_query_chart", None)
+        entity_ids = [self._entity_id] if self._entity_id else []
+        if callable(chart_fn) and entity_ids:
+            chart_fn(metric_ids=[metric.id], entity_ids=entity_ids)
+            return
         open_fn(
             "metric",
             context=focus_replace_context(
@@ -545,19 +542,41 @@ class EntityScreen(BaseScreen):
                 self.app.remember_label(metric.id, metric.name or metric.id)
             metrics_list.append(MetricAssocRow(metric))
 
-    def _show_relations(self, relations: list[EntityRelationship]) -> None:
-        self._relations = list(relations)
+    def _show_relations(
+        self,
+        *,
+        outgoing: list[EntityRelationship],
+        incoming: list[EntityRelationship],
+    ) -> None:
+        self._relations = [
+            *[("outgoing", rel) for rel in outgoing],
+            *[("incoming", rel) for rel in incoming],
+        ]
         rel_list = self.query_one("#relations-list", ListView)
         rel_list.clear()
-        for rel in self._relations:
-            rel_list.append(RelationRow(rel, direction=self.direction))
+        if outgoing:
+            rel_list.append(
+                ListItem(Label("[dim]— outgoing → —[/]", markup=True))
+            )
+            for rel in outgoing:
+                rel_list.append(RelationRow(rel, direction="outgoing"))
+        if incoming:
+            rel_list.append(
+                ListItem(Label("[dim]— ← incoming —[/]", markup=True))
+            )
+            for rel in incoming:
+                rel_list.append(RelationRow(rel, direction="incoming"))
+        if not outgoing and not incoming:
+            rel_list.append(
+                ListItem(Label("[dim](no relationships)[/]", markup=True))
+            )
         self.query_one("#relations-header", Label).update(
             self._relations_header_text()
         )
 
-    def _relation_kwargs(self) -> dict:
+    def _relation_filter_kwargs(self) -> dict:
+        """Shared filters for both direction fetches (no direction key)."""
         kwargs: dict = {
-            "direction": self.direction,
             "limit": RELATIONS_PAGE,
             "offset": 0,
         }
@@ -569,38 +588,34 @@ class EntityScreen(BaseScreen):
             kwargs["taxonomy"] = self.related_membership_taxonomy
         return kwargs
 
+    def _fetch_relations_both(
+        self, entity_id: str
+    ) -> tuple[list[EntityRelationship], list[EntityRelationship]]:
+        base = self._relation_filter_kwargs()
+        outgoing = self.client.get_entity_relations(
+            entity_id, direction="outgoing", **base
+        )
+        incoming = self.client.get_entity_relations(
+            entity_id, direction="incoming", **base
+        )
+        return list(outgoing), list(incoming)
+
     def _update_status(self, query: str | None) -> None:
         status = self.query_one("#entity-status", Static)
         m_extra = "+" if self.has_more else ""
-        r_extra = "+" if len(self._relations) >= RELATIONS_PAGE else ""
+        n_out = sum(1 for d, _ in self._relations if d == "outgoing")
+        n_in = sum(1 for d, _ in self._relations if d == "incoming")
+        r_extra = (
+            "+"
+            if n_out >= RELATIONS_PAGE or n_in >= RELATIONS_PAGE
+            else ""
+        )
         qbit = f" · “{query}”" if query else ""
         status.update(
             f"{len(self._metrics)}{m_extra} metric(s){qbit} · "
-            f"{len(self._relations)}{r_extra} {self.direction} relationship(s) "
-            f"(membership ≠ classification; d toggles direction)"
+            f"{n_out + n_in}{r_extra} relationship(s) "
+            f"(→{n_out} out · ←{n_in} in; membership ≠ classification)"
         )
-
-    @work(exclusive=True, group="entity-relations")
-    async def _reload_relations(self) -> None:
-        entity_id = self._entity_id
-        if not entity_id:
-            return
-        status = self.query_one("#entity-status", Static)
-        status.update(f"Loading {self.direction} relationships…")
-        try:
-            relations = await asyncio.to_thread(
-                self.client.get_entity_relations,
-                entity_id,
-                **self._relation_kwargs(),
-            )
-        except Exception as exc:
-            status.update(f"Could not load relations: {exc}")
-            return
-        if entity_id != self._entity_id:
-            return
-        self._show_relations(list(relations))
-        self._update_status(self._filter_query.strip() or None)
-        self.refresh_footer()
 
     @work(exclusive=True, group="entity-view")
     async def load_entity(
@@ -620,13 +635,9 @@ class EntityScreen(BaseScreen):
         fetch_limit = page_fetch_limit(ASSOCIATES_PAGE)
         try:
             if reset_meta or not self._entity_meta_loaded:
-                entity, relations, raw = await asyncio.gather(
+                entity, relations_pair, raw = await asyncio.gather(
                     asyncio.to_thread(self.client.get_entity, entity_id),
-                    asyncio.to_thread(
-                        self.client.get_entity_relations,
-                        entity_id,
-                        **self._relation_kwargs(),
-                    ),
+                    asyncio.to_thread(self._fetch_relations_both, entity_id),
                     asyncio.to_thread(
                         self.client.search_metrics,
                         query,
@@ -649,7 +660,8 @@ class EntityScreen(BaseScreen):
                         "showing first)"
                     )
                 self._render_fields(note=note)
-                self._show_relations(list(relations))
+                outgoing, incoming = relations_pair
+                self._show_relations(outgoing=outgoing, incoming=incoming)
                 self._entity_meta_loaded = True
             else:
                 raw = await asyncio.to_thread(
@@ -708,15 +720,17 @@ ENTITY_VIEW = register(
         description=(
             "Inspect a focused entity (id, label, associated metrics, "
             "relationships). Idle until load (r); / searches metrics; "
-            "d toggles relation direction. Membership (taxonomy) ≠ "
-            "classification (classified_as)."
+            "relationships show both outgoing and incoming. Membership "
+            "(taxonomy) ≠ classification (classified_as)."
         ),
         create_screen=create_entity_screen,
         arguments=(
             ActionArgument(
                 name="direction",
                 type="string",
-                description="Relation direction relative to this entity",
+                description=(
+                    "Legacy; UI always loads both outgoing and incoming"
+                ),
                 choices=("outgoing", "incoming"),
             ),
             ActionArgument(
@@ -746,11 +760,6 @@ ENTITY_VIEW = register(
             ActionBinding("r", "load", "Load entity details, metrics, and relations"),
             ActionBinding("/", "focus_filter", "Search metrics for this entity"),
             ActionBinding("tab", "cycle_pane", "Switch metrics / relationships lists"),
-            ActionBinding(
-                "d",
-                "toggle_direction",
-                "Toggle relation direction (outgoing ↔ incoming) and reload",
-            ),
             ActionBinding(
                 "j / k",
                 "cursor",

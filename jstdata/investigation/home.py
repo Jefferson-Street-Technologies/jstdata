@@ -1294,37 +1294,33 @@ class HomeScreen(BaseScreen):
 
 
 def create_home_screen(client, workspace, **kwargs):
-    """Factory used by InvestigationHost for ``type: home`` actions."""
-    title = kwargs.pop("title", "Investigation")
-    body = kwargs.pop("body", "")
-    kwargs.pop("meta", None)
-    kwargs.pop("input_context", None)
-    return HomeScreen(
-        client,
-        workspace,
-        title=title,
-        body=body,
-    )
+    """Factory used by InvestigationHost for ``type: home`` actions.
+
+    Chart-first redesign: land on :class:`ResearchRootScreen` instead of the
+    five-destination Home hub.
+    """
+    from .research_root import create_research_root_screen
+
+    return create_research_root_screen(client, workspace, **kwargs)
 
 
 HOME = register(
     ActionSpec(
         id="home",
-        name="Home",
+        name="Research",
         description=(
-            "Investigation shell: destinations on the left, data on the right, "
-            "action tree along the bottom. g always returns here."
+            "Chart-first research root with sidebar queries/workspace. "
+            "g returns here; / search; n new query."
         ),
         create_screen=create_home_screen,
         arguments=(),
         bindings=(
-            ActionBinding("j / k", "cursor", "Move in the current options list"),
-            ActionBinding("enter", "confirm", "Open the highlighted option"),
-            ActionBinding("a", "annotate", "Edit investigation or query annotations"),
-            ActionBinding("1–5", "jump", "Jump to Recent / Search / Actions / Workspace / Queries"),
-            ActionBinding("esc", "back", "Previous navigation level"),
-            ActionBinding("g", "go_home", "Return to home"),
+            ActionBinding("/", "search", "Universal search"),
+            ActionBinding("n", "new_query", "New draft query"),
+            ActionBinding("H", "history", "Action history"),
+            ActionBinding("F", "feedback", "Feedback"),
+            ActionBinding("g", "go_home", "Return to research root"),
         ),
-        example="jst open tutorial",
+        example="jst open",
     )
 )
