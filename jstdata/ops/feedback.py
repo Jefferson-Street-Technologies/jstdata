@@ -63,18 +63,77 @@ def new_feedback_id() -> str:
     return f"fb_{uuid.uuid4().hex[:12]}"
 
 
+def _truncate(value: Any, *, limit: int = 2000) -> Any:
+    text = json.dumps(value, default=str)
+    if len(text) <= limit:
+        return value
+    return {"truncated": True, "preview": text[:limit]}
+
+
 def capture_diagnostics(
     *,
     screen: Optional[str] = None,
     extra: Optional[dict[str, Any]] = None,
+    project_id: Optional[str] = None,
+    investigation_id: Optional[str] = None,
+    workspace: Optional[dict[str, Any]] = None,
+    view: Optional[dict[str, Any]] = None,
+    app_dir: Optional[Path] = None,
+    store: Optional[ActionLogStore] = None,
+    recent_limit: int = 10,
 ) -> dict[str, Any]:
-    """Bundle safe local diagnostics for a feedback submission."""
+    """Bundle safe local diagnostics for a feedback submission.
+
+    Captures page context at modal-open / submit time: platform, screen, workspace
+    snapshot, view params, recent action-log events, and truncated artifacts.
+    """
     payload: dict[str, Any] = {
         "captured_at": _utc_now(),
         "platform": platform.platform(),
         "python": platform.python_version(),
         "screen": screen,
+        "project_id": project_id,
+        "investigation_id": investigation_id,
+        "workspace": workspace,
+        "view": view,
     }
+    try:
+        from importlib.metadata import version as pkg_version
+
+        payload["client_version"] = pkg_version("jstdata")
+    except Exception:  # noqa: BLE001
+        payload["client_version"] = "unknown"
+
+    log = store or get_store(app_dir=app_dir)
+    try:
+        events = log.list_events(
+            project_id=project_id,
+            investigation_id=investigation_id,
+            limit=max(1, int(recent_limit)),
+        )
+    except Exception:  # noqa: BLE001
+        events = []
+    recent: list[dict[str, Any]] = []
+    snippets: dict[str, Any] = {}
+    for event in events:
+        recent.append(
+            {
+                "event_id": event.get("event_id"),
+                "operation": event.get("operation"),
+                "status": event.get("status"),
+                "completed_at": event.get("completed_at"),
+                "error": event.get("error"),
+            }
+        )
+        art_id = event.get("artifact_id")
+        if art_id and event.get("event_id") and len(snippets) < 3:
+            try:
+                data = log.load_artifact_data(art_id)
+                snippets[event["event_id"]] = _truncate(data)
+            except Exception:  # noqa: BLE001
+                continue
+    payload["recent_events"] = recent
+    payload["artifact_snippets"] = snippets
     if extra:
         payload["extra"] = extra
     return _redact(payload)

@@ -356,6 +356,7 @@ class InvestigationHost(App):
         # Investigation tabs within the open project (`{` / `}`).
         Binding("{", "prev_investigation", "Prev investigation tab", show=False),
         Binding("}", "next_investigation", "Next investigation tab", show=False),
+        Binding("A", "show_activity", "Activity", key_display="A"),
         # ``dd`` is handled in on_key — Textual commas mean alternate keys, not chords.
     ]
 
@@ -1363,6 +1364,51 @@ class InvestigationHost(App):
             self.set_tips(not self._tips_on if state is None else bool(state))
         elif parsed.name == "feedback":
             self._cmd_feedback(str(parsed.options.get("message") or ""))
+        elif parsed.name == "activity":
+            self.action_show_activity()
+
+    def _feedback_diagnostics(self) -> dict:
+        from ..ops import feedback as fb
+
+        inv = self.investigation
+        ws = inv.workspace if inv else None
+        action = None
+        if inv and self.active and self.active.action in inv.actions:
+            action = inv.actions[self.active.action]
+        return fb.capture_diagnostics(
+            screen=type(self.screen).__name__,
+            project_id=self.project_id,
+            investigation_id=(
+                self.active.investigation if self.active else None
+            ),
+            workspace=(
+                {
+                    "metric": list(ws.metric),
+                    "entity": list(ws.entity),
+                    "series": list(ws.series),
+                    "taxonomy": ws.taxonomy,
+                    "head": ws.head,
+                    "tail": ws.tail,
+                }
+                if ws
+                else None
+            ),
+            view={
+                "type": type(self.screen).__name__,
+                "action_id": self.active.action if self.active else None,
+                "action_type": action.type if action else None,
+                "args": dict(action.args) if action else None,
+                "size": (
+                    [self.size.width, self.size.height]
+                    if getattr(self, "size", None)
+                    else None
+                ),
+            },
+            app_dir=self.app_dir,
+            extra={
+                "action": self.active.action if self.active else None,
+            },
+        )
 
     def _cmd_feedback(self, message: str) -> None:
         from ..ops import feedback as fb
@@ -1374,12 +1420,7 @@ class InvestigationHost(App):
                 self.active.investigation if self.active else None
             ),
             screen=type(self.screen).__name__,
-            diagnostics=fb.capture_diagnostics(
-                screen=type(self.screen).__name__,
-                extra={
-                    "action": self.active.action if self.active else None,
-                },
-            ),
+            diagnostics=self._feedback_diagnostics(),
             app_dir=self.app_dir,
         )
         if result.status == "error":
@@ -1942,6 +1983,29 @@ class InvestigationHost(App):
             refresh = getattr(screen, "refresh_annotations", None)
             if callable(refresh):
                 refresh()
+
+    def action_show_activity(self) -> None:
+        """Open the action-log activity drawer (does not steal the active view)."""
+        from .activity_drawer import ActivityDrawer
+        from .artifact_modal import ArtifactModal
+
+        def _opened(event_id: str | None) -> None:
+            if not event_id:
+                return
+            self.push_screen(
+                ArtifactModal(event_id, app_dir=self.app_dir)
+            )
+
+        self.push_screen(
+            ActivityDrawer(
+                project_id=self.project_id,
+                investigation_id=(
+                    self.active.investigation if self.active else None
+                ),
+                app_dir=self.app_dir,
+            ),
+            _opened,
+        )
 
     def _open_workspace_drawer(self) -> None:
         # If already open, focus it by pushing a fresh one on top (dismiss old?).

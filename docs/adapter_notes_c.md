@@ -16,18 +16,21 @@ approval.
 
 ## Report membership
 
-- Explicit boolean `Query.in_report` (default false / exploratory).
+- Explicit boolean `Query.in_report` (default false for new `jst actions query add`
+  / `--save`; legacy YAML loads default True).
 - Set by `jst actions promote` (from event id or `--query <id>`).
 - Copy across investigations preserves `in_report` on copied queries.
-- Preview and (future) multi-tab publish must keep this gate — never “all queries.”
+- **Local preview** (`jst preview`) remains curated/`in_report`-only.
+- **Remote publish** (handoff §1.7): default **includes** workspace + view-tree
+  `actions`; only `in_report` queries; `--exclude-workspace` / `--exclude-actions`;
+  auto-omit workspace then actions on 256KB overrun with user notification; then
+  error. Action **log** / SQLite artifacts never publish.
 
 ## Legacy single-investigation wire
 
 - Existing publish/clone payloads for one investigation remain the compatibility
   baseline (`jstdata/publish.py`).
-- Default publish still considers workspace + actions with size limits / notify /
-  omit behavior from the parent spec; do not break legacy round-trips when adding
-  multi-tab.
+- Do not break legacy round-trips when adding multi-tab.
 
 ## Suggested multi-tab publish shape (client expectation)
 

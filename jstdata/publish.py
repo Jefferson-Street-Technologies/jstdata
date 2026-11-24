@@ -106,21 +106,37 @@ def publish_investigation(
     api_key: str,
     site_url: str = DEFAULT_SITE_URL,
     publisher_name: Optional[str] = None,
+    include_workspace: bool = True,
+    include_actions: bool = True,
+    notifications: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     """Publish ``inv`` and return ``{"id", "url", "recordCount"}``.
 
     The server runs the queries with ``api_key``, so they count toward the
     key's usage like any other query. Each call creates a new publication;
     earlier ones are never changed.
+
+    Handoff §1.7: workspace and actions are included by default; pass
+    ``include_*=False`` to exclude. Size overruns auto-omit workspace then
+    actions and append messages onto ``notifications`` when provided.
     """
     from .ops.curation import publication_projection
+    from .ops.result import OperationError
 
-    projected = publication_projection(inv)
+    try:
+        projected, notes = publication_projection(
+            inv,
+            include_workspace=include_workspace,
+            include_actions=include_actions,
+        )
+    except OperationError as exc:
+        raise PublishError(str(exc)) from exc
+    if notifications is not None:
+        notifications.extend(notes)
     if not projected.get("queries"):
         raise PublishError(
             f"{inv.id!r} has no report queries to publish. "
-            "Save one with `:query` / `jst query add`, or "
-            "`jst actions promote --query <id>`."
+            "Promote one with `jst actions promote` / `--query <id>`."
         )
     site_url = check_site_url(site_url)
     body: dict[str, Any] = {"investigation": projected}
@@ -145,6 +161,9 @@ def publish_investigation(
         raise PublishError(
             f"{site_url} answered, but not with a publication link."
         ) from exc
+    if notes:
+        result = dict(result)
+        result["notifications"] = notes
     return result
 
 
@@ -155,6 +174,8 @@ def update_publication(
     api_key: str,
     site_url: str = DEFAULT_SITE_URL,
     publisher_name: Optional[str] = None,
+    include_workspace: bool = True,
+    include_actions: bool = True,
 ) -> dict[str, Any]:
     """Replace an existing publication's text with ``inv``'s (JEF-166).
 
@@ -165,9 +186,18 @@ def update_publication(
     Only the publication's own publisher can update it.
     """
     from .ops.curation import publication_projection
+    from .ops.result import OperationError
 
     site_url = check_site_url(site_url)
-    body: dict[str, Any] = {"investigation": publication_projection(inv)}
+    try:
+        projected, _notes = publication_projection(
+            inv,
+            include_workspace=include_workspace,
+            include_actions=include_actions,
+        )
+    except OperationError as exc:
+        raise PublishError(str(exc)) from exc
+    body: dict[str, Any] = {"investigation": projected}
     if publisher_name:
         body["publisherName"] = publisher_name
     try:

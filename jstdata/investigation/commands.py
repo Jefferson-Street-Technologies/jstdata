@@ -91,6 +91,11 @@ COMMANDS: tuple[CommandSpec, ...] = (
         "Queue local product feedback (outbox until remote ingest)",
         usage="feedback <message>",
     ),
+    CommandSpec(
+        "activity",
+        "Open the action-log activity drawer for this project/investigation",
+        usage="activity",
+    ),
 )
 
 _TAB_SUBCOMMANDS = (
@@ -423,6 +428,10 @@ def parse_command_line(raw: str) -> ParsedCommand:
     if name == "publish":
         if rest:
             raise CommandError("Usage: publish")
+        return ParsedCommand(name=name)
+    if name == "activity":
+        if rest:
+            raise CommandError("Usage: activity")
         return ParsedCommand(name=name)
     if name == "search":
         return _parse_search(rest)

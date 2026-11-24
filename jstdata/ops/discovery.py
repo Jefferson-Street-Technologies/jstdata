@@ -358,6 +358,129 @@ def get_metric_metadata(
     )
 
 
+def get_series_metadata(
+    client: JSTDataClient,
+    series_id: str,
+    *,
+    project: Optional[str] = None,
+    investigation: Optional[str] = None,
+    app_dir=None,
+    use_cache: bool = True,
+):
+    target = resolve_target(
+        project=project,
+        investigation=investigation,
+        app_dir=app_dir,
+        require=False,
+    )
+
+    def _run():
+        series = client.get_series(series_id)
+        return _jsonable(
+            series.model_dump()
+            if hasattr(series, "model_dump")
+            else series.dict()
+            if hasattr(series, "dict")
+            else asdict(series)
+            if is_dataclass(series)
+            else {"id": getattr(series, "id", series_id)}
+        )
+
+    return run_operation(
+        "metadata.series",
+        _run,
+        inputs={"series_id": series_id},
+        target=target,
+        app_dir=app_dir,
+        use_cache=use_cache,
+    )
+
+
+def get_release_metadata(
+    client: JSTDataClient,
+    release_id: str,
+    *,
+    project: Optional[str] = None,
+    investigation: Optional[str] = None,
+    app_dir=None,
+    use_cache: bool = True,
+):
+    target = resolve_target(
+        project=project,
+        investigation=investigation,
+        app_dir=app_dir,
+        require=False,
+    )
+
+    def _run():
+        release = client.get_release(release_id)
+        return _jsonable(
+            release.model_dump()
+            if hasattr(release, "model_dump")
+            else release.dict()
+            if hasattr(release, "dict")
+            else asdict(release)
+            if is_dataclass(release)
+            else {"id": getattr(release, "id", release_id)}
+        )
+
+    return run_operation(
+        "metadata.release",
+        _run,
+        inputs={"release_id": release_id},
+        target=target,
+        app_dir=app_dir,
+        use_cache=use_cache,
+    )
+
+
+def coverage_preview(
+    client: JSTDataClient,
+    *,
+    metric: Optional[Sequence[str]] = None,
+    entity: Optional[Sequence[str]] = None,
+    limit: int = 50,
+    offset: int = 0,
+    project: Optional[str] = None,
+    investigation: Optional[str] = None,
+    app_dir=None,
+    use_cache: bool = True,
+):
+    """Metric × entity coverage via ``GET /preview`` (no observations)."""
+    target = resolve_target(
+        project=project,
+        investigation=investigation,
+        app_dir=app_dir,
+        require=False,
+    )
+    metrics = list(metric or ())
+    entities = list(entity or ())
+    inputs = {
+        "metric": metrics,
+        "entity": entities,
+        "limit": limit,
+        "offset": offset,
+    }
+
+    def _run():
+        rows = client.preview(
+            metric=metrics or None,
+            entity=entities or None,
+            limit=limit,
+            offset=offset,
+        )
+        return _serialize(rows)
+
+    return run_operation(
+        "coverage.preview",
+        _run,
+        inputs=inputs,
+        target=target,
+        app_dir=app_dir,
+        use_cache=use_cache,
+    )
+
+
 def workspace_show(
     *,
     project: Optional[str] = None,
@@ -415,6 +538,7 @@ def list_saved_queries(
             {
                 "id": q.id,
                 "name": q.name,
+                "in_report": q.in_report,
                 "metric": list(q.metric),
                 "entity": list(q.entity),
                 "series": list(q.series),

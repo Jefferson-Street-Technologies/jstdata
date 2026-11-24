@@ -339,9 +339,85 @@ def metadata_metric_cmd(
     _echo_result(result, format=fmt)
 
 
+@metadata_group.command("series")
+@click.argument("series_id")
+@_refresh_option
+@_target_options
+@_format_option
+def metadata_series_cmd(
+    series_id: str,
+    refresh: bool,
+    project: Optional[str],
+    investigation: Optional[str],
+    fmt: str,
+) -> None:
+    result = disc.get_series_metadata(
+        _client(),
+        series_id,
+        project=project,
+        investigation=investigation,
+        use_cache=not refresh,
+    )
+    _echo_result(result, format=fmt)
+
+
+@metadata_group.command("release")
+@click.argument("release_id")
+@_refresh_option
+@_target_options
+@_format_option
+def metadata_release_cmd(
+    release_id: str,
+    refresh: bool,
+    project: Optional[str],
+    investigation: Optional[str],
+    fmt: str,
+) -> None:
+    result = disc.get_release_metadata(
+        _client(),
+        release_id,
+        project=project,
+        investigation=investigation,
+        use_cache=not refresh,
+    )
+    _echo_result(result, format=fmt)
+
+
+@actions_group.command("coverage")
+@click.option("--metric", multiple=True)
+@click.option("--entity", multiple=True)
+@click.option("--limit", default=50, show_default=True)
+@click.option("--offset", default=0, show_default=True)
+@_refresh_option
+@_target_options
+@_format_option
+def coverage_cmd(
+    metric: tuple[str, ...],
+    entity: tuple[str, ...],
+    limit: int,
+    offset: int,
+    refresh: bool,
+    project: Optional[str],
+    investigation: Optional[str],
+    fmt: str,
+) -> None:
+    """Metric × entity coverage preview (no observations)."""
+    result = disc.coverage_preview(
+        _client(),
+        metric=metric or None,
+        entity=entity or None,
+        limit=limit,
+        offset=offset,
+        project=project,
+        investigation=investigation,
+        use_cache=not refresh,
+    )
+    _echo_result(result, format=fmt)
+
+
 @actions_group.group("workspace")
 def workspace_group() -> None:
-    """Inspect staged research intent."""
+    """Stage and inspect research intent (no observations)."""
 
 
 @workspace_group.command("show")
@@ -358,9 +434,55 @@ def workspace_show_cmd(
     _echo_result(result, format=fmt)
 
 
+@workspace_group.command("add")
+@click.option("--metric", multiple=True)
+@click.option("--entity", multiple=True)
+@click.option("--series", multiple=True)
+@_target_options
+@_format_option
+def workspace_add_cmd(
+    metric: tuple[str, ...],
+    entity: tuple[str, ...],
+    series: tuple[str, ...],
+    project: Optional[str],
+    investigation: Optional[str],
+    fmt: str,
+) -> None:
+    from .ops import workspace_ops as ws
+
+    result = ws.workspace_add(
+        metric=metric or None,
+        entity=entity or None,
+        series=series or None,
+        project=project,
+        investigation=investigation,
+    )
+    _echo_result(result, format=fmt)
+
+
+@workspace_group.command("rm")
+@click.argument("ids", nargs=-1, required=True)
+@_target_options
+@_format_option
+def workspace_rm_cmd(
+    ids: tuple[str, ...],
+    project: Optional[str],
+    investigation: Optional[str],
+    fmt: str,
+) -> None:
+    from .ops import workspace_ops as ws
+
+    result = ws.workspace_rm(
+        ids,
+        project=project,
+        investigation=investigation,
+    )
+    _echo_result(result, format=fmt)
+
+
 @actions_group.group("query")
 def actions_query_group() -> None:
-    """Saved / exploratory queries (more commands in later slices)."""
+    """Exploratory and saved queries (logged)."""
 
 
 @actions_query_group.command("ls")
@@ -373,6 +495,210 @@ def query_ls_cmd(
 ) -> None:
     result = disc.list_saved_queries(
         project=project, investigation=investigation
+    )
+    _echo_result(result, format=fmt)
+
+
+@actions_query_group.command("show")
+@click.argument("query_id", type=int)
+@_target_options
+@_format_option
+def query_show_cmd(
+    query_id: int,
+    project: Optional[str],
+    investigation: Optional[str],
+    fmt: str,
+) -> None:
+    from .ops import query_ops
+
+    result = query_ops.show_query_op(
+        query_id, project=project, investigation=investigation
+    )
+    _echo_result(result, format=fmt)
+
+
+@actions_query_group.command("inspect")
+@click.argument("query_id", type=int)
+@click.option("--limit", default=50, show_default=True)
+@click.option("--offset", default=0, show_default=True)
+@_refresh_option
+@_target_options
+@_format_option
+def query_inspect_cmd(
+    query_id: int,
+    limit: int,
+    offset: int,
+    refresh: bool,
+    project: Optional[str],
+    investigation: Optional[str],
+    fmt: str,
+) -> None:
+    from .ops import query_ops
+
+    result = query_ops.inspect_query_op(
+        _client(),
+        query_id,
+        limit=limit,
+        offset=offset,
+        project=project,
+        investigation=investigation,
+        use_cache=not refresh,
+    )
+    _echo_result(result, format=fmt)
+
+
+@actions_query_group.command("run")
+@click.option("--query", "query_id", type=int, default=None)
+@click.option(
+    "--spec",
+    type=click.Path(exists=True, dir_okay=False, path_type=str),
+    default=None,
+    help="JSON query spec file",
+)
+@click.option("--metric", multiple=True)
+@click.option("--entity", multiple=True)
+@click.option("--series", multiple=True)
+@click.option("--frequency", default=None)
+@click.option("--taxonomy", default=None)
+@click.option("--head", type=int, default=None)
+@click.option("--tail", type=int, default=None)
+@click.option("--as-of", "as_of", default=None)
+@click.option("--sort-by", "sort_by", default=None)
+@click.option("--order-by", "order_by", default=None)
+@click.option(
+    "--save/--no-save",
+    default=False,
+    help="Persist as exploratory query (in_report=false)",
+)
+@click.option("--name", default=None)
+@_refresh_option
+@_target_options
+@_format_option
+def query_run_cmd(
+    query_id: Optional[int],
+    spec: Optional[str],
+    metric: tuple[str, ...],
+    entity: tuple[str, ...],
+    series: tuple[str, ...],
+    frequency: Optional[str],
+    taxonomy: Optional[str],
+    head: Optional[int],
+    tail: Optional[int],
+    as_of: Optional[str],
+    sort_by: Optional[str],
+    order_by: Optional[str],
+    save: bool,
+    name: Optional[str],
+    refresh: bool,
+    project: Optional[str],
+    investigation: Optional[str],
+    fmt: str,
+) -> None:
+    """Execute a query; log records as an immutable artifact."""
+    from pathlib import Path
+
+    from .ops import query_ops
+
+    result = query_ops.run_query_op(
+        _client(),
+        query_id=query_id,
+        spec=Path(spec) if spec else None,
+        metric=metric or None,
+        entity=entity or None,
+        series=series or None,
+        frequency=frequency,
+        taxonomy=taxonomy,
+        head=head,
+        tail=tail,
+        as_of=as_of,
+        sort_by=sort_by,
+        order_by=order_by,
+        save=save,
+        name=name,
+        project=project,
+        investigation=investigation,
+        use_cache=not refresh,
+    )
+    _echo_result(result, format=fmt)
+
+
+@actions_query_group.command("add")
+@click.option("--metric", multiple=True)
+@click.option("--entity", multiple=True)
+@click.option("--series", multiple=True)
+@click.option("--frequency", default=None)
+@click.option("--taxonomy", default=None)
+@click.option("--head", type=int, default=None)
+@click.option("--tail", type=int, default=None)
+@click.option("--as-of", "as_of", default=None)
+@click.option("--sort-by", "sort_by", default=None)
+@click.option("--order-by", "order_by", default=None)
+@click.option("--name", default=None)
+@click.option("--annotations", default=None)
+@click.option(
+    "--in-report/--exploratory",
+    default=False,
+    help="Report membership (default exploratory)",
+)
+@click.option("--from-workspace", is_flag=True, default=False)
+@_target_options
+@_format_option
+def query_add_cmd(
+    metric: tuple[str, ...],
+    entity: tuple[str, ...],
+    series: tuple[str, ...],
+    frequency: Optional[str],
+    taxonomy: Optional[str],
+    head: Optional[int],
+    tail: Optional[int],
+    as_of: Optional[str],
+    sort_by: Optional[str],
+    order_by: Optional[str],
+    name: Optional[str],
+    annotations: Optional[str],
+    in_report: bool,
+    from_workspace: bool,
+    project: Optional[str],
+    investigation: Optional[str],
+    fmt: str,
+) -> None:
+    from .ops import query_ops
+
+    result = query_ops.add_query_op(
+        metric=metric or None,
+        entity=entity or None,
+        series=series or None,
+        frequency=frequency,
+        taxonomy=taxonomy,
+        head=head,
+        tail=tail,
+        as_of=as_of,
+        sort_by=sort_by,
+        order_by=order_by,
+        name=name,
+        annotations=annotations,
+        in_report=in_report,
+        from_workspace=from_workspace,
+        project=project,
+        investigation=investigation,
+    )
+    _echo_result(result, format=fmt)
+
+
+@actions_query_group.command("rm")
+@click.argument("query_id", type=int)
+@_target_options
+@_format_option
+def query_rm_cmd(
+    query_id: int,
+    project: Optional[str],
+    investigation: Optional[str],
+    fmt: str,
+) -> None:
+    from .ops import query_ops
+
+    result = query_ops.remove_query_op(
+        query_id, project=project, investigation=investigation
     )
     _echo_result(result, format=fmt)
 
@@ -542,4 +868,87 @@ def log_cmd(
 def inspect_cmd(event_id: str, fmt: str) -> None:
     """Inspect a historical event and its artifact (no Data API call)."""
     result = disc.inspect_event(event_id)
+    _echo_result(result, format=fmt)
+
+
+@actions_group.command("rerun")
+@click.argument("event_id")
+@click.option(
+    "--refresh/--no-refresh",
+    "refresh",
+    default=True,
+    help="Bypass artifact cache when re-dispatching (default refresh)",
+)
+@_format_option
+def rerun_cmd(event_id: str, refresh: bool, fmt: str) -> None:
+    """Re-dispatch a historical discovery/metadata/query operation."""
+    from .ops import rerun as rerun_mod
+    from .ops.result import OperationError
+
+    try:
+        result = rerun_mod.rerun_event(
+            event_id, refresh=refresh, client=_client()
+        )
+    except OperationError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    _echo_result(result, format=fmt)
+
+
+@actions_group.command("annotate")
+@click.option("--text", required=True, help="Annotation / commentary text")
+@click.option("--query", "query_id", type=int, default=None)
+@click.option("--series", default=None, help="Series id for notes_on")
+@click.option("--from", "date_from", default=None, help="notes_on from date")
+@click.option("--to", "date_to", default=None, help="notes_on to date")
+@_target_options
+@_format_option
+def annotate_cmd(
+    text: str,
+    query_id: Optional[int],
+    series: Optional[str],
+    date_from: Optional[str],
+    date_to: Optional[str],
+    project: Optional[str],
+    investigation: Optional[str],
+    fmt: str,
+) -> None:
+    """Set investigation/query commentary or append a notes_on slice."""
+    from .ops import workspace_ops as ws
+    from .ops.result import OperationError
+
+    try:
+        result = ws.annotate_op(
+            text,
+            query_id=query_id,
+            series=series,
+            date_from=date_from,
+            date_to=date_to,
+            project=project,
+            investigation=investigation,
+        )
+    except OperationError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    _echo_result(result, format=fmt)
+
+
+@actions_group.command("state")
+@click.option("--recent", default=5, show_default=True)
+@_target_options
+@_format_option
+def state_cmd(
+    recent: int,
+    project: Optional[str],
+    investigation: Optional[str],
+    fmt: str,
+) -> None:
+    """Show investigation research state + recent action-log events."""
+    from .ops import workspace_ops as ws
+
+    result = ws.state_show(
+        project=project,
+        investigation=investigation,
+        recent=recent,
+    )
     _echo_result(result, format=fmt)

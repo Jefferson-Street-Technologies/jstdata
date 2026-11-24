@@ -90,8 +90,8 @@ observations unless needed to disambiguate. Select a useful set and stop.
 Example: “Compare military expenditure as a share of GDP across NATO countries.”
 
 Resolve ids → relationships / taxonomy membership → bounded exploratory values
-(`jst api query` with `tail=1` until a logged query-run action exists) → answer from
-structured output. Promote only what belongs in the report. No TUI required.
+(`jst actions query run … --tail 1`) → answer from structured output. Promote only
+what belongs in the report. No TUI required.
 
 ### Human handoff
 
@@ -178,19 +178,16 @@ jst actions search entities --relation classified_as:<industry-id> \\
 
 ### Exploratory latest values (triage)
 
-Until a logged query-run action lands, shallow triage may use soft-deprecated API:
-
 ```bash
-jst api query --metric <metric-id> --entity <e1> --entity <e2> --tail 1 --format json
-```
-
-Prefer promoting from a logged, query-shaped event when one exists:
-
-```bash
-jst actions log --project PROJ --investigation INV --limit 20
-jst actions inspect <event-id>
-jst actions promote <event-id> --name "Peer revenue" \\
+jst actions query run \\
+  --metric <metric-id> --entity <e1> --entity <e2> --tail 1 \\
   --project PROJ --investigation INV
+# Persist exploratory (in_report=false), then promote later:
+jst actions query run --metric <metric-id> --entity <e1> --tail 1 --save \\
+  --name "Peer revenue" --project PROJ --investigation INV
+jst actions promote <event-id> --project PROJ --investigation INV
+# Or promote a saved exploratory query:
+jst actions promote --query 1 --project PROJ --investigation INV
 ```
 
 ### Copy research across tabs

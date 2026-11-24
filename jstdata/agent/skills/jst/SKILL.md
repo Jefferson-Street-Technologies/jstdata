@@ -28,10 +28,12 @@ project layout — those change with the package.
 - Prefer `jst actions …` for audited research. Pass `--project` and
   `--investigation` explicitly when mutating.
 - Resolve ids with `jst actions search …` (JSON by default). Never invent ids.
-- Workflow: resolve → actions → `jst actions inspect` → `jst actions promote` →
-  hand off the project. Do not edit project/investigation YAML to change state.
-- Soft-deprecated `jst api` is only for low-level / exploratory value pulls
-  outside the audited path. Do not use retired `jst action` / `jst query`.
+- Run values with `jst actions query run` (optional `--save`); promote with
+  `jst actions promote`.
+- Workflow: resolve → actions → `jst actions inspect` → promote → hand off.
+  Do not edit project/investigation YAML to change state.
+- Do not use retired `jst action` / `jst query`, or soft-deprecated `jst api`,
+  for the audited research path.
 - Do not launch the TUI (`jst` / `jst open`) unless the user asked to operate
   the UI.
 - If `jst` is not on PATH, tell the user to `pip install jstdata` (or Poetry)

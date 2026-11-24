@@ -54,7 +54,9 @@ def test_feedback_outbox_redacts_secrets(tmp_path: Path):
     assert inspected.data["message"].startswith("Charts")
 
 
-def test_publication_projection_drops_workspace_and_exploratory(tmp_path: Path):
+def test_publication_projection_includes_workspace_excludes_exploratory(
+    tmp_path: Path,
+):
     _, inv = create_project_with_investigation(
         project_id="ftai",
         title="FTAI",
@@ -83,11 +85,57 @@ def test_publication_projection_drops_workspace_and_exploratory(tmp_path: Path):
     explor.in_report = False
     persist_investigation(inv, app_dir=tmp_path)
 
-    projected = publication_projection(inv)
-    assert "workspace" not in projected
+    projected, notes = publication_projection(inv)
+    assert notes == []
+    assert "workspace" in projected
+    assert "gdp" in projected["workspace"]["metric"]
+    assert "actions" in projected
     assert len(projected["queries"]) == 1
     assert projected["queries"][0]["id"] == report.id
     assert projected["queries"][0]["in_report"] is True
+
+    stripped, _ = publication_projection(
+        inv, include_workspace=False, include_actions=False
+    )
+    assert "workspace" not in stripped
+    assert "actions" not in stripped
+
+
+def test_publication_projection_auto_omits_on_size(tmp_path: Path):
+    _, inv = create_project_with_investigation(
+        project_id="ftai",
+        title="FTAI",
+        investigation_id="fundamentals",
+        app_dir=tmp_path,
+    )
+    # Inflate workspace so a mid-size limit drops it first.
+    for i in range(40):
+        inv.workspace.add_metric(f"metric-{i}-{'x' * 20}")
+        inv.workspace.add_entity(f"entity-{i}-{'y' * 20}")
+    q = add_query(
+        inv,
+        name="GDP",
+        metric=["gdp"],
+        entity=["united-states"],
+        app_dir=tmp_path,
+        persist=False,
+    )
+    q.in_report = True
+    persist_investigation(inv, app_dir=tmp_path)
+    full, _ = publication_projection(inv)
+    import json
+
+    full_size = len(json.dumps(full, default=str, separators=(",", ":")))
+    # Limit between "without workspace" and full size.
+    stripped_ws = dict(full)
+    stripped_ws.pop("workspace", None)
+    ws_omitted_size = len(
+        json.dumps(stripped_ws, default=str, separators=(",", ":"))
+    )
+    limit = (ws_omitted_size + full_size) // 2
+    projected, notes = publication_projection(inv, max_bytes=limit)
+    assert any("workspace" in n for n in notes)
+    assert "workspace" not in projected
 
 
 def test_promote_query_and_copy_across(tmp_path: Path):

@@ -308,14 +308,60 @@ def copy_across_investigations(
     )
 
 
-def publication_projection(inv: Investigation) -> dict[str, Any]:
-    """Serialize an investigation for publish: report queries only, no workspace."""
+_DEFAULT_MAX_PUBLISH_BYTES = 256 * 1024
+
+
+def publication_projection(
+    inv: Investigation,
+    *,
+    include_workspace: bool = True,
+    include_actions: bool = True,
+    max_bytes: int = _DEFAULT_MAX_PUBLISH_BYTES,
+) -> tuple[dict[str, Any], list[str]]:
+    """Serialize an investigation for publish (handoff §1.7).
+
+    Defaults include ``workspace`` and view-tree ``actions``. Only ``in_report``
+    queries are published. If the JSON exceeds ``max_bytes``, auto-omit
+    workspace then actions (with notifications); then raise if still too large.
+
+    Returns ``(payload, notifications)``.
+    """
+    import json
+
     data = inv.to_dict()
-    # Drop private workspace staging from the wire body.
-    data.pop("workspace", None)
     queries = []
     for q in sorted(inv.queries.values(), key=lambda x: x.id):
         if q.in_report:
             queries.append(q.to_dict())
     data["queries"] = queries
-    return data
+
+    if not include_workspace:
+        data.pop("workspace", None)
+    if not include_actions:
+        data.pop("actions", None)
+
+    notifications: list[str] = []
+
+    def _size(payload: dict[str, Any]) -> int:
+        return len(
+            json.dumps(payload, default=str, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        )
+
+    if _size(data) > max_bytes and "workspace" in data:
+        data.pop("workspace", None)
+        notifications.append(
+            "Publication exceeded size limit; omitted workspace automatically."
+        )
+    if _size(data) > max_bytes and "actions" in data:
+        data.pop("actions", None)
+        notifications.append(
+            "Publication exceeded size limit; omitted actions automatically."
+        )
+    if _size(data) > max_bytes:
+        raise OperationError(
+            f"Publication definition exceeds {max_bytes} bytes even after "
+            "omitting workspace and actions. Reduce report queries or text."
+        )
+    return data, notifications

@@ -24,7 +24,8 @@ changes. Prefer a publicly traded company you know (example: **FTAI Aviation**).
 - [ ] Resolve the company: `jst actions search entities "…" --project … --investigation …`
 - [ ] Metadata: `jst actions metadata entity <id> …`
 - [ ] Discover metrics: `jst actions search metrics "…" …`
-- [ ] Exploratory values as needed (`jst api query … --tail 1` triage OK)
+- [ ] Exploratory values: `jst actions query run --metric … --entity … --tail 1 …`
+      (optional `--save` for exploratory persistence)
 - [ ] Promote selected work: `jst actions promote <event-id> …` (or `--query <id>`)
 
 ### Peers agent
@@ -45,7 +46,8 @@ changes. Prefer a publicly traded company you know (example: **FTAI Aviation**).
 
 ## Observability
 
-- [ ] Agent ops appear in TUI activity / `jst actions log --project … --investigation …`
+- [ ] Agent ops appear in TUI (`A` / `:activity`) and
+      `jst actions log --project … --investigation …`
 - [ ] Human viewport remains stable while agents target other tabs
 - [ ] Filter log by investigation and project
 - [ ] Reopen historical search / metadata / relationships:

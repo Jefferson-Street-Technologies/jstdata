@@ -21,6 +21,7 @@ def test_bundled_skill_is_a_pointer():
     assert "Do not edit project/investigation YAML" in text
     assert "jst actions" in text
     assert "jst actions promote" in text
+    assert "jst actions query run" in text
     assert "jst query add" not in text
 
 

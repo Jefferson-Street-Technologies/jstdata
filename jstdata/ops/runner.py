@@ -20,6 +20,11 @@ _CACHEABLE_OPS = {
     "entity.relationships",
     "metadata.entity",
     "metadata.metric",
+    "metadata.series",
+    "metadata.release",
+    "query.run",
+    "query.inspect",
+    "coverage.preview",
 }
 
 

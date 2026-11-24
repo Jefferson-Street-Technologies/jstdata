@@ -144,14 +144,16 @@ def config_set(key, value):
 @cli.group()
 @click.pass_context
 def api(ctx):
-    """Direct API access (deprecated). Prefer ``jst actions`` for research.
+    """Direct API access (deprecated for research). Prefer ``jst actions``.
 
-    Still available for ad-hoc resolution; agents should migrate to
-    ``jst actions search`` / ``metadata`` / ``relationships``.
+    Agents must use ``jst actions search`` / ``metadata`` / ``relationships`` /
+    ``query run`` / ``coverage``. ``jst api`` remains only for ad-hoc human
+    debugging and rare endpoints not yet wrapped as logged actions.
     """
     if ctx.invoked_subcommand is not None:
         click.echo(
-            "Note: `jst api` is deprecated; prefer `jst actions …`.",
+            "Warning: `jst api` is outside the audited research path. "
+            "Prefer `jst actions …` (search, metadata, query run, coverage).",
             err=True,
         )
 
@@ -910,12 +912,26 @@ def _site_url() -> str:
 @click.option("--no-edit", is_flag=True, help="Skip the draft and publish the text already saved")
 @click.option("--update", "mode", flag_value="update", help="Update the text on this investigation's last link")
 @click.option("--new", "mode", flag_value="new", help="Publish to a new link even if it was published before")
+@click.option(
+    "--exclude-workspace",
+    is_flag=True,
+    default=False,
+    help="Omit workspace from the publication payload (included by default)",
+)
+@click.option(
+    "--exclude-actions",
+    is_flag=True,
+    default=False,
+    help="Omit view-tree actions from the publication payload (included by default)",
+)
 def publish_cmd(
     investigation_id: str | None,
     publisher_name: str | None,
     yes: bool,
     no_edit: bool,
     mode: str | None,
+    exclude_workspace: bool,
+    exclude_actions: bool,
 ) -> None:
     """Publish an investigation as a shareable web page.
 
@@ -1072,7 +1088,13 @@ def publish_cmd(
             return
         try:
             result = update_publication(
-                inv, previous["id"], api_key=api_key, site_url=site, publisher_name=publisher_name
+                inv,
+                previous["id"],
+                api_key=api_key,
+                site_url=site,
+                publisher_name=publisher_name,
+                include_workspace=not exclude_workspace,
+                include_actions=not exclude_actions,
             )
         except QueriesChangedError as e:
             click.secho(f"Not updated: {e}", fg="yellow", err=True)
@@ -1098,10 +1120,19 @@ def publish_cmd(
 
     click.echo("Running the queries…")
     try:
-        result = publish_investigation(inv, api_key=api_key, site_url=site, publisher_name=publisher_name)
+        result = publish_investigation(
+            inv,
+            api_key=api_key,
+            site_url=site,
+            publisher_name=publisher_name,
+            include_workspace=not exclude_workspace,
+            include_actions=not exclude_actions,
+        )
     except PublishError as e:
         click.secho(f"Error: {e}", fg="red", err=True)
         sys.exit(1)
+    for note in result.get("notifications") or []:
+        click.secho(note, fg="yellow", err=True)
     record_publication(inv.id, result, text=text_of(inv))
     click.secho("Published.", fg="green")
     click.echo(result["url"])

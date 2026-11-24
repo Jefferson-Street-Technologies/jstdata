@@ -1,79 +1,59 @@
 # Action-log reconstructability — gap list
 
 Goal: reconstruct research state from the SQLite action log + immutable artifacts
-as far as practical. This documents what **cannot** (yet) be fully rebuilt from
-the log alone after Workstream B.
+as far as practical. Updated after completing Workstream B capability outline.
 
 ## Reconstructable today
 
-- Logged `jst actions` discovery / metadata / relationships / taxonomy ops
-  (inputs + artifact payloads; cache hits still mint events referencing prior
-  artifacts).
-- Failed ops (status + error string; no artifact overwrite).
-- Curation ops: `curation.promote_event`, `curation.promote_query`,
-  `curation.copy` (inputs + resulting query summaries in the event payload).
-- Feedback outbox rows (separate table; not replayed into investigations).
-- Workspace / query **snapshots** via `workspace.show` / `query.list` events
-  (point-in-time reads, not a full mutation journal).
+- Discovery / metadata / relationships / taxonomy / coverage ops (artifacts;
+  cache hits mint events referencing prior artifacts).
+- **`query.run` / `query.inspect`** — exploratory and saved query executions with
+  immutable record artifacts; `--save` persists exploratory (`in_report=false`).
+- Failed ops (status + error; no artifact overwrite).
+- Curation: promote (event or `--query`), copy, annotate, workspace add/rm.
+- Research-state snapshot: `jst actions state` (not a mutation journal).
+- Feedback outbox rows (separate table).
+- `jst actions rerun <event-id>` for idempotent discovery/metadata/query ops.
 
-## Gaps
+## Remaining gaps
 
-### 1. No logged query-run / observations path
+### 1. TUI workspace / view-tree mutations are not ops
 
-Exploratory value pulls still often go through soft-deprecated `jst api query`
-or TUI view loads. Those paths do **not** append action-log events or artifacts.
-You cannot replay “what numbers did the agent see?” from the log unless the work
-went through a logged op (or was promoted and re-fetched later).
+Staging via Space / `:search`, `:add` / `:rm` view nodes, and drawer edits write
+through the batch writer to investigation YAML but are not `run_operation`
+events. Agents should mutate via `jst actions workspace|query|annotate` when an
+audit trail is required.
 
-### 2. TUI workspace / view-tree mutations are not ops
-
-Staging via Space / `:search`, `:add` / `:rm` view nodes, drawer edits, and
-annotation text updates write through the batch writer to investigation YAML but
-are not first-class `run_operation` events. Reconstructing the exact view tree
-or workspace bag requires the project YAML (SoT), not the log alone.
-
-### 3. Direct YAML / file edits
+### 2. Direct YAML / file edits
 
 Hand edits under `~/.jstdata/projects/<id>/` bypass the log entirely.
 
-### 4. Promote-from-event coverage is best-effort
+### 3. Deep series observations
 
-`jst actions promote <event-id>` only succeeds when the event artifact or inputs
-carry a query-shaped spec (or resource ids). Pure search/metadata events may
-need a follow-up promote `--query` after a query exists another way.
+`jst api series observations` (unbounded history) is not yet a logged action.
+Prefer shallow `jst actions query run --tail/--head` for research; document
+deep pulls as out-of-band when needed.
 
-### 5. Cache identity ≠ semantic refresh policy
+### 4. Historical TUI reopen is MVP
 
-`--refresh` mints a new artifact; old events keep old artifacts. Reconstructing
-“what the agent believed at time T” works per event, but there is no TTL /
-invalidation journal explaining *why* a refresh was requested.
+Activity drawer (`A` / `:activity`) + artifact JSON modal reopen history without
+API calls. Full interactive view hydration from artifacts (charts/tables matching
+live screens) is still partial — JSON inspect is the guaranteed path.
 
-### 6. Actor / concurrency attribution is thin
+### 5. Actor attribution is thin
 
-Events may carry an `actor` field, but CLI agents often omit it. You can filter
-by `project_id` / `investigation_id`, not reliably by “which agent.”
+Events may carry `actor`, but CLI agents often omit it. Filter by project /
+investigation, not reliably by “which agent.”
 
-### 7. Feedback diagnostics ≠ full UI reconstruct
+### 6. Feedback is rich but not pixel-perfect
 
-Outbox diagnostics capture screen id, project/investigation, platform, and
-redacted extras at submit time. They do not serialize the full TUI widget tree
-or chart pixels. Sufficient for triage; not a pixel-perfect replay.
+Diagnostics now include workspace snapshot, view params/size, recent events, and
+truncated artifact snippets (secrets redacted). Not a full widget-tree replay.
 
-### 8. Preview / publish are projection, not log replay
+### 7. Soft-deprecated `jst api`
 
-`jst preview` and legacy `jst publish` read investigation YAML (`in_report`
-queries). Action history is intentionally excluded from publications. You cannot
-rebuild a published page from the log without the curated query SoT.
-
-### 9. Legacy singleton investigations
-
-Migrated one-tab projects retain history only for ops run *after* migration onto
-the project log. Pre-migration CLI/`jst api` work is invisible to the log.
-
-### 10. Soft-deprecated `jst api` surface
-
-Still useful for general-purpose data access; outside the audited research path.
-Agents that bypass `jst actions` leave gaps by construction.
+Still available for human debugging; agents should not use it for the audited
+path. Overlapping research ops are covered by `jst actions`.
 
 ## Intentional non-goals (for now)
 
@@ -81,10 +61,4 @@ Agents that bypass `jst actions` leave gaps by construction.
 - Replaying the log into a new project as an undo stack
 - Remote feedback delivery / retry (Workstream C)
 - Multi-tab remote publish wire format (C)
-
-## Suggested follow-ups (not blocking §19.1)
-
-1. Logged `query.run` / shallow observation ops with artifacts.
-2. Emit ops (or compact patches) for workspace and view-tree mutations.
-3. Require / default `actor` for agent CLI invocations.
-4. Richer promote from search+metadata event graphs (compose a query spec).
+- Full time-travel branching (parent §9.5 / §18)
