@@ -651,6 +651,6 @@ DISCOVER = register(
             ActionBinding("j / k", "cursor", "Move metric highlight or scroll preview"),
             ActionBinding("escape", "leave_filter", "Leave the metric filter"),
         ),
-        example="jst action add discover --args '{\"mode\":\"union\"}'",
+        example=':add discover --args \'{"mode":"union"}\'',
     )
 )

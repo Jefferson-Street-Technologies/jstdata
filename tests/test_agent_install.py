@@ -18,8 +18,10 @@ def test_bundled_skill_is_a_pointer():
     assert text.startswith("---\n")
     assert "name: jst" in text
     assert "jst agent-guide" in text
-    assert "Do not edit investigation YAML" in text
-    assert "jst query add" in text
+    assert "Do not edit project/investigation YAML" in text
+    assert "jst actions" in text
+    assert "jst actions promote" in text
+    assert "jst query add" not in text
 
 
 def test_install_skill_cursor_only(tmp_path: Path):

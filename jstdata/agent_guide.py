@@ -26,27 +26,31 @@ _HARD_RULES = """\
 ## Hard rules
 
 - **Never invent IDs.** Never invent metric, entity, taxonomy, or series ids from
-  English names. Resolve via `jst api … search` (or scoped list) first.
-- **Resolve before use.** Resolve ids before `jst api query`, investigation
-  workspaces, saved queries, or action `--args`.
-- **Use `--format json`** on `jst api` resource and search commands unless the user
-  needs a table.
-- **Do not launch interactive TUIs** (`jst` / `jst new` / `jst open`) unless the
-  user explicitly asks you to operate the UI. Prefer CLI mutation of the active
-  investigation (`jst action add` / `rm`, `jst query add` / `run`) or hand them
-  `jst open <id>`.
-- **Do not edit investigation YAML to mutate state.** Read
-  `~/.jstdata/investigations/<id>.yaml` or `jst query show` only to inspect.
-  Mutate with `jst query add`, `jst action add` / `rm`. Never invent query ids
-  or rewrite `workspace:` / `queries:` / `actions:` by hand.
+  English names. Resolve via `jst actions search …` first.
+- **Prefer `jst actions`.** Shared research ops for humans and agents. Soft-deprecated
+  `jst api` remains for low-level / exploratory value pulls; retired `jst action` /
+  `jst query` groups print pointers and must not be used.
+- **Resolve → act → inspect → promote → hand off.** Resolve ids, run logged actions,
+  reopen artifacts with `jst actions inspect`, promote into the report, then hand the
+  human a project (`jst open` / `jst ls`).
+- **Target explicitly.** Pass `--project` and `--investigation` on mutating
+  `jst actions` commands. Do not rely on ambient `.active` when multiple agents share
+  a project.
+- **Default JSON.** `jst actions` defaults to `--format json`. Prefer JSON for anything
+  you parse.
+- **Do not launch interactive TUIs** (`jst` / `jst new` / `jst open`) unless the user
+  explicitly asks you to operate the UI. Create tabs with `jst new --project …`
+  only when requested, or tell the human to open the project.
+- **Do not edit project / investigation YAML.** SoT lives under
+  `~/.jstdata/projects/<id>/`. Read files only to inspect. Mutate via `jst actions`
+  (promote, copy, search, metadata, …) or the TUI. Never invent query ids or rewrite
+  `workspace:` / `queries:` / `actions:` by hand.
+- **Exploratory by default.** Logged search/metadata does not enter the published
+  report. Report membership is explicit via `jst actions promote`.
 - **Do not paginate exhaustively.** During discovery, use `--limit` 20–50. Do not walk
   `offset` through the catalog unless the returned set is clearly insufficient.
-- **Do not enumerate** `jst api metric ls`, `jst api series ls`, or full taxonomy
-  populations unless the task requires enumeration. Prefer `search` with a query.
-- **Do not retrieve deep history** until the candidate universe is narrowed. Use
-  `tail=1` (or similarly shallow queries) for triage.
-- **Prefer investigations over raw API loops** when the user will continue the work
-  interactively. Stage work into the investigation, then hand off.
+- **Do not enumerate** full taxonomy populations unless the task requires it. Prefer
+  `jst actions search …` with a query and relation / taxonomy filters.
 - **Stop when good enough.** Prefer a partial useful result over open-ended search.
 """
 
@@ -55,17 +59,19 @@ _OPERATING_POLICY = """\
 
 When solving a JST research task:
 
-1. **Use metadata before observations.** Resolve entities, metrics, and taxonomies
-   before querying values.
-2. **Start narrow.** Use the user's literal terminology first, then a small number of
-   obvious synonyms.
-3. **Prefer bounded calls.** Small result limits during discovery; shallow `tail` /
-   `head` when values are needed only to triage.
-4. **Prefer good-enough candidate sets** over exhaustive search unless the user asks
-   for comprehensiveness.
-5. **Escalate to deep history only after narrowing** (specific series ids, date bounds).
-6. **Hand off TUIs to the human.** Prepare or mutate an investigation; print
-   `jst open <id>` for them.
+1. **Resolve ids first** with `jst actions search entities|metrics` (and taxonomy /
+   relation filters when the user names a population).
+2. **Fetch metadata / relationships** with `jst actions metadata …` and
+   `jst actions relationships` before pulling values.
+3. **Keep calls bounded.** Small `--limit` during discovery; shallow value pulls only
+   to triage.
+4. **Log is the audit trail.** Every `jst actions` op returns an `event_id`. Reopen
+   with `jst actions inspect <event-id>` (no Data API re-fetch). List with
+   `jst actions log`.
+5. **Promote deliberately.** `jst actions promote <event-id>` or
+   `jst actions promote --query <id>` marks report membership (`in_report`).
+6. **Hand off the project**, not raw API dumps. Print `jst open` / `jst ls` for the
+   human. Do not drive their TUI viewport.
 7. **Prefer JSON** for anything you will parse or reason over.
 """
 
@@ -76,51 +82,49 @@ _OPERATING_MODES = """\
 
 Example: “Find metrics relevant to defense spending.”
 
-Use `jst api … search` / `show`. Do **not** retrieve observations unless needed to
-disambiguate candidates. Select a useful set and stop.
+Use `jst actions search metrics` / `jst actions metadata metric`. Do **not** retrieve
+observations unless needed to disambiguate. Select a useful set and stop.
 
 ### Agent analysis
 
 Example: “Compare military expenditure as a share of GDP across NATO countries.”
 
-Resolve ids → bounded `jst api query` → deeper `jst api series observations` only if
-needed → answer from structured CLI output. No TUI required.
+Resolve ids → relationships / taxonomy membership → bounded exploratory values
+(`jst api query` with `tail=1` until a logged query-run action exists) → answer from
+structured output. Promote only what belongs in the report. No TUI required.
 
 ### Human handoff
 
 Example: “Set me up to explore defense spending across Europe.”
 
-Resolve resources → create/open an investigation → `jst action add` actions
-and/or `jst query add` → hand the user `jst open <id>`.
-Do not substitute endless search for completing the handoff.
+Resolve resources against a project investigation → leave promoted report queries and
+a clear handoff (`jst open` / project id). Do not substitute endless search for
+completing the handoff.
 """
 
 _DATA_MODEL = """\
 ## Data model
 
+- **Project** — directory under `~/.jstdata/projects/<id>/` with ordered investigation
+  tabs, shared action log (`state.sqlite` + artifacts), and batch-written YAML.
 - **Metric** — a measurable theme (e.g. GDP, employed-persons). Identified by a slug id.
 - **Entity** — a context the metric is measured in (e.g. a country, a company). Slug id.
 - **Taxonomy** — a named population of entities (e.g. `country`, `us-county`,
-  `sec-central-index-key`). Use it to scope search, query, and ranking.
+  `sec-central-index-key`). Membership ≠ relationship classification.
 - **Series** — one concrete time series: a metric observed for an entity (at a frequency).
-- **Investigation** — the durable research artifact: title, notes, annotations,
-  one workspace,
-  saved queries, and an action tree.
-- **Workspace** — the **global** bag of staged resource ids inside an
-  investigation (no observations). Mutated by `:search` / `:workspace` and staging
-  actions; never mutated by view drills.
-- **Query** — a saved `GET /query` spec. Metric × entity is a **cartesian product**
-  (every metric against every entity), plus optional `series`. Filters such as
-  frequency / head / tail live here. Inspect coverage with `jst query inspect`
-  (no observations); execute with `jst query run`.
-- **Action / View** — one use of a reusable analytical UI in the investigation tree.
-  Read/drill views (`table`, `metric`, `entity`, `metrics`) take an **Input Context**
-  resolved from the workspace plus optional per-node `context` overrides. Staging /
-  explore actions (`console`, `discover`, `rank`) still grow the global workspace.
+- **Investigation** — one tab: title, notes, annotations, one workspace, saved queries,
+  and an action / view tree. Independent of sibling tabs.
+- **Workspace** — the **global** bag of staged resource ids inside an investigation
+  (no observations). Mutated by TUI staging; never mutated by view drills.
+- **Query** — a saved `GET /query` spec (cartesian metric × entity, optional series).
+  **`in_report`** gates local preview / publish membership. Exploratory results stay
+  out until `jst actions promote`.
+- **Action log / artifact** — every `jst actions` op appends an event; cacheable ops
+  store an immutable artifact. Inspect historical payloads without another API call.
+- **Action / View** — reusable TUI screens in the investigation tree (`table`,
+  `metric`, `entity`, …). Agents prefer `jst actions` over seeding views via CLI.
 - **Input Context** — what a view is *about*: workspace resources with optional
-  focus/replace overrides stored on the action node as YAML `context` (metric /
-  entity / series / taxonomy). Empty override dimensions inherit from the workspace.
-  Child drills use focus/replace; they do **not** rewrite the global workspace.
+  per-node `context` overrides. Child drills do **not** rewrite the global workspace.
 
 Ids are opaque slugs. Display names are not ids.
 """
@@ -130,194 +134,142 @@ _RESOLUTION = """\
 
 Never invent metric, entity, taxonomy, or series ids from English names.
 
-Always resolve via `jst api … search` (prefer a query string) before writing ids into
-an investigation workspace or `jst api query` flags. Scope with `--taxonomy` /
-`--relation` when the user names a population or relationship. Confirm ambiguous hits
-with `show` before use.
+Always resolve via `jst actions search …` before writing ids into a workspace,
+promote payload, or exploratory `jst api query`. Scope with `--taxonomy` /
+`--relation` / `--relation-direction` / `--relation-taxonomy` when the user names a
+population or relationship. Confirm ambiguous hits with
+`jst actions metadata entity|metric` before use. Pass `--refresh` only when you must
+bypass the local artifact cache.
 """
 
 _RECIPES = """\
 ## Common recipes
 
+Assume a project id `PROJ` and investigation id `INV` (pass them on every mutating
+call). Replace placeholders with resolved slug ids.
+
 ### Find relevant metrics
 
 ```bash
-jst api metric search "defense spending" --taxonomy country --limit 20 --format json
+jst actions search metrics "defense spending" --taxonomy country --limit 20 \\
+  --project PROJ --investigation INV
 ```
 
-If insufficient, try one or two synonyms the same way. Inspect only promising ids:
+If insufficient, try one or two synonyms. Inspect only promising ids:
 
 ```bash
-jst api metric show <resolved-id> --format json
+jst actions metadata metric <resolved-id> --project PROJ --investigation INV
 ```
 
 Stop once a useful candidate set exists. Do not page the full catalog.
 
-### Compare latest values
+### Resolve a company and its peers
 
 ```bash
-jst api query \\
-  --metric <metric-id> \\
-  --taxonomy country \\
-  --tail 1 \\
-  --sort-by value \\
-  --limit 50 \\
-  --format json
+jst actions search entities "FTAI Aviation" --limit 10 \\
+  --project PROJ --investigation INV
+jst actions metadata entity <company-id> --project PROJ --investigation INV
+jst actions relationships <company-id> --relationship classified_as \\
+  --project PROJ --investigation INV
+jst actions search entities --relation classified_as:<industry-id> \\
+  --taxonomy sec-central-index-key --limit 50 \\
+  --project PROJ --investigation INV
 ```
 
-### Retrieve history after narrowing
+### Exploratory latest values (triage)
+
+Until a logged query-run action lands, shallow triage may use soft-deprecated API:
 
 ```bash
-jst api metric series <metric-id> --format json
-jst api series observations <series-id> \\
-  --start-date 2015-01-01 \\
-  --format json
+jst api query --metric <metric-id> --entity <e1> --entity <e2> --tail 1 --format json
 ```
 
-### Rank GDP among EU countries
-
-1. Resolve the EU entity, then list members via relation (do not invent country ids):
+Prefer promoting from a logged, query-shaped event when one exists:
 
 ```bash
-jst api entity search "european union" --limit 10 --format json
-jst api entity search --relation part_of:<eu-entity-id> --taxonomy country \\
-  --limit 50 --format json
+jst actions log --project PROJ --investigation INV --limit 20
+jst actions inspect <event-id>
+jst actions promote <event-id> --name "Peer revenue" \\
+  --project PROJ --investigation INV
 ```
 
-2. Resolve a GDP metric for the country population:
+### Copy research across tabs
 
 ```bash
-jst api metric search gdp --taxonomy country --limit 20 --format json
-jst api metric show <gdp-metric-id> --format json
+jst actions copy --project PROJ --from fundamentals --to peers \\
+  --entity <company-id> --query 1
 ```
 
-3. Persist the cartesian pull — do not edit investigation YAML:
+### Rank / membership via search (no invented country ids)
 
 ```bash
-jst query add \\
-  --metric <gdp-metric-id> \\
-  --entity <fr> --entity <de> --entity <it> \\
-  --name "EU member GDP"
-jst query inspect <new-id>
+jst actions search entities "european union" --limit 10 \\
+  --project PROJ --investigation INV
+jst actions search entities --relation part_of:<eu-entity-id> --taxonomy country \\
+  --limit 50 --project PROJ --investigation INV
+jst actions search metrics gdp --taxonomy country --limit 20 \\
+  --project PROJ --investigation INV
 ```
 
-4. Compare or rank via API, or hand off a view / rank action:
+### Observability and feedback
 
 ```bash
-jst api query \\
-  --metric <gdp-metric-id> \\
-  --entity <fr> --entity <de> --entity <it> \\
-  --tail 1 \\
-  --sort-by value \\
-  --format json
-
-# Population leaderboard
-jst action add rank --args '{"taxonomy":"country"}' --activate
-
-# Saved cartesian pull (human drills with Enter)
-jst action add query --args '{"query_id":<new-id>}' --activate
+jst actions log --project PROJ --investigation INV --status error
+jst actions inspect <event-id>
+jst actions feedback submit "Chart clipped on peers tab" \\
+  --project PROJ --investigation INV --screen entity
+jst actions feedback ls
 ```
 
-Human handoff:
+### Local multi-tab preview
 
 ```bash
-jst open <investigation-id>
+jst preview   # project with in_report queries only; excludes action history
 ```
 
-### Add a country series to the current investigation
+Remote multi-tab publish awaits Workstream C; `jst publish` on a multi-tab project
+notifies and refuses to silently flatten.
 
-Example: “Add Canadian household debt-to-GDP to my current investigation.”
+### Prepare a human project
 
-1. Inspect active state (`*` marks the current investigation):
-
-```bash
-jst ls
-jst query ls
-```
-
-2. Resolve ids (never invent them):
-
-```bash
-jst api metric search "household debt to gdp" --limit 20 --format json
-jst api entity search canada --taxonomy country --limit 10 --format json
-```
-
-3. Persist a cartesian query (do not edit YAML):
-
-```bash
-jst query add \\
-  --metric <household-debt-to-gdp-id> \\
-  --entity <canada-entity-id> \\
-  --name "Canada household debt to GDP"
-jst query inspect <new-id>
-jst action add query --args '{"query_id":<new-id>}' --activate
-```
-
-If the human already has a France vs US query and wants Canada on the same
-cartesian pull, add a **new** query that includes all three entities rather
-than rewriting YAML. Hand off with `jst open` only if they asked for the TUI.
-
-### Prepare a human investigation
-
-1. Resolve ids via `jst api … search`.
-2. `jst new` (or `jst open <id>` / mutate with `jst action add` / `jst query add`).
-3. Prefer a **view** for read/drill (`table`, `metric`, `entity`, `metrics`) and
-   keep `console` / `discover` / `rank` when the human still needs to stage or
-   explore the global workspace. Prefer `jst query add` for a cartesian pull.
-4. Hand them: `jst open <id>`.
+1. Resolve ids via `jst actions search …`.
+2. Work against the assigned `--project` / `--investigation` (or ask the human to
+   add a tab with `jst new --project <id> --title …`).
+3. Promote report queries; leave exploratory artifacts in the log.
+4. Hand them: `jst open` / `jst ls` (interactive project picker).
 
 Do not substitute extra research for completing the requested handoff.
 """
 
 _COMPOSITION = """\
-## Investigations and actions
+## Projects, investigations, and curation
 
-Research is an **investigation**: a tree of **actions / views** over one
-**workspace**, plus saved **queries** (cartesian metric × entity).
+Research lives in a **project** with ordered **investigation** tabs. Each tab has
+its own workspace, saved queries, view tree, and contributes events to the shared
+action log.
 
 ```bash
-jst new --id housing-slowdown
-jst open housing-slowdown
-jst ls
-jst query add --metric gdp --entity france --entity usa --name "FR vs US"
-jst query inspect 1
-jst query run 1 --format json
-jst action add table --args '{"sort_by":"value"}' --activate
-jst action add query --args '{"query_id":1}' --activate
-jst action add metrics --args '{"mode":"intersect"}'
-jst action add rank --args '{"taxonomy":"country"}'
-jst action rm 2 --force
+jst ls                                          # interactive project picker
+jst new --project ftai-aviation --title Peers   # add a tab (opens TUI)
+jst actions workspace show --project PROJ --investigation INV
+jst actions query ls --project PROJ --investigation INV
+jst actions promote <event-id> --project PROJ --investigation INV
+jst actions promote --query 1 --project PROJ --investigation INV
+jst preview
 ```
 
-- **Actions** are reusable TUI screens (`jst action ls` / `jst action show <id>`).
-- Seed args go in `--args` JSON on `action add` (or `:add` in the TUI).
-- Optional per-node **Input Context** overrides live under YAML `context` on the
-  action (focus/replace relative to the active workspace). Views resolve this as
-  Input Context; drills open child views with tighter context and do not mutate
-  the global workspace.
-- New actions are children of the active action unless `--parent` is set.
-- Humans use `:` in the TUI (`:workspace`, `:search metric gdp`, `:add`, `:rm`,
-  `:rename`). The palette also fuzzy-matches destination names and saved query
-  labels. `:rename` sets the investigation title and description in one command.
-  Tree keys: `g` home, `esc` back, `n`/`p` siblings, `N`/`P` depth (arrows too).
-  `:workspace` still opens the bag drawer. Views are typically idle until `r`
-  (load). Space collects the focused resource into the workspace. Home has
-  five destinations: Recent, Search, Actions, Workspace, Queries.
-- **When to use which:**
-  - `table` — latest-value matrix; cheap `/preview` coverage on open; `r` runs
-    `/query`; Enter drills to entity, metric, or **release** (provenance).
-  - `metric` / `entity` — inspect one resource (metric includes description /
-    variants / taxonomies); Enter cross-drills.
-  - `release` — filing / release behind an observation (`context.release`).
-  - `metrics` — metrics associated with an entity set (`mode` union|intersect).
-  - `console` / `:search` — catalog search that stages into the global workspace.
-  - `discover` — candidate metrics with preview chart; Space stages metrics.
-  - `rank` — single-metric population leaderboard; stages entities back.
-- Demo investigation: `jst open plain-bagel` (hyperscaler debt + provenance
-  loop; query 1 is the cartesian latest-value pull).
-- Agents prefer CLI mutation + `jst api …` for resolution; do not drive the TUI.
+- **Humans** use the TUI: `g` home, `esc` back, `{` / `}` or `:tab next|prev` to
+  switch tabs, `:tab new|dup|rm`, `:feedback <message>`, Space to stage, `r` to
+  load views. Host `dd` is the delete chord; entity screens bind plain `d`.
+- **Agents** use `jst actions …` with explicit `--project` / `--investigation`.
+  Do not steal the human viewport.
+- **Curation:** exploratory by default; `in_report` only after promote. Copy with
+  `jst actions copy` (no API re-fetch). Duplicate a tab with `:tab dup`.
+- **Legacy** single-investigation YAML still loads / publishes / clones. Multi-tab
+  remote publish is blocked pending Workstream C; use `jst preview` locally.
+- Demo: `jst open plain-bagel` still works as a single-investigation project.
 
-Active context lives in `~/.jstdata/.active.yaml` (investigation, workspace id, action id).
+Active resume pointer: `~/.jstdata/.active.yaml` (bare `jst` only).
 """
 
 _WORKSPACE_HOWTO = """\
@@ -331,9 +283,29 @@ Legacy files with `workspaces:` (a list) load id `0` / the first entry and ignor
 the rest.
 
 Stage resources into the workspace bag from the TUI (`:search` / space collect).
-Agents that need a persisted cartesian pull should `jst query add --metric … --entity …`
-rather than editing YAML. Read investigation YAML only to inspect. Prefer
-resolved slug ids only.
+Agents inspect with `jst actions workspace show` and promote report queries rather
+than editing YAML. Prefer resolved slug ids only.
+"""
+
+_AUDITED_WORKFLOW = """\
+## Audited research workflow
+
+```
+resolve ids  →  jst actions …  →  inspect event/artifact  →  promote  →  hand off
+```
+
+1. **Resolve** — `jst actions search entities|metrics` (+ relation / taxonomy filters).
+2. **Act** — metadata, relationships, taxonomy membership; every call returns
+   `event_id` and may mint an immutable artifact.
+3. **Inspect** — `jst actions log` / `jst actions inspect <event-id>` reopens the
+   historical payload without another Data API request.
+4. **Promote** — `jst actions promote` sets `Query.in_report` for local preview /
+   legacy publish.
+5. **Hand off** — tell the human the project id; they continue in the TUI while
+   agents keep targeting other tabs.
+
+Raw `jst api` and the Python client remain for general-purpose data consumption
+outside this audited path. Do not treat them as the research workflow.
 """
 
 
@@ -529,14 +501,13 @@ def render_workspace_section() -> str:
 def render_actions_section() -> str:
     specs = list_actions()
     lines = [
-        "## Actions",
+        "## TUI views (action catalog)",
         "",
-        "Reusable analytical UIs instantiated inside investigations. Prefer **views**",
-        "(`table`, `metric`, `entity`, `metrics`) for read/drill over Input Context;",
-        "keep `console` / `discover` / `rank` when the human still needs to stage or",
-        "explore the global workspace. Do not operate these UIs yourself; use",
-        "`jst action show <id>` if you need details while helping a human. Seed them",
-        "with `jst action add <id> --args '{...}'`.",
+        "Reusable analytical UIs inside investigations (distinct from `jst actions`",
+        "research ops). Prefer **views** (`table`, `metric`, `entity`, `metrics`) for",
+        "read/drill; keep `console` / `discover` / `rank` when the human still needs",
+        "to stage or explore. Agents do **not** drive these UIs — hand the human",
+        "`jst open` and let them `:add <id>` from the TUI palette.",
         "",
         "| Id | Name | Description | Arguments | Example |",
         "|----|------|-------------|-----------|---------|",
@@ -546,6 +517,7 @@ def render_actions_section() -> str:
         return "\n".join(lines)
 
     for spec in specs:
+        example = spec.example or f":add {spec.id}"
         lines.append(
             "| "
             + " | ".join(
@@ -554,14 +526,14 @@ def render_actions_section() -> str:
                     _md_cell(spec.name),
                     _md_cell(spec.description),
                     _md_cell(_format_action_args(spec)),
-                    f"`{_md_cell(spec.example or f'jst action add {spec.id}')}`",
+                    f"`{_md_cell(example)}`",
                 ]
             )
             + " |"
         )
 
     lines.append("")
-    lines.append("### Action details")
+    lines.append("### View details")
     for spec in specs:
         lines.append("")
         lines.append(f"#### `{spec.id}` — {spec.name}")
@@ -569,7 +541,7 @@ def render_actions_section() -> str:
         lines.append(spec.description.strip())
         lines.append("")
         if spec.arguments:
-            lines.append("Seed arguments (JSON keys for `--args`):")
+            lines.append("Seed arguments (JSON keys for TUI `:add` / `--args`):")
             lines.append("")
             for arg in spec.arguments:
                 req = "required" if arg.required else "optional"
@@ -586,7 +558,7 @@ def render_actions_section() -> str:
                         f"  - Choices: {', '.join(f'`{c}`' for c in arg.choices)}"
                     )
             lines.append("")
-        example = spec.example or f"jst action add {spec.id}"
+        example = spec.example or f":add {spec.id}"
         lines.append(f"Example: `{example}`")
     return "\n".join(lines)
 
@@ -612,6 +584,8 @@ def render_agent_guide(cli_group: click.Group) -> str:
         "",
         _RESOLUTION.rstrip(),
         "",
+        _AUDITED_WORKFLOW.rstrip(),
+        "",
         _RECIPES.rstrip(),
         "",
         _COMPOSITION.rstrip(),
@@ -624,7 +598,8 @@ def render_agent_guide(cli_group: click.Group) -> str:
         "",
         "One row per leaf command, derived from the installed CLI. Prefer the recipes "
         "and hard rules above; use this table to confirm flags, not as a checklist to "
-        "execute. Low-level resource commands live under `jst api`.",
+        "execute. Audited research ops live under `jst actions`; soft-deprecated "
+        "low-level resource commands remain under `jst api`.",
         "",
         render_commands_table(cli_group),
         "",

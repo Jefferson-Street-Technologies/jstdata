@@ -721,8 +721,8 @@ RANK = register(
             ActionBinding("escape", "leave_filter", "Leave the ranking filter"),
         ),
         example=(
-            "jst action add rank --args "
-            "'{\"taxonomy\":\"country\",\"workspace_entities\":true}'"
+            ':add rank --args '
+            '\'{"taxonomy":"country","workspace_entities":true}\''
         ),
     )
 )

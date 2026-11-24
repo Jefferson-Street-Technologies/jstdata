@@ -1460,6 +1460,6 @@ QUERY_VIEW = register(
             ActionBinding("enter", "inspect", "Inspect the highlighted observation"),
             ActionBinding("space", "collect", "Collect metric/entity/series into workspace"),
         ),
-        example="jst action add query --args '{\"query_id\":1}'",
+        example=':add query --args \'{"query_id":1}\'',
     )
 )

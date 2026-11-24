@@ -531,6 +531,6 @@ METRIC_VIEW = register(
                 "Collect highlighted entity into the workspace",
             ),
         ),
-        example="jst action add metric",
+        example=":add metric",
     )
 )

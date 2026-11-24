@@ -329,6 +329,6 @@ RELEASE_VIEW = register(
             ActionBinding("r", "load", "Load observations for this release_id"),
             ActionBinding("j / k", "cursor", "Move in the metric list"),
         ),
-        example="jst action add release",
+        example=":add release",
     )
 )
