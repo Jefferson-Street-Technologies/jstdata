@@ -117,6 +117,7 @@ def search_metrics(
     *,
     taxonomy: Optional[str] = None,
     entity: Optional[Sequence[str]] = None,
+    mode: str = "union",
     limit: int = 20,
     offset: int = 0,
     project: Optional[str] = None,
@@ -128,6 +129,7 @@ def search_metrics(
         "query": query,
         "taxonomy": taxonomy,
         "entity": list(entity or ()),
+        "mode": mode,
         "limit": limit,
         "offset": offset,
     }
@@ -139,15 +141,16 @@ def search_metrics(
     )
 
     def _run():
-        return _serialize(
-            client.search_metrics(
-                query=query,
-                taxonomy=taxonomy,
-                entity=list(entity) if entity else None,
-                limit=limit,
-                offset=offset,
-            )
-        )
+        kwargs: dict[str, Any] = {
+            "query": query,
+            "taxonomy": taxonomy,
+            "entity": list(entity) if entity else None,
+            "limit": limit,
+            "offset": offset,
+        }
+        if entity:
+            kwargs["mode"] = mode
+        return _serialize(client.search_metrics(**kwargs))
 
     return run_operation(
         "search.metrics",

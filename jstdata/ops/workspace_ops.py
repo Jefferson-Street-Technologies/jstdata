@@ -224,7 +224,7 @@ def state_show(
         "project_id": target.project_id,
         "investigation_id": target.investigation_id,
         "title": inv.title,
-        "description": inv.description,
+        "description": inv.notes,
         "annotations": inv.annotations,
         "workspace": {
             "metric": list(ws.metric),

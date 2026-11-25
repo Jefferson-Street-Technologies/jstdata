@@ -21,12 +21,42 @@ FREQUENCIES: tuple[Optional[str], ...] = (
     "Intraday",
 )
 
+# Sentinel for variants/series whose frequency is null / blank.
+NULL_FREQUENCY = "?"
+
+KNOWN_FREQUENCIES: tuple[str, ...] = tuple(
+    f for f in FREQUENCIES if isinstance(f, str)
+)
+
 OBS_MODES = ("most_recent", "earliest", "all")
 OBS_LABELS = {
     "most_recent": "Most recent 20",
     "earliest": "Earliest 20",
     "all": "All available",
 }
+
+
+def normalize_variant_frequency(raw: Optional[str]) -> str:
+    """Map a catalog frequency onto a selector token (``?`` when missing)."""
+    text = (raw or "").strip()
+    return text if text else NULL_FREQUENCY
+
+
+def frequency_options_for(available: set[str]) -> list[Optional[str]]:
+    """``Any`` plus frequencies present on variants, ``?`` last when needed."""
+    options: list[Optional[str]] = [None]
+    for freq in KNOWN_FREQUENCIES:
+        if freq in available:
+            options.append(freq)
+    extras = sorted(
+        f
+        for f in available
+        if f not in KNOWN_FREQUENCIES and f != NULL_FREQUENCY
+    )
+    options.extend(extras)
+    if NULL_FREQUENCY in available:
+        options.append(NULL_FREQUENCY)
+    return options
 
 
 class QueryComposeHeader(Vertical):
@@ -114,9 +144,19 @@ class QueryComposeHeader(Vertical):
     class Refresh(Message):
         pass
 
+    class Rename(Message):
+        pass
+
     def compose(self) -> ComposeResult:
         with Horizontal(id="qc-title-row"):
             yield Label("", id="qc-title")
+            yield ActionButton(
+                "Rename",
+                action_id="rename_query",
+                shortcut="R",
+                variant="ghost",
+                id="qc-rename",
+            )
             yield Label("", id="qc-badge")
         with Horizontal(id="qc-entities-row"):
             yield Label("Entities", id="qc-entities-label")
@@ -144,8 +184,8 @@ class QueryComposeHeader(Vertical):
             )
         with Horizontal(id="qc-scope-row"):
             yield EnumSelect(
-                FREQUENCIES,
-                labels={None: "Any frequency"},
+                [None],
+                labels={None: "Any frequency", NULL_FREQUENCY: "?"},
                 value=None,
                 id="qc-freq",
             )
@@ -179,6 +219,7 @@ class QueryComposeHeader(Vertical):
         mode: str = "chart",
         needs_refresh: bool,
         coverage: str = "",
+        available_frequencies: Optional[Sequence[Optional[str]]] = None,
     ) -> None:
         del mode  # View tabs live above the chart pane, not here.
         self.query_one("#qc-title", Label).update(title or "Untitled query")
@@ -187,7 +228,17 @@ class QueryComposeHeader(Vertical):
         self.query_one("#qc-metrics", ChipRow).set_items(metrics)
         self.query_one("#qc-series", ChipRow).set_items(series)
         freq = self.query_one("#qc-freq", EnumSelect)
-        if frequency in FREQUENCIES:
+        if available_frequencies is not None:
+            options = list(available_frequencies) or [None]
+            # Keep a currently-selected frequency visible even if stale.
+            if frequency is not None and frequency not in options:
+                options.append(frequency)
+            freq.set_options(
+                options,
+                labels={None: "Any frequency", NULL_FREQUENCY: "?"},
+                value=frequency if frequency in options else None,
+            )
+        elif frequency is not None:
             freq.set_value(frequency)
         else:
             freq.set_value(None)
@@ -222,3 +273,5 @@ class QueryComposeHeader(Vertical):
         event.stop()
         if event.button_id == "refresh":
             self.post_message(self.Refresh())
+        elif event.button_id == "rename_query":
+            self.post_message(self.Rename())

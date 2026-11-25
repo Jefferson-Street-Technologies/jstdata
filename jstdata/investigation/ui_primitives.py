@@ -31,14 +31,31 @@ class ActionButton(Static, can_focus=True):
     }
     ActionButton.-secondary {
         color: #e0e0e0;
-        background: #1a1a1a;
+        background: #262626;
         text-style: none;
-        border: solid #333;
+        /* No border — height-1 borders render as empty grey slabs. */
     }
     ActionButton.-ghost {
         color: #86efac;
         background: transparent;
         text-style: none;
+    }
+    ActionButton.-tab {
+        width: auto;
+        color: #e5e5e5;
+        background: #333333;
+        text-style: none;
+        padding: 0 2;
+        margin-right: 1;
+        height: 1;
+    }
+    ActionButton.-tab.-active {
+        color: #0a0a0a;
+        background: #86efac;
+        text-style: bold;
+    }
+    ActionButton.-tab:focus {
+        text-style: bold underline;
     }
     ActionButton:focus {
         text-style: bold underline;
@@ -74,6 +91,8 @@ class ActionButton(Static, can_focus=True):
             self.add_class("-secondary")
         elif variant == "ghost":
             self.add_class("-ghost")
+        elif variant == "tab":
+            self.add_class("-tab")
         if disabled:
             self.add_class("-disabled")
 
@@ -312,6 +331,31 @@ class EnumSelect(Static, can_focus=True):
     def set_value(self, value: Any) -> None:
         if value in self._options:
             self._index = self._options.index(value)
+        self._paint()
+
+    def set_options(
+        self,
+        options: Sequence[Any],
+        *,
+        labels: Optional[dict[Any, str]] = None,
+        value: Any = ...,
+    ) -> None:
+        """Replace the option list.
+
+        Pass ``value=...`` (default) to keep the current selection when it
+        still exists; pass an explicit value (including ``None``) to select it.
+        """
+        if value is ...:
+            prefer = self._options[self._index] if self._options else None
+        else:
+            prefer = value
+        self._options = list(options) if options else [None]
+        if labels is not None:
+            self._labels = dict(labels)
+        if prefer in self._options:
+            self._index = self._options.index(prefer)
+        else:
+            self._index = 0
         self._paint()
 
     def on_mount(self) -> None:

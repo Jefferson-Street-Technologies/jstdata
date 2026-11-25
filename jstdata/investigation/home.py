@@ -1325,7 +1325,7 @@ HOME = register(
             ActionBinding("n", "new_query", "New draft query"),
             ActionBinding("H", "history", "Action history"),
             ActionBinding("F", "feedback", "Feedback"),
-            ActionBinding("g", "go_home", "Return to research root"),
+            ActionBinding("H", "go_home", "Return to research root"),
         ),
         example="jst open",
     )

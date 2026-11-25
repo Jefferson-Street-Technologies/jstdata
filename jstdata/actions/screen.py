@@ -24,6 +24,8 @@ class BaseScreen(Screen):
     """
 
     # Keep the footer minimal — other shortcuts live next to their controls.
+    # Screens that *are* home can set this False so ``H home`` is omitted.
+    FOOTER_SHOW_HOME: bool = True
     FOOTER_CHROME: tuple[str, ...] = (
         "[bold]/[/bold] search",
         "[bold]n[/bold] query",
@@ -224,11 +226,12 @@ class BaseScreen(Screen):
 
     def refresh_footer(self) -> None:
         """Rebuild the footer from status + action keys + shared chrome."""
-        parts = [
-            *self.footer_status(),
-            *self.footer_action_keys(),
-            *self.FOOTER_CHROME,
-        ]
+        parts: list[str] = []
+        if self.FOOTER_SHOW_HOME:
+            parts.append("[bold]H[/bold] home")
+        parts.extend(self.footer_status())
+        parts.extend(self.footer_action_keys())
+        parts.extend(self.FOOTER_CHROME)
         try:
             self.query_one("#help-hint", Label).update(" // ".join(parts))
         except Exception:  # noqa: BLE001

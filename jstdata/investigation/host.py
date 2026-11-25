@@ -192,70 +192,65 @@ class ConfirmForceModal(ModalScreen[bool]):
         self.dismiss(False)
 
 
-class RenameModal(ModalScreen[tuple[str, str] | None]):
-    """One form: investigation title and description."""
+class QueryRenameModal(ModalScreen[str | None]):
+    """Rename a saved query (display name only)."""
 
     DEFAULT_CSS = """
-    RenameModal {
+    QueryRenameModal {
         align: center middle;
         background: rgba(0, 0, 0, 0.35);
     }
-    #rename-box {
+    #qrename-box {
         width: 64;
         height: auto;
         border: tall #4ade80;
         background: #111111;
         padding: 1 2;
     }
-    #rename-kicker { color: #4ade80; text-style: bold; margin-bottom: 1; }
-    #rename-title, #rename-notes {
+    #qrename-kicker { color: #4ade80; text-style: bold; margin-bottom: 1; }
+    #qrename-name {
         width: 100%;
         background: #0a0a0a;
         border: solid #333;
         margin-bottom: 1;
     }
-    #rename-hint { color: #888; }
+    #qrename-hint { color: #888; }
     """
 
     BINDINGS = [
         Binding("escape", "cancel", "Cancel", show=False),
+        Binding("enter", "save", "Save", show=False, priority=True),
     ]
 
-    def __init__(self, title: str, description: str = "") -> None:
+    def __init__(self, *, title: str, name: str = "") -> None:
         super().__init__()
         self._title = title
-        self._description = description
+        self._name = name
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="rename-box"):
-            yield Label("INVESTIGATION", id="rename-kicker")
-            yield Input(self._title, placeholder="Title", id="rename-title")
+        with Vertical(id="qrename-box"):
+            yield Label(self._title, id="qrename-kicker")
             yield Input(
-                self._description, placeholder="Description", id="rename-notes"
+                self._name,
+                placeholder="Query name (defaults to metric · entity)…",
+                id="qrename-name",
             )
             yield Label(
                 "[bold]enter[/bold] save  ·  [bold]esc[/bold] cancel",
-                id="rename-hint",
+                id="qrename-hint",
                 markup=True,
             )
 
     def on_mount(self) -> None:
-        self.query_one("#rename-title", Input).focus()
+        self.query_one("#qrename-name", Input).focus()
 
-    @on(Input.Submitted)
-    def on_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id == "rename-title":
-            self.query_one("#rename-notes", Input).focus()
-            return
-        self._save()
+    @on(Input.Submitted, "#qrename-name")
+    def on_submitted(self) -> None:
+        self.action_save()
 
-    def _save(self) -> None:
-        title = self.query_one("#rename-title", Input).value.strip()
-        if not title:
-            self.query_one("#rename-title", Input).focus()
-            return
-        notes = self.query_one("#rename-notes", Input).value.strip()
-        self.dismiss((title, notes))
+    def action_save(self) -> None:
+        name = self.query_one("#qrename-name", Input).value.strip()
+        self.dismiss(name)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -271,12 +266,21 @@ class AnnotationModal(ModalScreen[str | None]):
     }
     #anno-box {
         width: 72;
-        height: 22;
+        height: 24;
         border: tall #4ade80;
         background: #111111;
         padding: 1 2;
     }
     #anno-kicker { color: #4ade80; text-style: bold; height: 1; margin-bottom: 1; }
+    #anno-name-label { color: #888; height: 1; }
+    #anno-name {
+        width: 100%;
+        height: 3;
+        background: #0a0a0a;
+        border: solid #333;
+        margin-bottom: 1;
+    }
+    #anno-body-label { color: #888; height: 1; }
     #anno-body {
         width: 100%;
         height: 1fr;
@@ -288,31 +292,62 @@ class AnnotationModal(ModalScreen[str | None]):
     """
 
     BINDINGS = [
+        Binding("enter", "save", "Save", show=False, priority=True),
         Binding("ctrl+s", "save", "Save", show=False),
         Binding("escape", "cancel", "Cancel", show=False),
     ]
 
     def __init__(self, *, title: str, text: str = "") -> None:
+        from .nav import unpack_annotation
+
         super().__init__()
         self._title = title
-        self._text = text
+        self._name, self._body = unpack_annotation(text)
 
     def compose(self) -> ComposeResult:
         with Vertical(id="anno-box"):
             yield Label(self._title, id="anno-kicker")
-            yield TextArea(self._text, id="anno-body")
+            yield Label("Name (optional)", id="anno-name-label")
+            yield Input(
+                value=self._name,
+                placeholder="Shown as a heading when set…",
+                id="anno-name",
+            )
+            yield Label("Notes", id="anno-body-label")
+            yield TextArea(self._body, id="anno-body")
             yield Label(
-                "[bold]ctrl+s[/bold] save  ·  [bold]esc[/bold] cancel",
+                "[bold]enter[/bold] save  ·  [bold]shift+enter[/bold] newline  ·  "
+                "[bold]esc[/bold] cancel",
                 id="anno-hint",
                 markup=True,
             )
 
     def on_mount(self) -> None:
-        self.query_one("#anno-body", TextArea).focus()
+        if self._name:
+            self.query_one("#anno-body", TextArea).focus()
+        else:
+            self.query_one("#anno-name", Input).focus()
+
+    def on_key(self, event) -> None:  # noqa: ANN001
+        # Shift+Enter inserts a newline in the body; plain Enter always saves
+        # (overrides TextArea's newline / Input submit).
+        if event.key == "shift+enter":
+            body = self.query_one("#anno-body", TextArea)
+            body.insert("\n")
+            event.stop()
+            event.prevent_default()
+            return
+        if event.key == "enter":
+            self.action_save()
+            event.stop()
+            event.prevent_default()
 
     def action_save(self) -> None:
-        text = self.query_one("#anno-body", TextArea).text
-        self.dismiss(text)
+        from .nav import pack_annotation
+
+        name = self.query_one("#anno-name", Input).value
+        body = self.query_one("#anno-body", TextArea).text
+        self.dismiss(pack_annotation(name, body))
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -342,7 +377,7 @@ class InvestigationHost(App):
         Binding("escape", "back", "Back"),
         Binding("question_mark", "show_shortcuts_hint", "Shortcuts", key_display="?"),
         Binding(":", "command_palette", "Command", key_display=":"),
-        Binding("g", "go_home", "Home", key_display="g"),
+        Binding("H", "go_home", "Home", key_display="H"),
         # Tree depth via N/P (and arrows). Sibling nav moved to Ctrl+n/p
         # so plain ``n`` can mean new draft query in the research shell.
         Binding("ctrl+n", "next_sibling", "Next sibling", show=False),
@@ -413,6 +448,7 @@ class InvestigationHost(App):
         self._d_timer: Timer | None = None
         self._pending_command: ParsedCommand | None = None
         self._pending_goto: str | None = None
+        self._pending_inline_edit: str | None = None
         self._publishing = False
         # The publish request runs on its own daemon thread, so quitting
         # mid-publish doesn't wait for it (JEF-170). If the TUI closes first,
@@ -585,10 +621,29 @@ class InvestigationHost(App):
         )
         self.refresh_workspace_drawer()
 
+    def _query_resource_typed_ids(self) -> list[tuple[str, str]]:
+        """``(type, id)`` for every query resource in the open investigation."""
+        out: list[tuple[str, str]] = []
+        if self.investigation is None:
+            return out
+        for query in self.investigation.queries.values():
+            for rid in query.metric:
+                out.append(("metric", rid))
+            for rid in query.entity:
+                out.append(("entity", rid))
+            for rid in query.series:
+                out.append(("series", rid))
+        return out
+
     def _hydrate_labels_worker(self) -> None:
         labels: dict[str, str] = {}
         try:
-            hydrate_labels(self.client, self.workspace, labels)
+            hydrate_labels(
+                self.client,
+                self.workspace,
+                labels,
+                extra_ids=self._query_resource_typed_ids(),
+            )
         except OSError as exc:
             msg = f"Label cache unavailable: {exc}"
             self.call_from_thread(lambda: self.notify(msg, severity="warning"))
@@ -599,6 +654,34 @@ class InvestigationHost(App):
         self.labels.update(labels)
         # Compose may still be attaching Home chrome when /resource returns.
         self.call_later(self.refresh_workspace_drawer)
+        self.call_later(self.refresh_shell_chrome)
+
+    def _hydrate_missing_labels(self, typed: list[tuple[str, str]]) -> None:
+        """Background-fetch labels for query resources not yet in ``self.labels``."""
+        pending = [(t, i) for t, i in typed if i and i not in self.labels]
+        if not pending:
+            return
+
+        def _worker() -> None:
+            from ..resource_cache import default_resource_cache
+
+            labels: dict[str, str] = {}
+            try:
+                default_resource_cache().hydrate_ids(
+                    self.client, pending, labels
+                )
+            except OSError:
+                return
+            if labels:
+                self.call_from_thread(self._apply_hydrated_labels, labels)
+
+        self.run_worker(
+            _worker,
+            exclusive=False,
+            group="hydrate-query-labels",
+            name="hydrate-query-labels",
+            thread=True,
+        )
 
     def _enter_invalid(self, message: str) -> None:
         self._invalid = True
@@ -627,7 +710,6 @@ class InvestigationHost(App):
                 CommandPalette,
                 ConfirmForceModal,
                 DrillDownModal,
-                RenameModal,
                 ObservationDetail,
             ),
         ):
@@ -795,7 +877,6 @@ class InvestigationHost(App):
                 CommandPalette,
                 ConfirmForceModal,
                 DrillDownModal,
-                RenameModal,
                 ObservationDetail,
             ),
         ):
@@ -1053,7 +1134,6 @@ class InvestigationHost(App):
                 DrillDownModal,
                 DestinationScreen,
                 HomeScreen,
-                RenameModal,
                 ObservationDetail,
             ),
         ):
@@ -1287,7 +1367,6 @@ class InvestigationHost(App):
                     DrillDownModal,
                     DestinationScreen,
                     HomeScreen,
-                    RenameModal,
                     ObservationDetail,
                 ),
             ):
@@ -1529,12 +1608,22 @@ class InvestigationHost(App):
         active_entities: list[tuple[str, str]] = []
         active_metrics: list[tuple[str, str]] = []
         active_series: list[tuple[str, str]] = []
+        missing_typed: list[tuple[str, str]] = []
         if active_qid is not None and self.investigation is not None:
             try:
                 aq = self.investigation.get_query(int(active_qid))
             except Exception:  # noqa: BLE001
                 aq = None
             if aq is not None and not aq.is_empty():
+                for rid in aq.metric:
+                    if rid not in labels:
+                        missing_typed.append(("metric", rid))
+                for rid in aq.entity:
+                    if rid not in labels:
+                        missing_typed.append(("entity", rid))
+                for rid in aq.series:
+                    if rid not in labels:
+                        missing_typed.append(("series", rid))
                 active_entities = _rows(list(aq.entity))
                 active_metrics = _rows(list(aq.metric))
                 active_series = _rows(list(aq.series))
@@ -1547,6 +1636,8 @@ class InvestigationHost(App):
             active_metrics=active_metrics,
             active_series=active_series,
         )
+        if missing_typed:
+            self._hydrate_missing_labels(missing_typed)
 
     def action_universal_search(self) -> None:
         """Open universal search (global context)."""
@@ -1576,9 +1667,27 @@ class InvestigationHost(App):
                         str(result.get("type")), str(result.get("id"))
                     )
                 elif action == "add_to_query":
+                    rid = str(result.get("id"))
+                    label = result.get("label")
+                    if label:
+                        self.remember_label(rid, str(label))
                     self._add_resource_to_active_query(
-                        str(result.get("type")), str(result.get("id"))
+                        str(result.get("type")), rid
                     )
+
+        selected_entities: list[str] = []
+        selected_metrics: list[str] = []
+        if self.investigation is not None and self.active is not None:
+            try:
+                action = self.investigation.get_action(self.active.action)
+                if action.type == "query":
+                    qid = action.args.get("query_id")
+                    if qid is not None:
+                        aq = self.investigation.get_query(int(qid))
+                        selected_entities = list(aq.entity)
+                        selected_metrics = list(aq.metric)
+            except Exception:  # noqa: BLE001
+                pass
 
         self.push_screen(
             UniversalSearchModal(
@@ -1590,6 +1699,8 @@ class InvestigationHost(App):
                 investigation_id=(
                     self.active.investigation if self.active else None
                 ),
+                selected_entities=selected_entities,
+                selected_metrics=selected_metrics,
             ),
             _done,
         )
@@ -2370,13 +2481,8 @@ class InvestigationHost(App):
         title = parsed.options.get("title")
         description = parsed.options.get("description")
         if title is None and description is None:
-            self.push_screen(
-                RenameModal(
-                    self.investigation.title,
-                    self.investigation.notes or "",
-                ),
-                self._on_rename_submitted,
-            )
+            # Interactive rename → inline edit on the research home.
+            self.edit_investigation_description(focus="title")
             return
         self._apply_rename(title=title, notes=description)
 
@@ -2500,12 +2606,6 @@ class InvestigationHost(App):
         self._reload_everything(force_screen=True)
         self.notify(f"Removed tab {inv_id}")
 
-    def _on_rename_submitted(self, result: tuple[str, str] | None) -> None:
-        if not result:
-            return
-        title, notes = result
-        self._apply_rename(title=title, notes=notes)
-
     def _apply_rename(
         self, *, title: Optional[str], notes: Optional[str]
     ) -> None:
@@ -2529,6 +2629,8 @@ class InvestigationHost(App):
                 pass
         finally:
             self._suppress_poll = False
+        self._refresh_inv_titles()
+        self.refresh_shell_chrome()
         for screen in self.screen_stack:
             if isinstance(screen, HomeScreen):
                 screen.refresh_live()
@@ -2536,8 +2638,108 @@ class InvestigationHost(App):
         if title is not None:
             bits.append(f"title {title!r}")
         if notes is not None:
-            bits.append("description updated" if notes.strip() else "description cleared")
+            bits.append(
+                "description updated" if notes.strip() else "description cleared"
+            )
+        # Refresh research-home chrome if we're sitting on it.
+        refresh = getattr(self.screen, "refresh_home", None)
+        if callable(refresh):
+            try:
+                refresh()
+            except Exception:  # noqa: BLE001
+                pass
         self.notify("Renamed: " + ", ".join(bits) if bits else "Saved")
+
+    def edit_investigation_description(self, *, focus: str = "title") -> None:
+        """Inline-edit title or description on the research home screen."""
+        if not self.investigation or not self.active:
+            self.notify("No investigation loaded", severity="error")
+            return
+        if focus not in ("title", "description"):
+            focus = "title"
+        begin = getattr(self.screen, "begin_inline_edit", None)
+        if callable(begin):
+            begin(focus=focus)
+            return
+        # Navigate to research home, then start inline edit on mount.
+        self._pending_inline_edit = focus
+        self._nav_dest = None
+        self._nav_return = None
+        self._pop_transient_overlays()
+        while len(self.screen_stack) > 2:
+            self.pop_screen()
+        if self.active.action != ROOT_ACTION_ID:
+            self._activate_action(ROOT_ACTION_ID)
+        else:
+            self._show_front(reset=True)
+            self.call_later(self._consume_pending_inline_edit)
+
+    def _consume_pending_inline_edit(self) -> None:
+        focus = getattr(self, "_pending_inline_edit", None)
+        if focus not in ("title", "description"):
+            return
+        self._pending_inline_edit = None
+        begin = getattr(self.screen, "begin_inline_edit", None)
+        if callable(begin):
+            begin(focus=focus)
+
+    def edit_query_name(self, query_id: int) -> None:
+        """Open a modal to rename a saved query."""
+        if not self.investigation:
+            self.notify("No investigation loaded", severity="error")
+            return
+        try:
+            query = self.investigation.get_query(query_id)
+        except InvestigationError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        from .naming import suggest_query_name
+
+        current = query.name or suggest_query_name(
+            query.metric, query.entity, labels=self.labels
+        )
+        self.push_screen(
+            QueryRenameModal(
+                title=f"RENAME QUERY · Q{query.id}",
+                name=current,
+            ),
+            lambda result, qid=query_id: self._on_query_rename_submitted(
+                qid, result
+            ),
+        )
+
+    def _on_query_rename_submitted(
+        self, query_id: int, result: str | None
+    ) -> None:
+        if result is None or not self.investigation:
+            return
+        self._suppress_poll = True
+        try:
+            try:
+                update_query(
+                    self.investigation,
+                    query_id,
+                    name=result,
+                    app_dir=self.app_dir,
+                )
+            except InvestigationError as exc:
+                self.notify(str(exc), severity="error")
+                return
+            try:
+                self._inv_mtime = self._inv_file().stat().st_mtime
+            except OSError:
+                pass
+        finally:
+            self._suppress_poll = False
+        self.refresh_shell_chrome()
+        paint = getattr(self.screen, "_paint_compose", None)
+        if callable(paint):
+            try:
+                paint()
+            except Exception:  # noqa: BLE001
+                pass
+        label = result.strip() or f"Q{query_id}"
+        self.notify(f"Query renamed to {label}")
 
     def edit_investigation_annotations(self) -> None:
         """Open the annotation editor for the investigation."""
@@ -2636,6 +2838,12 @@ class InvestigationHost(App):
             refresh = getattr(screen, "refresh_annotations", None)
             if callable(refresh):
                 refresh()
+            home = getattr(screen, "refresh_home", None)
+            if callable(home):
+                try:
+                    home()
+                except Exception:  # noqa: BLE001
+                    pass
 
     def action_show_activity(self) -> None:
         """Open the action-log history drawer (H / A)."""

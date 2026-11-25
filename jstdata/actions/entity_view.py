@@ -19,7 +19,7 @@ from typing import Literal, Optional
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.widgets import Input, Label, ListItem, ListView, Static
 
 from ..client import JSTDataClient
@@ -28,6 +28,8 @@ from ..investigation.model import (
     Workspace,
     focus_replace_context,
 )
+from ..investigation.ui_primitives import ActionButton
+
 from ..models import EntityRelationship, Metric
 from .base import (
     ActionArgument,
@@ -155,6 +157,8 @@ class EntityScreen(BaseScreen):
     BINDINGS = [
         Binding("r", "load", "Load", key_display="r"),
         Binding("f", "focus_filter", "Search metrics", key_display="f"),
+        # Prefer in-context filter over the shell universal-search popup.
+        Binding("slash", "focus_filter", "Search metrics", show=False, priority=True),
         Binding("escape", "leave_filter", "Leave search", show=False),
         Binding("enter", "confirm", "Open chart / related entity", priority=True),
         Binding("j", "cursor_down", "Cursor Down", show=False),
@@ -195,18 +199,45 @@ class EntityScreen(BaseScreen):
     }
     #entity-tabs {
         height: 1;
-        margin-bottom: 0;
+        margin: 1 0 0 0;
+        background: #0a0a0a;
+    }
+    #entity-tabs ActionButton.-tab {
+        color: #e5e5e5;
+        background: #333333;
+    }
+    #entity-tabs ActionButton.-tab.-active {
+        color: #0a0a0a;
+        background: #86efac;
+        text-style: bold;
     }
     #entity-status {
         color: #666;
         height: 1;
     }
-    #assoc-filter {
+    #assoc-filter-wrap {
         height: 3;
-        background: transparent;
-        border: none;
-        border-bottom: solid #333;
+        margin: 0 0 1 0;
+        background: #141414;
+    }
+    #assoc-filter-kicker {
+        width: auto;
+        color: #86efac;
+        text-style: bold;
         padding: 0 1;
+        height: 3;
+        content-align: left middle;
+    }
+    #assoc-filter {
+        width: 1fr;
+        height: 3;
+        background: #1a1a1a;
+        border: tall #404040;
+        padding: 0 1;
+        color: #f5f5f5;
+    }
+    #assoc-filter:focus {
+        border: tall #86efac;
     }
     #metrics-list, #relations-list {
         height: 1fr;
@@ -332,16 +363,32 @@ class EntityScreen(BaseScreen):
                 id="entity-actions",
                 markup=True,
             )
-            yield Static("", id="entity-tabs", markup=True)
+            with Horizontal(id="entity-tabs"):
+                yield ActionButton(
+                    "Metrics",
+                    action_id="focus_metrics",
+                    shortcut="m",
+                    variant="tab",
+                    id="entity-tab-metrics",
+                )
+                yield ActionButton(
+                    "Relationships",
+                    action_id="focus_relations",
+                    shortcut="R",
+                    variant="tab",
+                    id="entity-tab-relations",
+                )
             yield Static(
                 "Press [bold]r[/bold] to load metrics & relationships",
                 id="entity-status",
                 markup=True,
             )
-            yield Input(
-                placeholder="/ search metrics…",
-                id="assoc-filter",
-            )
+            with Horizontal(id="assoc-filter-wrap"):
+                yield Label("/ ", id="assoc-filter-kicker")
+                yield Input(
+                    placeholder="Filter metrics for this entity…",
+                    id="assoc-filter",
+                )
             yield ListView(id="metrics-list")
             yield ListView(id="relations-list")
 
@@ -443,18 +490,13 @@ class EntityScreen(BaseScreen):
         n_m = len(self._metrics)
         n_r = len(self._relations)
         m_extra = "+" if self.has_more else ""
-        if self._pane == "metrics":
-            text = (
-                f"[bold #86efac on #163324] Metrics ({n_m}{m_extra}) [/]  "
-                f"[#888]Relationships ({n_r})[/]"
-            )
-        else:
-            text = (
-                f"[#888]Metrics ({n_m}{m_extra})[/]  "
-                f"[bold #86efac on #163324] Relationships ({n_r}) [/]"
-            )
         try:
-            self.query_one("#entity-tabs", Static).update(text)
+            metrics_btn = self.query_one("#entity-tab-metrics", ActionButton)
+            relations_btn = self.query_one("#entity-tab-relations", ActionButton)
+            metrics_btn.set_label(f"Metrics ({n_m}{m_extra})", shortcut="m")
+            relations_btn.set_label(f"Relationships ({n_r})", shortcut="R")
+            metrics_btn.set_class(self._pane == "metrics", "-active")
+            relations_btn.set_class(self._pane == "relations", "-active")
         except Exception:  # noqa: BLE001
             pass
 
@@ -467,19 +509,30 @@ class EntityScreen(BaseScreen):
         self._pane = pane
         metrics = self.query_one("#metrics-list", ListView)
         relations = self.query_one("#relations-list", ListView)
-        filt = self.query_one("#assoc-filter", Input)
+        wrap = self.query_one("#assoc-filter-wrap")
         metrics.display = pane == "metrics"
         relations.display = pane == "relations"
-        filt.display = pane == "metrics"
+        wrap.display = pane == "metrics"
         self._refresh_tabs()
         self._active_list().focus()
         self.refresh_footer()
+
+    def action_shell_search(self) -> None:
+        """``/`` focuses the in-context filter, not universal search."""
+        self.action_focus_filter()
 
     def action_focus_metrics(self) -> None:
         self._focus_pane("metrics")
 
     def action_focus_relations(self) -> None:
         self._focus_pane("relations")
+
+    @on(ActionButton.Pressed)
+    def _on_tab_pressed(self, event: ActionButton.Pressed) -> None:
+        if event.button_id == "focus_metrics":
+            self.action_focus_metrics()
+        elif event.button_id == "focus_relations":
+            self.action_focus_relations()
 
     def action_load(self) -> None:
         if not self._entity_id:

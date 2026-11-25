@@ -104,16 +104,21 @@ def hydrate_labels(
     labels: dict[str, str],
     *,
     cache=None,
+    extra_ids: Optional[list[tuple[str, str]]] = None,
 ) -> None:
-    """Fill UI labels for workspace resource IDs (in-place).
+    """Fill UI labels for workspace (and optional extra) resource IDs in-place.
 
     Uses the persistent resource label cache: if any staged id is missing or
-    older than 12 hours, the whole workspace is refreshed via ``/resource``.
+    older than 12 hours, ids are refreshed via ``/resource``.
+    ``extra_ids`` is a list of ``(type, id)`` pairs (e.g. active-query resources
+    not yet in the workspace).
     """
     from ..resource_cache import default_resource_cache
 
     store = cache if cache is not None else default_resource_cache()
     store.hydrate_workspace(client, workspace, labels)
+    if extra_ids:
+        store.hydrate_ids(client, list(extra_ids), labels)
 
 
 def label_for(labels: dict[str, str], resource_id: str) -> str:

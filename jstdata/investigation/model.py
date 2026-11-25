@@ -72,7 +72,7 @@ class Workspace:
             kwargs["entity"] = list(self.entity)
         if self.series:
             kwargs["series"] = list(self.series)
-        if self.frequency is not None:
+        if self.frequency is not None and self.frequency != "?":
             kwargs["frequency"] = self.frequency
         if self.taxonomy is not None:
             kwargs["taxonomy"] = self.taxonomy
@@ -405,7 +405,8 @@ class Query:
             kwargs["entity"] = list(self.entity)
         if self.series:
             kwargs["series"] = list(self.series)
-        if self.frequency is not None:
+        # ``?`` means null/blank frequency — not an API Frequency enum value.
+        if self.frequency is not None and self.frequency != "?":
             kwargs["frequency"] = self.frequency
         if self.taxonomy is not None:
             kwargs["taxonomy"] = self.taxonomy
@@ -425,10 +426,22 @@ class Query:
         refresh = bool(overrides.pop("refresh", False))
         kwargs = self.to_query_kwargs()
         kwargs.update(overrides)
+        # Honor explicit override of frequency, including clearing ``?`` handling.
+        want_null_freq = (overrides.get("frequency", self.frequency) == "?")
+        if want_null_freq:
+            kwargs.pop("frequency", None)
         if refresh and hasattr(client, "uncached"):
             with client.uncached():
-                return client.query(**kwargs)
-        return client.query(**kwargs)
+                results = client.query(**kwargs)
+        else:
+            results = client.query(**kwargs)
+        if want_null_freq:
+            results = [
+                ts
+                for ts in results
+                if not (getattr(ts.series, "frequency", None) or "").strip()
+            ]
+        return results
 
     def execute_df(self, client: JSTDataClient, **overrides: Any) -> pd.DataFrame:
         refresh = bool(overrides.pop("refresh", False))

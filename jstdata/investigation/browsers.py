@@ -69,7 +69,7 @@ class DestinationScreen(BaseScreen):
             ("j / k", "Move selection"),
             ("enter", "Open highlighted item"),
             ("esc", "Back to Home"),
-            ("g", "Home"),
+            ("H", "Home"),
         ]
 
 

@@ -31,7 +31,12 @@ from ..client import JSTDataClient
 from ..investigation.model import Query, Workspace
 from ..investigation.nav import annotations_panel
 from ..investigation.naming import label_for
-from ..investigation.query_compose import OBS_MODES, QueryComposeHeader
+from ..investigation.query_compose import (
+    OBS_MODES,
+    QueryComposeHeader,
+    frequency_options_for,
+    normalize_variant_frequency,
+)
 from ..investigation.ui_primitives import ActionButton
 from ..models import TimeSeries
 from .base import (
@@ -964,6 +969,7 @@ class QueryScreen(BaseScreen):
     BINDINGS = [
         Binding("r", "load", "Refresh", key_display="r"),
         Binding("a", "annotate", "Annotate", show=False),
+        Binding("R", "rename_query", "Rename query", show=False),
         Binding("t", "mode_table", "Table", show=False),
         Binding("c", "mode_chart", "Chart", show=False),
         Binding("E", "add_entity", "Add entity", show=False),
@@ -1003,14 +1009,12 @@ class QueryScreen(BaseScreen):
         margin: 1 0 0 0;
         padding: 0;
         background: #0a0a0a;
-        border-bottom: solid #262626;
     }
-    #query-tab-chart, #query-tab-table {
-        background: #0a0a0a;
-        color: #737373;
-        text-style: none;
+    #query-view-tabs ActionButton.-tab {
+        color: #e5e5e5;
+        background: #333333;
     }
-    #query-tab-chart.-active, #query-tab-table.-active {
+    #query-view-tabs ActionButton.-tab.-active {
         color: #0a0a0a;
         background: #86efac;
         text-style: bold;
@@ -1136,6 +1140,9 @@ class QueryScreen(BaseScreen):
         self._has_run_once = False
         self._needs_refresh = False
         self._run_token = 0
+        # Frequency selector options derived from metric variants / series.
+        self._freq_options: list[Optional[str]] = [None]
+        self._freq_source_key: tuple[str, ...] = ()
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="query-body"):
@@ -1146,14 +1153,14 @@ class QueryScreen(BaseScreen):
                     "Chart",
                     action_id="mode_chart",
                     shortcut="c",
-                    variant="ghost",
+                    variant="tab",
                     id="query-tab-chart",
                 )
                 yield ActionButton(
                     "Table",
                     action_id="mode_table",
                     shortcut="t",
-                    variant="ghost",
+                    variant="tab",
                     id="query-tab-table",
                 )
             with Horizontal(id="query-main"):
@@ -1233,8 +1240,7 @@ class QueryScreen(BaseScreen):
         return f"[dim]Query[/] [bold]{escape(str(name))}[/] [dim]→ client.query(…)[/]"
 
     def footer_action_keys(self) -> list[str]:
-        # Keep the shared footer minimal (/, n, a) — local shortcuts sit on controls.
-        return []
+        return ["[bold]Shift+X[/bold] delete query (again to confirm)"]
 
     def shell_breadcrumb(self) -> str:
         try:
@@ -1247,9 +1253,13 @@ class QueryScreen(BaseScreen):
         return f"{tag} · {name} · {mode}"
 
     def refresh_footer(self) -> None:
-        parts = [*self.footer_action_keys(), *self.FOOTER_CHROME]
+        parts = [
+            "[bold]H[/bold] home",
+            *self.footer_action_keys(),
+            *self.FOOTER_CHROME,
+        ]
         try:
-            self.query_one("#help-hint", Label).update("    ".join(parts))
+            self.query_one("#help-hint", Label).update(" // ".join(parts))
         except Exception:  # noqa: BLE001
             pass
         self.refresh_bug_report_chrome()
@@ -1271,16 +1281,30 @@ class QueryScreen(BaseScreen):
         self.query_one("#query-obs-strip").display = False
 
     def _render_annotations(self, query: Query) -> None:
+        from ..investigation.nav import unpack_annotation
+
         panel = self.query_one("#query-annotations", Static)
         lines: list[str] = []
         inv = getattr(self.app, "investigation", None)
         inv_notes = (getattr(inv, "annotations", None) or "").strip() if inv else ""
         if inv_notes:
-            lines.append(escape(inv_notes))
+            inv_name, inv_body = unpack_annotation(inv_notes)
+            if inv_name:
+                lines.append(f"[bold]{escape(inv_name)}[/]")
+            if inv_body.strip():
+                lines.append(escape(inv_body.strip()))
+            elif not inv_name:
+                lines.append(escape(inv_notes))
         if query.annotations:
             if lines:
                 lines.append("")
-            lines.append(escape(query.annotations))
+            q_name, q_body = unpack_annotation(query.annotations)
+            if q_name:
+                lines.append(f"[bold #86efac]{escape(q_name)}[/]")
+            if q_body.strip():
+                lines.append(escape(q_body.strip()))
+            elif not q_name:
+                lines.append(escape(query.annotations))
         for i, note in enumerate(query.notes_on or [], start=1):
             span = ""
             if note.from_ or note.to:
@@ -1315,6 +1339,17 @@ class QueryScreen(BaseScreen):
             )
             return
         edit = getattr(self.app, "edit_query_annotations", None)
+        if callable(edit):
+            edit(self.query_id)
+
+    def action_rename_query(self) -> None:
+        if self.query_id is None:
+            self.notify(
+                "Save as a query first to rename it",
+                severity="warning",
+            )
+            return
+        edit = getattr(self.app, "edit_query_name", None)
         if callable(edit):
             edit(self.query_id)
 
@@ -1604,11 +1639,62 @@ class QueryScreen(BaseScreen):
             return "earliest"
         return "all"
 
+    def _freq_source_key_for(self, query: Query) -> tuple[str, ...]:
+        return (
+            *(f"m:{m}" for m in query.metric),
+            *(f"s:{s}" for s in query.series),
+        )
+
+    def _sync_frequency_options(self, query: Query) -> None:
+        """Refresh frequency tokens from metric variants / direct series."""
+        key = self._freq_source_key_for(query)
+        if key == self._freq_source_key:
+            return
+        self._freq_source_key = key
+        if not key:
+            self._freq_options = [None]
+            return
+        self.refresh_frequency_options(list(query.metric), list(query.series))
+
+    @work(exclusive=True, group="query-freq-options")
+    async def refresh_frequency_options(
+        self, metric_ids: list[str], series_ids: list[str]
+    ) -> None:
+        def _collect() -> set[str]:
+            found: set[str] = set()
+            for mid in metric_ids:
+                try:
+                    metric = self.client.get_metric(mid)
+                except Exception:  # noqa: BLE001
+                    continue
+                for variant in metric.variants or []:
+                    found.add(normalize_variant_frequency(variant.frequency))
+            for sid in series_ids:
+                try:
+                    series = self.client.get_series(sid)
+                except Exception:  # noqa: BLE001
+                    continue
+                found.add(normalize_variant_frequency(series.frequency))
+            return found
+
+        available = await asyncio.to_thread(_collect)
+        # Drop result if composition moved on while we were fetching.
+        try:
+            query = self._resolve_query()
+        except Exception:  # noqa: BLE001
+            return
+        if self._freq_source_key_for(query) != self._freq_source_key:
+            return
+        self._freq_options = frequency_options_for(available)
+        # Re-paint so the EnumSelect picks up the new option list.
+        self._paint_compose()
+
     def _paint_compose(self, *, coverage: str = "") -> None:
         try:
             query = self._resolve_query()
         except Exception:
             return
+        self._sync_frequency_options(query)
         labels = getattr(self.app, "labels", {}) or {}
         badge = "Saved" if query.in_report else "Draft"
         if self._needs_refresh:
@@ -1630,6 +1716,7 @@ class QueryScreen(BaseScreen):
             mode=self._mode,
             needs_refresh=self._needs_refresh,
             coverage=cov,
+            available_frequencies=self._freq_options,
         )
 
     def _mark_composition_changed(self) -> None:
@@ -1814,6 +1901,11 @@ class QueryScreen(BaseScreen):
     def _compose_refresh(self, event: QueryComposeHeader.Refresh) -> None:
         event.stop()
         self.action_load()
+
+    @on(QueryComposeHeader.Rename)
+    def _compose_rename(self, event: QueryComposeHeader.Rename) -> None:
+        event.stop()
+        self.action_rename_query()
 
     @on(ActionButton.Pressed)
     def _action_button(self, event: ActionButton.Pressed) -> None:

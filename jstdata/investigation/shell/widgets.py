@@ -141,7 +141,6 @@ class _SidebarQueryRow(Static):
                     else:
                         yield Label(self._label, classes="sidebar-q-title")
                 else:
-                    yield Label(f"Q{self.query_id}", classes="sidebar-q-kicker")
                     yield Label(
                         self._label or f"Query {self.query_id}",
                         classes="sidebar-q-title",
