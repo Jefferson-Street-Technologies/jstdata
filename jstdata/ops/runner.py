@@ -26,6 +26,8 @@ _CACHEABLE_OPS = {
     "query.inspect",
     "coverage.preview",
 }
+# Pagination lives in each op's inputs (limit/offset), so page N is a distinct
+# artifact key — never strip offset when looking up cached results.
 
 
 def _utc_now() -> str:

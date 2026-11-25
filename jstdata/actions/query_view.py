@@ -1162,10 +1162,11 @@ class QueryScreen(BaseScreen):
         self._paint_compose()
         self.query_one("#query-obs", ListView).focus()
         # First-time auto-run only when the query is already executable.
+        # Prefer disk cache; explicit ``r`` / refresh banner uses network.
         try:
             query = self._resolve_query()
             if self._is_executable(query) and not self._has_run_once:
-                self.call_later(self.action_load)
+                self.call_later(lambda: self.load_query(query, refresh=False))
         except Exception:  # noqa: BLE001
             pass
 
@@ -1324,10 +1325,11 @@ class QueryScreen(BaseScreen):
             )
             return
         self._needs_refresh = False
-        self.load_query(query)
+        # Explicit refresh / ``r`` bypasses disk cache then rewrites it.
+        self.load_query(query, refresh=True)
 
     @work(exclusive=True, group="query-view")
-    async def load_query(self, query: Query) -> None:
+    async def load_query(self, query: Query, *, refresh: bool = False) -> None:
         status = self.query_one("#query-status", Static)
         self._busy = True
         self._run_token += 1
@@ -1335,7 +1337,9 @@ class QueryScreen(BaseScreen):
         status.display = True
         status.update("Running /query…")
         try:
-            results = await asyncio.to_thread(query.execute, self.client)
+            results = await asyncio.to_thread(
+                query.execute, self.client, refresh=refresh
+            )
         except Exception as exc:
             if token != self._run_token:
                 return

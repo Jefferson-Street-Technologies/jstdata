@@ -370,7 +370,10 @@ class EntityScreen(BaseScreen):
         self._render_fields(note=note)
         self._focus_pane("metrics")
         # Auto-load — discovery screen should not wait on r.
-        self.call_later(self.action_load)
+        # Prefer disk cache on first open; explicit ``r`` refreshes from network.
+        self.call_later(
+            lambda: self.load_entity(reset=True, reset_meta=True, refresh=False)
+        )
 
     def _render_fields(self, *, note: str = "") -> None:
         self.query_one("#entity-title", Label).update(self._label or self._entity_id or "—")
@@ -484,7 +487,8 @@ class EntityScreen(BaseScreen):
             return
         self._filter_query = ""
         self.query_one("#assoc-filter", Input).value = ""
-        self.load_entity(reset=True, reset_meta=True)
+        # ``r`` forces a network refresh; pagination / filter reuse disk cache.
+        self.load_entity(reset=True, reset_meta=True, refresh=True)
 
     def action_focus_filter(self) -> None:
         if not self._loaded:
@@ -814,9 +818,19 @@ class EntityScreen(BaseScreen):
             f"{n_out + n_in}{r_extra} relationships"
         )
 
+    def _with_client_cache(self, refresh: bool, fn, /, *args, **kwargs):
+        if refresh and hasattr(self.client, "uncached"):
+            with self.client.uncached():
+                return fn(*args, **kwargs)
+        return fn(*args, **kwargs)
+
     @work(exclusive=True, group="entity-view")
     async def load_entity(
-        self, *, reset: bool = True, reset_meta: bool = True
+        self,
+        *,
+        reset: bool = True,
+        reset_meta: bool = True,
+        refresh: bool = False,
     ) -> None:
         entity_id = self._entity_id
         if not entity_id:
@@ -833,9 +847,21 @@ class EntityScreen(BaseScreen):
         try:
             if reset_meta or not self._entity_meta_loaded:
                 entity, relations_pair, raw = await asyncio.gather(
-                    asyncio.to_thread(self.client.get_entity, entity_id),
-                    asyncio.to_thread(self._fetch_relations_both, entity_id),
                     asyncio.to_thread(
+                        self._with_client_cache,
+                        refresh,
+                        self.client.get_entity,
+                        entity_id,
+                    ),
+                    asyncio.to_thread(
+                        self._with_client_cache,
+                        refresh,
+                        self._fetch_relations_both,
+                        entity_id,
+                    ),
+                    asyncio.to_thread(
+                        self._with_client_cache,
+                        refresh,
                         self.client.search_metrics,
                         query,
                         entity=entity_id,
@@ -863,6 +889,8 @@ class EntityScreen(BaseScreen):
                 self._entity_meta_loaded = True
             else:
                 raw = await asyncio.to_thread(
+                    self._with_client_cache,
+                    refresh,
                     self.client.search_metrics,
                     query,
                     entity=entity_id,

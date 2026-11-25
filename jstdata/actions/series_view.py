@@ -108,7 +108,8 @@ class SeriesScreen(BaseScreen):
         if self._series_id is None and ctx is not None and ctx.series:
             self._series_id = ctx.series[0]
         if self._series_id:
-            self.call_later(self.action_load)
+            # Prefer disk cache on first open; ``r`` forces a network refresh.
+            self.call_later(lambda: self.load_series(refresh=False))
 
     def shell_breadcrumb(self) -> str:
         if self._series:
@@ -145,10 +146,10 @@ class SeriesScreen(BaseScreen):
         if not self._series_id:
             self.notify("No series selected", severity="warning")
             return
-        self.load_series()
+        self.load_series(refresh=True)
 
     @work(exclusive=True, group="series-view")
-    async def load_series(self) -> None:
+    async def load_series(self, *, refresh: bool = False) -> None:
         import asyncio
 
         sid = self._series_id
@@ -157,7 +158,13 @@ class SeriesScreen(BaseScreen):
         status = self.query_one("#series-status", Static)
         status.update("Loading series…")
         try:
-            series = await asyncio.to_thread(self.client.get_series, sid)
+            def _fetch():
+                if refresh and hasattr(self.client, "uncached"):
+                    with self.client.uncached():
+                        return self.client.get_series(sid)
+                return self.client.get_series(sid)
+
+            series = await asyncio.to_thread(_fetch)
         except Exception as exc:
             status.update(f"Failed: {exc}")
             self.notify(str(exc), severity="error")

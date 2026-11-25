@@ -251,7 +251,8 @@ class ReleaseScreen(BaseScreen):
         if not self._release_id:
             self.notify("No release in Input Context", severity="warning")
             return
-        self.load_release()
+        # First load may hit disk cache; later ``r`` refreshes from the network.
+        self.load_release(refresh=self._loaded)
 
     def action_cursor_down(self) -> None:
         self.query_one("#release-list", ListView).action_cursor_down()
@@ -288,7 +289,7 @@ class ReleaseScreen(BaseScreen):
         list_view.focus()
 
     @work(exclusive=True, group="release-view")
-    async def load_release(self) -> None:
+    async def load_release(self, *, refresh: bool = False) -> None:
         release_id = self._release_id
         if not release_id:
             return
@@ -296,7 +297,13 @@ class ReleaseScreen(BaseScreen):
         status.update("Loading /query…")
         kwargs = self._query_kwargs()
         try:
-            results = await asyncio.to_thread(self.client.query, **kwargs)
+            def _fetch():
+                if refresh and hasattr(self.client, "uncached"):
+                    with self.client.uncached():
+                        return self.client.query(**kwargs)
+                return self.client.query(**kwargs)
+
+            results = await asyncio.to_thread(_fetch)
         except Exception as exc:
             status.update(f"Could not load release: {exc}")
             return

@@ -1,10 +1,11 @@
 import hashlib
 import json
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Iterator, List, Optional, Union
 from urllib.parse import quote
 
 import pandas as pd
@@ -177,41 +178,93 @@ def _read_config_file(path: Path) -> Dict[str, Any]:
     return data
 
 
+def _cache_param_value(value: Any) -> Any:
+    """Stable JSON-friendly form of a request param (lists keep order)."""
+    if isinstance(value, (list, tuple)):
+        return [_cache_param_value(v) for v in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
 @dataclass
 class JSTDataCache:
+    """Disk cache for full API JSON responses (search, query, metadata, …).
+
+    Keys include endpoint + params (limit/offset too), so each pagination
+    page is a distinct entry under ``~/.jstdata/cache/``.
+    """
+
     endpoint: str
     params: Optional[Dict[str, Any]]
 
     def __post_init__(self):
-        if self.params is None:
-            self.params = {}
-
-        # Normalize params for hashing
-        sorted_items = sorted(
-            [(k, str(v)) for k, v in self.params.items() if v is not None]
-        )
-        self.params = dict(sorted_items)
+        raw = self.params or {}
+        normalized = {
+            str(k): _cache_param_value(v)
+            for k, v in raw.items()
+            if v is not None
+        }
+        self.params = dict(sorted(normalized.items(), key=lambda kv: kv[0]))
 
         self._cache_dir = APP_DIR / "cache"
-        self._cache_dir.mkdir(exist_ok=True)
+        self._cache_dir.mkdir(parents=True, exist_ok=True)
 
         json_data = json.dumps(
-            {
-                "endpoint": self.endpoint,
-                "params": self.params,
-            }
+            {"endpoint": self.endpoint, "params": self.params},
+            sort_keys=True,
+            default=str,
         )
-
         key = hashlib.sha256(json_data.encode()).hexdigest()
-        self._cache_file = self._cache_dir / f"{key}.parquet"
+        self._cache_file = self._cache_dir / f"{key}.json"
+        # Legacy parquet cache from earlier client versions.
+        self._legacy_parquet = self._cache_dir / f"{key}.parquet"
 
-    def read(self):
-        if not self._cache_file.exists():
+    def read(self) -> Optional[Dict[str, Any]]:
+        if self._cache_file.exists():
+            try:
+                with open(self._cache_file, encoding="utf-8") as f:
+                    payload = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                return None
+            if isinstance(payload, dict) and "body" in payload:
+                body = payload.get("body")
+                return body if isinstance(body, dict) else None
+            if isinstance(payload, dict):
+                return payload
             return None
-        return pd.read_parquet(self._cache_file)
+        # One-shot migration path: old parquet ``records``-only caches.
+        if self._legacy_parquet.exists():
+            try:
+                df = pd.read_parquet(self._legacy_parquet)
+            except Exception:  # noqa: BLE001
+                return None
+            return {"records": df.to_dict("records")}
+        return None
 
-    def write(self, df: pd.DataFrame):
-        df.to_parquet(self._cache_file)
+    def write(self, body: Dict[str, Any]) -> None:
+        payload = {
+            "cached_at": datetime.now(timezone.utc)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z"),
+            "endpoint": self.endpoint,
+            "params": self.params,
+            "body": body,
+        }
+        tmp = self._cache_file.with_suffix(".json.tmp")
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(payload, f, default=str)
+            tmp.replace(self._cache_file)
+        except OSError:
+            try:
+                tmp.unlink(missing_ok=True)  # type: ignore[call-arg]
+            except TypeError:
+                if tmp.exists():
+                    tmp.unlink()
+            except OSError:
+                pass
 
 
 class JSTDataClient:
@@ -230,6 +283,9 @@ class JSTDataClient:
         if api_key: kwargs["api_key"] = api_key
         if base_url: kwargs["base_url"] = base_url
         self._cfg = JSTDataClientConfig(**kwargs)
+        # Disk-cache GET responses by default (search/query/metadata/pages).
+        self._enable_cache = True
+        self._cache_bypass = False
 
     @property
     def api_key(self):
@@ -250,8 +306,10 @@ class JSTDataClient:
             self._cfg.api_key = api_key
         
         try:
-            # Simple lightweight request to verify the key
-            self.make_request("metric", params={"limit": 1})
+            # Simple lightweight request to verify the key — never cache.
+            self.make_request(
+                "metric", params={"limit": 1}, enable_cache=False
+            )
             return True
         except InvalidApiKeyError:
             return False
@@ -260,26 +318,46 @@ class JSTDataClient:
         finally:
             self._cfg.api_key = original_key
 
+    @contextmanager
+    def uncached(self) -> Iterator["JSTDataClient"]:
+        """Temporarily bypass disk cache reads (still writes fresh responses)."""
+        prev = self._cache_bypass
+        self._cache_bypass = True
+        try:
+            yield self
+        finally:
+            self._cache_bypass = prev
+
     def make_request(
         self,
         endpoint: str,
         params: Optional[Dict[str, Any]] = None,
-        enable_cache: bool = False,
+        enable_cache: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Low-level method to make a request to the API.
+
+        Successful JSON bodies are cached under ``~/.jstdata/cache/`` keyed by
+        endpoint + params (including ``limit`` / ``offset``), so search pages,
+        query runs, and metadata GETs reuse prior responses. Pass
+        ``enable_cache=False`` or use :meth:`uncached` to force a network fetch
+        (the new response is still written to the cache).
         """
         if endpoint[0] != "/":
             endpoint = f"/{endpoint}"
 
         url = f"{self.base_url}{endpoint}"
+        use_cache = (
+            self._enable_cache if enable_cache is None else bool(enable_cache)
+        )
+        if self._cache_bypass:
+            use_cache = False
 
-        # Caching logic could be more sophisticated, but keeping it simple for now
-        if enable_cache:
-            cache = JSTDataCache(endpoint, params)
-            cached_df = cache.read()
-            if cached_df is not None:
-                return {"records": cached_df.to_dict("records")}
+        cache = JSTDataCache(endpoint, params)
+        if use_cache:
+            cached = cache.read()
+            if cached is not None:
+                return cached
 
         api_key = self.api_key
         with requests.Session() as session:
@@ -291,8 +369,12 @@ class JSTDataClient:
         response.raise_for_status()
 
         data = response.json()
-        if enable_cache and "records" in data:
-            cache.write(pd.DataFrame(data["records"]))
+        if not isinstance(data, dict):
+            data = {"data": data}
+        # Always persist successful responses when caching is enabled on the
+        # client, even for refresh/bypass reads, so the next hit is warm.
+        if self._enable_cache and enable_cache is not False:
+            cache.write(data)
 
         return data
 

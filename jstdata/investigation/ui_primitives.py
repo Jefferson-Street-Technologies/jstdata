@@ -179,6 +179,7 @@ class ChipRow(Horizontal):
         self._add_shortcut = add_shortcut
         self._items: list[tuple[str, str]] = []
         self._rebuild_token = 0
+        self._rebuild_running = False
 
     def set_items(self, items: Sequence[tuple[str, str]]) -> None:
         """``items`` are ``(id, label)`` pairs."""
@@ -191,36 +192,56 @@ class ChipRow(Horizontal):
 
     def _schedule_rebuild(self) -> None:
         self._rebuild_token += 1
-        token = self._rebuild_token
+        # Defer so we don't start a worker before the app event loop is live.
+        self.call_later(self._launch_rebuild)
+
+    def _launch_rebuild(self) -> None:
+        if self.app is None or not self.is_mounted:
+            return
+        if self._rebuild_running:
+            return  # in-flight loop will pick up the new token
+        # Never exclusive-cancel DOM work — cancelling mid-remove_children
+        # can abort the message pump and blank-quit the TUI.
         self.run_worker(
-            self._rebuild_chips(token),
-            exclusive=True,
+            self._rebuild_chips,
+            exclusive=False,
             group=f"chip-row-{id(self)}",
             name=f"chip-row-{self.kind}",
+            exit_on_error=False,
         )
 
-    async def _rebuild_chips(self, token: int) -> None:
-        await self.remove_children()
-        if token != self._rebuild_token:
-            return
-        widgets: list = []
-        visible = self._items[: self.MAX_VISIBLE]
-        overflow = len(self._items) - len(visible)
-        for rid, label in visible:
-            widgets.append(ResourceChip(self.kind, rid, label))
-        if overflow > 0:
-            widgets.append(Label(f"[dim]+{overflow} more[/]", markup=True))
-        widgets.append(
-            ActionButton(
-                self._add_label,
-                action_id=f"add_{self.kind}",
-                shortcut=self._add_shortcut,
-                variant="ghost",
-                id=f"chip-add-{self.kind}",
-            )
-        )
-        if widgets:
-            await self.mount(*widgets)
+    async def _rebuild_chips(self) -> None:
+        self._rebuild_running = True
+        try:
+            while self.is_mounted:
+                token = self._rebuild_token
+                await self.remove_children()
+                if not self.is_mounted:
+                    return
+                if token != self._rebuild_token:
+                    continue
+                widgets: list = []
+                visible = self._items[: self.MAX_VISIBLE]
+                overflow = len(self._items) - len(visible)
+                for rid, label in visible:
+                    widgets.append(ResourceChip(self.kind, rid, label))
+                if overflow > 0:
+                    widgets.append(Label(f"[dim]+{overflow} more[/]", markup=True))
+                # No fixed widget id — action_id is enough; avoids DuplicateIds.
+                widgets.append(
+                    ActionButton(
+                        self._add_label,
+                        action_id=f"add_{self.kind}",
+                        shortcut=self._add_shortcut,
+                        variant="ghost",
+                    )
+                )
+                if widgets:
+                    await self.mount(*widgets)
+                if token == self._rebuild_token:
+                    return
+        finally:
+            self._rebuild_running = False
 
     def on_resource_chip_removed(self, event: ResourceChip.Removed) -> None:
         event.stop()

@@ -257,7 +257,10 @@ class MetricScreen(BaseScreen):
             note = f" (+{len(ctx.metric) - 1} more in context)"
         self._render_fields(self._metric_id, self._label, note=note)
         self._focus_pane("entities")
-        self.call_later(self.action_load)
+        # Prefer disk cache on first open; explicit ``r`` refreshes from network.
+        self.call_later(
+            lambda: self.load_metric(reset=True, reset_meta=True, refresh=False)
+        )
 
     def shell_breadcrumb(self) -> str:
         return self._label or self._metric_id or "Metric"
@@ -417,7 +420,8 @@ class MetricScreen(BaseScreen):
             return
         self._filter_query = ""
         self.query_one("#assoc-filter", Input).value = ""
-        self.load_metric(reset=True, reset_meta=True)
+        # ``r`` forces a network refresh; pagination / filter reuse disk cache.
+        self.load_metric(reset=True, reset_meta=True, refresh=True)
 
     def action_focus_filter(self) -> None:
         if not self._loaded:
@@ -600,8 +604,20 @@ class MetricScreen(BaseScreen):
             status.update(f"No entities{qbit}")
         self._refresh_tabs()
 
+    def _with_client_cache(self, refresh: bool, fn, /, *args, **kwargs):
+        if refresh and hasattr(self.client, "uncached"):
+            with self.client.uncached():
+                return fn(*args, **kwargs)
+        return fn(*args, **kwargs)
+
     @work(exclusive=True, group="metric-view")
-    async def load_metric(self, *, reset: bool = True, reset_meta: bool = False) -> None:
+    async def load_metric(
+        self,
+        *,
+        reset: bool = True,
+        reset_meta: bool = False,
+        refresh: bool = False,
+    ) -> None:
         metric_id = self._metric_id
         if not metric_id:
             self.loading_more = False
@@ -617,8 +633,15 @@ class MetricScreen(BaseScreen):
         try:
             if reset_meta or not self._metric_meta_loaded:
                 metric, raw, taxonomies = await asyncio.gather(
-                    asyncio.to_thread(self.client.get_metric, metric_id),
                     asyncio.to_thread(
+                        self._with_client_cache,
+                        refresh,
+                        self.client.get_metric,
+                        metric_id,
+                    ),
+                    asyncio.to_thread(
+                        self._with_client_cache,
+                        refresh,
                         self.client.search_entities,
                         query,
                         metric=metric_id,
@@ -626,6 +649,8 @@ class MetricScreen(BaseScreen):
                         offset=self.page_offset,
                     ),
                     asyncio.to_thread(
+                        self._with_client_cache,
+                        refresh,
                         self.client.get_metric_taxonomies,
                         metric_id,
                         TAXONOMIES_PAGE,
@@ -657,6 +682,8 @@ class MetricScreen(BaseScreen):
                 self._metric_meta_loaded = True
             else:
                 raw = await asyncio.to_thread(
+                    self._with_client_cache,
+                    refresh,
                     self.client.search_entities,
                     query,
                     metric=metric_id,

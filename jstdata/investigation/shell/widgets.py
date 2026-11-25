@@ -359,6 +359,18 @@ class ResearchSidebar(Static):
         self._jump_kind: Optional[JumpKind] = None
         self._jump_targets: list[Any] = []
         self._active_query_id: Optional[int] = None
+        self._pending_queries: Optional[list[dict[str, Any]]] = None
+        self._pending_workspace: Optional[
+            tuple[
+                list[tuple[str, str]],
+                list[tuple[str, str]],
+                list[tuple[str, str]],
+            ]
+        ] = None
+        self._queries_running = False
+        self._workspace_running = False
+        self._queries_token = 0
+        self._workspace_token = 0
 
     def compose(self) -> ComposeResult:
         yield Label(
@@ -499,51 +511,76 @@ class ResearchSidebar(Static):
     ) -> None:
         """``queries`` items: ``{id, name, in_report, empty?}``."""
         self._active_query_id = active_query_id
-        listing = self.query_one("#sidebar-query-list", VerticalScroll)
+        self._pending_queries = list(queries)
+        self._queries_token += 1
+        # Defer worker start until the app event loop is ready.
+        self.call_later(self._launch_refresh_queries)
+
+    def _launch_refresh_queries(self) -> None:
+        if self.app is None or not self.is_mounted:
+            return
+        if getattr(self, "_pending_queries", None) is None:
+            return
+        if self._queries_running:
+            return
+        # Never exclusive-cancel DOM work — cancel mid-remove can blank-quit.
         self.run_worker(
-            self._refresh_queries_async(listing, queries, active_query_id),
-            exclusive=True,
+            self._refresh_queries_async,
+            exclusive=False,
             group="sidebar-queries",
             name="sidebar-queries",
+            exit_on_error=False,
         )
 
-    async def _refresh_queries_async(
-        self,
-        listing: VerticalScroll,
-        queries: list[dict[str, Any]],
-        active_query_id: Optional[int],
-    ) -> None:
-        await listing.remove_children()
-        drafts = [q for q in queries if not q.get("in_report")]
-        saved = [q for q in queries if q.get("in_report")]
-        drafts.sort(key=lambda q: int(q["id"]))
-        draft = drafts[-1] if drafts else None
-        widgets: list[Static] = []
-        if draft is not None:
-            label = str(draft.get("name") or "")
-            widgets.append(
-                _SidebarQueryRow(
-                    int(draft["id"]),
-                    label,
-                    draft=True,
-                    empty=bool(draft.get("empty")) or not label,
-                    active=active_query_id == draft["id"],
-                )
-            )
-        for q in saved:
-            label = str(q.get("name") or f"Query {q['id']}")
-            widgets.append(
-                _SidebarQueryRow(
-                    int(q["id"]),
-                    label,
-                    draft=False,
-                    active=active_query_id == q["id"],
-                )
-            )
-        if widgets:
-            await listing.mount(*widgets)
-        if self._jump_kind == "queries":
-            self._apply_jump_numbers()
+    async def _refresh_queries_async(self) -> None:
+        self._queries_running = True
+        try:
+            while self.is_mounted:
+                token = self._queries_token
+                queries = getattr(self, "_pending_queries", None)
+                if queries is None:
+                    return
+                active_query_id = self._active_query_id
+                listing = self.query_one("#sidebar-query-list", VerticalScroll)
+                await listing.remove_children()
+                if not self.is_mounted:
+                    return
+                if token != self._queries_token:
+                    continue
+                drafts = [q for q in queries if not q.get("in_report")]
+                saved = [q for q in queries if q.get("in_report")]
+                drafts.sort(key=lambda q: int(q["id"]))
+                draft = drafts[-1] if drafts else None
+                widgets: list[Static] = []
+                if draft is not None:
+                    label = str(draft.get("name") or "")
+                    widgets.append(
+                        _SidebarQueryRow(
+                            int(draft["id"]),
+                            label,
+                            draft=True,
+                            empty=bool(draft.get("empty")) or not label,
+                            active=active_query_id == draft["id"],
+                        )
+                    )
+                for q in saved:
+                    label = str(q.get("name") or f"Query {q['id']}")
+                    widgets.append(
+                        _SidebarQueryRow(
+                            int(q["id"]),
+                            label,
+                            draft=False,
+                            active=active_query_id == q["id"],
+                        )
+                    )
+                if widgets:
+                    await listing.mount(*widgets)
+                if self._jump_kind == "queries":
+                    self._apply_jump_numbers()
+                if token == self._queries_token:
+                    return
+        finally:
+            self._queries_running = False
 
     def refresh_workspace(
         self,
@@ -552,45 +589,69 @@ class ResearchSidebar(Static):
         metrics: list[tuple[str, str]],
         series: list[tuple[str, str]],
     ) -> None:
-        listing = self.query_one("#sidebar-ws-list", VerticalScroll)
-        self.run_worker(
-            self._refresh_workspace_async(listing, entities, metrics, series),
-            exclusive=True,
-            group="sidebar-ws",
-            name="sidebar-ws",
-        )
+        self._pending_workspace = (entities, metrics, series)
+        self._workspace_token += 1
         total = len(entities) + len(metrics) + len(series)
         self.query_one("#sidebar-ws-kicker", Label).update(
             f"[bold #86efac]2[/] Workspace  {total}"
         )
         self.set_class(total == 0, "-ws-empty")
+        self.call_later(self._launch_refresh_workspace)
 
-    async def _refresh_workspace_async(
-        self,
-        listing: VerticalScroll,
-        entities: list[tuple[str, str]],
-        metrics: list[tuple[str, str]],
-        series: list[tuple[str, str]],
-    ) -> None:
-        await listing.remove_children()
-        widgets: list[Static] = []
+    def _launch_refresh_workspace(self) -> None:
+        if self.app is None or not self.is_mounted:
+            return
+        if getattr(self, "_pending_workspace", None) is None:
+            return
+        if self._workspace_running:
+            return
+        self.run_worker(
+            self._refresh_workspace_async,
+            exclusive=False,
+            group="sidebar-ws",
+            name="sidebar-ws",
+            exit_on_error=False,
+        )
 
-        def _section(title: str, rows: list[tuple[str, str]], kind: str) -> None:
-            if not rows:
-                return
-            widgets.append(_SidebarSectionHeader(title))
-            for rid, label in rows:
-                widgets.append(
-                    _SidebarResourceRow(kind, rid, label or rid)
-                )
+    async def _refresh_workspace_async(self) -> None:
+        self._workspace_running = True
+        try:
+            while self.is_mounted:
+                token = self._workspace_token
+                pending = getattr(self, "_pending_workspace", None)
+                if pending is None:
+                    return
+                entities, metrics, series = pending
+                listing = self.query_one("#sidebar-ws-list", VerticalScroll)
+                await listing.remove_children()
+                if not self.is_mounted:
+                    return
+                if token != self._workspace_token:
+                    continue
+                widgets: list[Static] = []
 
-        _section("Entities", entities, "entity")
-        _section("Metrics", metrics, "metric")
-        _section("Series", series, "series")
-        if widgets:
-            await listing.mount(*widgets)
-        if self._jump_kind == "workspace":
-            self._apply_jump_numbers()
+                def _section(
+                    title: str, rows: list[tuple[str, str]], kind: str
+                ) -> None:
+                    if not rows:
+                        return
+                    widgets.append(_SidebarSectionHeader(title))
+                    for rid, label in rows:
+                        widgets.append(
+                            _SidebarResourceRow(kind, rid, label or rid)
+                        )
+
+                _section("Entities", entities, "entity")
+                _section("Metrics", metrics, "metric")
+                _section("Series", series, "series")
+                if widgets:
+                    await listing.mount(*widgets)
+                if self._jump_kind == "workspace":
+                    self._apply_jump_numbers()
+                if token == self._workspace_token:
+                    return
+        finally:
+            self._workspace_running = False
 
     def on_click(self, event) -> None:  # noqa: ANN001
         if event.widget and event.widget.id == "sidebar-new-query":

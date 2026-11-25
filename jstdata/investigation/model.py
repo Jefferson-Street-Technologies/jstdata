@@ -422,13 +422,21 @@ class Query:
         return kwargs
 
     def execute(self, client: JSTDataClient, **overrides: Any) -> List[TimeSeries]:
+        refresh = bool(overrides.pop("refresh", False))
         kwargs = self.to_query_kwargs()
         kwargs.update(overrides)
+        if refresh and hasattr(client, "uncached"):
+            with client.uncached():
+                return client.query(**kwargs)
         return client.query(**kwargs)
 
     def execute_df(self, client: JSTDataClient, **overrides: Any) -> pd.DataFrame:
+        refresh = bool(overrides.pop("refresh", False))
         kwargs = self.to_query_kwargs()
         kwargs.update(overrides)
+        if refresh and hasattr(client, "uncached"):
+            with client.uncached():
+                return client.query_df(**kwargs)
         return client.query_df(**kwargs)
 
     def expected_pairs(self) -> list[tuple[str, str]]:
