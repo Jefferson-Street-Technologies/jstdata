@@ -41,24 +41,24 @@ class WorkspaceDrawer(ModalScreen[None]):
     }
 
     #ws-drawer-panel {
-        width: 42;
+        width: 40;
         height: 100%;
-        background: #111111;
-        border-right: tall #4ade80;
+        background: #0e0e0e;
+        border-right: solid #2a2a2a;
         padding: 1 1;
     }
 
     #ws-drawer-title {
         text-style: bold;
-        color: #4ade80;
+        color: #a8a8a8;
         height: 1;
         margin-bottom: 1;
     }
 
     #ws-drawer-list {
         height: 1fr;
-        background: #0a0a0a;
-        border: solid #222;
+        background: transparent;
+        border: none;
     }
 
     WorkspaceResourceRow {
@@ -74,14 +74,14 @@ class WorkspaceDrawer(ModalScreen[None]):
     WorkspaceResourceRow:hover,
     WorkspaceResourceRow.-highlighted,
     WorkspaceResourceRow.--highlight {
-        background: #1a3a1a;
-        border-left: solid #4ade80;
+        background: #161616;
+        border-left: solid #666;
     }
 
     .sess-row-kind {
         width: 100%;
         height: 1;
-        color: #86efac;
+        color: #888;
         text-style: bold;
     }
 

@@ -234,6 +234,19 @@ class ReleaseScreen(BaseScreen):
             keys.append("[bold #e0e0e0]j[/]/[bold #e0e0e0]k[/] [#888]move[/]")
         return keys
 
+    def bug_report_snapshot(self) -> dict[str, Any]:
+        return {
+            "kind": "release",
+            "release_id": self._release_id,
+            "loaded": self._loaded,
+            "visible_metric_ids": [r.metric_id for r in self._rows],
+            "api": {"client.query": self._query_kwargs() if self._release_id else {}},
+        }
+
+    def bug_report_summary(self) -> str:
+        rid = self._release_id or "—"
+        return f"[dim]Release[/] [bold]{rid}[/] [dim]→ client.query(release_id=…)[/]"
+
     def action_load(self) -> None:
         if not self._release_id:
             self.notify("No release in Input Context", severity="warning")

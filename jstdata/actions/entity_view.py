@@ -326,7 +326,9 @@ class EntityScreen(BaseScreen):
             yield Label("", id="entity-title")
             yield Static("", id="entity-meta", markup=True)
             yield Static(
-                "[dim]a[/] workspace · [dim]enter[/] chart",
+                "[bold #86efac]View chart[/] ↵   "
+                "[bold #86efac]Collect metric[/] space   "
+                "[dim]a[/] this entity",
                 id="entity-actions",
                 markup=True,
             )
@@ -380,6 +382,41 @@ class EntityScreen(BaseScreen):
 
     def shell_breadcrumb(self) -> str:
         return self._label or self._entity_id or "Entity"
+
+    def bug_report_snapshot(self) -> dict:
+        from .pagination import page_fetch_limit
+
+        query = self._filter_query.strip() or None
+        fetch_limit = page_fetch_limit(ASSOCIATES_PAGE)
+        entity_id = self._entity_id
+        return {
+            "kind": "entity",
+            "entity_id": entity_id,
+            "label": self._label,
+            "loaded": self._loaded,
+            "filter": query,
+            "page_offset": self.page_offset,
+            "visible_metric_ids": [m.id for m in self._metrics],
+            "visible_relation_ids": [r.id for _, r in self._relations],
+            "api": {
+                "client.get_entity": {"id": entity_id},
+                "client.search_metrics": {
+                    "q": query,
+                    "entity": entity_id,
+                    "limit": fetch_limit,
+                    "offset": self.page_offset if self._loaded else 0,
+                },
+                "client.get_entity_relations": {
+                    "entity_id": entity_id,
+                    **self._relation_filter_kwargs(),
+                    "directions": ["outgoing", "incoming"],
+                },
+            },
+        }
+
+    def bug_report_summary(self) -> str:
+        eid = self._entity_id or "—"
+        return f"[dim]Entity[/] [bold]{eid}[/] [dim]→ get_entity + search_metrics + relations[/]"
 
     def footer_action_keys(self) -> list[str]:
         keys: list[str] = []

@@ -101,6 +101,11 @@ class MetricScreen(BaseScreen):
         color: #888;
         height: 1;
     }
+    #metric-actions {
+        height: 1;
+        color: #a8a8a8;
+        margin: 0 0 0 0;
+    }
     #metric-tabs {
         height: 1;
         margin: 1 0 0 0;
@@ -207,6 +212,13 @@ class MetricScreen(BaseScreen):
         with Vertical(id="metric-body"):
             yield Label("", id="metric-title")
             yield Static("", id="metric-meta", markup=True)
+            yield Static(
+                "[bold #86efac]View chart[/] ↵   "
+                "[bold #86efac]Collect entity[/] space   "
+                "[dim]a[/] this metric",
+                id="metric-actions",
+                markup=True,
+            )
             yield Static("", id="metric-tabs", markup=True)
             yield Static(
                 "Press [bold]r[/bold] to load entities",
@@ -249,6 +261,40 @@ class MetricScreen(BaseScreen):
 
     def shell_breadcrumb(self) -> str:
         return self._label or self._metric_id or "Metric"
+
+    def bug_report_snapshot(self) -> dict:
+        from .pagination import page_fetch_limit
+
+        query = self._filter_query.strip() or None
+        fetch_limit = page_fetch_limit(ASSOCIATES_PAGE)
+        metric_id = self._metric_id
+        return {
+            "kind": "metric",
+            "metric_id": metric_id,
+            "label": self._label,
+            "loaded": self._loaded,
+            "filter": query,
+            "page_offset": self.page_offset,
+            "visible_entity_ids": [e.id for e in self._entities],
+            "api": {
+                "client.get_metric": {"id": metric_id},
+                "client.get_metric_taxonomies": {
+                    "metric_id": metric_id,
+                    "limit": TAXONOMIES_PAGE,
+                    "offset": 0,
+                },
+                "client.search_entities": {
+                    "q": query,
+                    "metric": metric_id,
+                    "limit": fetch_limit,
+                    "offset": self.page_offset if self._loaded else 0,
+                },
+            },
+        }
+
+    def bug_report_summary(self) -> str:
+        mid = self._metric_id or "—"
+        return f"[dim]Metric[/] [bold]{mid}[/] [dim]→ get_metric + search_entities[/]"
 
     def _render_fields(
         self,

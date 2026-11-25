@@ -114,14 +114,18 @@ class UniversalSearchModal(ModalScreen[Optional[dict[str, Any]]]):
             yield Static("SEARCH", id="usearch-title")
             with Horizontal(id="usearch-kinds"):
                 for kind_id, label in _KIND_TABS:
+                    shortcut = {"all": "1", "entity": "2", "metric": "3"}.get(
+                        kind_id, ""
+                    )
+                    text = f"{label}  {shortcut}" if shortcut else label
                     yield Label(
-                        label,
+                        text,
                         id=f"usearch-kind-{kind_id}",
                         classes="usearch-kind",
                     )
             yield Static(
-                "Enter search · Tab / 1–3 type · Space collect · "
-                "Ctrl+Enter add to query · Enter on result inspects",
+                "Enter search · click type or 1–3 · Space collect · "
+                "Ctrl+Enter add to query · Enter inspects",
                 id="usearch-hint",
             )
             yield Input(
@@ -297,6 +301,47 @@ class UniversalSearchModal(ModalScreen[Optional[dict[str, Any]]]):
         if idx is not None and 0 <= idx < len(self._hits):
             return self._hits[idx]
         return None
+
+    def bug_report_snapshot(self) -> dict[str, Any]:
+        try:
+            q = self.query_one("#usearch-input", Input).value.strip()
+        except Exception:  # noqa: BLE001
+            q = ""
+        kinds = (
+            ["entity", "metric"]
+            if self.resource == "all"
+            else [self.resource]
+        )
+        return {
+            "kind": "search",
+            "query": q,
+            "resource": self.resource,
+            "searched": self._searched,
+            "hit_count": len(self._hits),
+            "hits": [
+                {"type": h.kind, "id": h.resource_id, "label": h.label}
+                for h in self._hits[:40]
+            ],
+            "api": {
+                f"discovery.search_{kind}s": {
+                    "q": q,
+                    "limit": 20,
+                    "project": self.project_id,
+                    "investigation": self.investigation_id,
+                }
+                for kind in kinds
+            },
+        }
+
+    def bug_report_summary(self) -> str:
+        try:
+            q = self.query_one("#usearch-input", Input).value.strip()
+        except Exception:  # noqa: BLE001
+            q = ""
+        return (
+            f"[dim]Search[/] [bold]{self.resource}[/] "
+            f"[dim]“{q or '…'}” → search_entities / search_metrics[/]"
+        )
 
     def action_cancel(self) -> None:
         self.dismiss(None)

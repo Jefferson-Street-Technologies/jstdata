@@ -340,7 +340,7 @@ class InvestigationHost(App):
         Binding("q", "quit", "Quit"),
         Binding("ctrl+c", "quit", "Quit"),
         Binding("escape", "back", "Back"),
-        Binding("question_mark", "show_help", "Action help", key_display="?"),
+        Binding("question_mark", "show_shortcuts_hint", "Shortcuts", key_display="?"),
         Binding(":", "command_palette", "Command", key_display=":"),
         Binding("g", "go_home", "Home", key_display="g"),
         # Tree depth via N/P (and arrows). Sibling nav moved to Ctrl+n/p
@@ -361,9 +361,9 @@ class InvestigationHost(App):
         Binding("H", "show_activity", "History", key_display="H"),
         Binding("slash", "universal_search", "Search", show=False),
         Binding("F", "feedback_prompt", "Feedback", key_display="F"),
+        Binding("exclamation_mark", "bug_report", "Bug report", key_display="!"),
         Binding("n", "new_draft_query", "New query", show=False),
         Binding("s", "save_active_query", "Save query", show=False),
-        Binding("e", "edit_active_query", "Edit query", show=False),
         # UI navigation history (distinct from action-log / H history).
         Binding("ctrl+o", "nav_back", "Back", show=False),
         Binding("ctrl+i", "nav_forward", "Forward", show=False),
@@ -711,6 +711,13 @@ class InvestigationHost(App):
                 "release",
                 context=ResearchContext(release=[resource_id]),
                 description=f"Release {name}",
+            )
+        elif resource_type == "series":
+            self.open_child_view(
+                "series",
+                context=ResearchContext(series=[resource_id]),
+                args={"series_id": resource_id},
+                description=f"Series {name}",
             )
         else:
             self.open_child_view(
@@ -1245,6 +1252,7 @@ class InvestigationHost(App):
             "save_active_query",
             "edit_active_query",
             "feedback_prompt",
+            "bug_report",
             "show_activity",
         } and isinstance(self.focused, Input):
             return False
@@ -1692,7 +1700,7 @@ class InvestigationHost(App):
         self.refresh_shell_chrome()
 
     def action_edit_active_query(self) -> None:
-        """Enter the in-pane Edit view for the active query."""
+        """Composition lives on the query screen header — open the query."""
         if not self.investigation or not self.active:
             return
         try:
@@ -1701,28 +1709,13 @@ class InvestigationHost(App):
             self.notify("No active query", severity="warning")
             return
         if action.type != "query":
-            self.notify("Open a query to edit it", severity="warning")
+            self.notify("Open a query to compose it", severity="warning")
             return
         qid = action.args.get("query_id")
         if qid is None:
             return
-        qid = int(qid)
-        screen = self.screen
-        if (
-            getattr(screen, "query_id", None) == qid
-            and hasattr(screen, "action_mode_edit")
-        ):
-            screen.action_mode_edit()
-            return
-
-        self.open_query_view(qid)
-
-        def _enter_edit() -> None:
-            edit = getattr(self.screen, "action_mode_edit", None)
-            if callable(edit):
-                edit()
-
-        self.call_later(_enter_edit)
+        self.open_query_view(int(qid))
+        self.notify("Edit composition in the header · E/M/S to add · r to refresh")
 
     def action_feedback_prompt(self) -> None:
         """Prompt for feedback text then queue the local outbox."""
@@ -1733,6 +1726,72 @@ class InvestigationHost(App):
                 self._cmd_feedback(message)
 
         self.push_screen(FeedbackModal(), _done)
+
+    def action_bug_report(self) -> None:
+        """``!`` — bug report with free-text + data replication snapshot."""
+        from .bug_report_modal import BugReportModal
+
+        screen = self.screen
+        summary = ""
+        if hasattr(screen, "bug_report_summary"):
+            try:
+                summary = str(screen.bug_report_summary() or "")
+            except Exception:  # noqa: BLE001
+                summary = f"[dim]{type(screen).__name__}[/]"
+        else:
+            summary = f"[dim]{type(screen).__name__}[/]"
+        # Snapshot at ``!`` time — before the user edits anything in the modal.
+        replication = self._screen_bug_replication(screen)
+        screen_name = type(screen).__name__
+
+        def _done(message: str | None) -> None:
+            if message is None:
+                return
+            self._save_bug_report(
+                message,
+                replication=replication,
+                screen_name=screen_name,
+            )
+
+        self.push_screen(BugReportModal(context_summary=summary), _done)
+
+    def _screen_bug_replication(self, screen=None) -> dict:
+        screen = screen if screen is not None else self.screen
+        if hasattr(screen, "bug_report_snapshot"):
+            try:
+                snap = screen.bug_report_snapshot()
+                if isinstance(snap, dict):
+                    return snap
+            except Exception as exc:  # noqa: BLE001
+                return {
+                    "kind": "error",
+                    "screen": type(screen).__name__,
+                    "error": str(exc),
+                }
+        return {"kind": "screen", "screen": type(screen).__name__}
+
+    def _save_bug_report(
+        self,
+        message: str,
+        *,
+        replication: dict,
+        screen_name: str,
+    ) -> None:
+        from ..ops import bug_report as br
+
+        payload = br.save_bug_report(
+            message,
+            replication=replication,
+            screen=screen_name,
+            project_id=self.project_id,
+            investigation_id=(
+                self.active.investigation if self.active else None
+            ),
+            app_dir=self.app_dir,
+        )
+        path = payload.get("path") or ""
+        rid = payload.get("bug_report_id") or ""
+        self.notify(f"Bug report saved ({rid}) → {path}", timeout=6)
 
     def ensure_action(
         self,
@@ -2668,6 +2727,15 @@ class InvestigationHost(App):
         self._show_current_action(reset=True)
 
     def action_back(self) -> None:
+        # Cancel sidebar jump mode (1/2 digit pick) before other Esc behavior.
+        try:
+            from .shell import ResearchSidebar
+
+            sidebar = self.screen.query_one("#shell-sidebar", ResearchSidebar)
+            if sidebar.cancel_jump():
+                return
+        except Exception:  # noqa: BLE001
+            pass
         focused = self.focused
         screen = self.screen
         if getattr(focused, "id", None) in (
@@ -2705,16 +2773,17 @@ class InvestigationHost(App):
         if self.active and self.active.action != ROOT_ACTION_ID:
             self.action_go_home()
 
+    def action_show_shortcuts_hint(self) -> None:
+        """``?`` — shortcuts live next to on-screen controls, not a help dump."""
+        self.notify(
+            "Shortcuts appear beside their controls "
+            "(1/2 jump · ! bug report · E/M/S add · r refresh · / search)",
+            timeout=5,
+        )
+
     def action_show_help(self) -> None:
-        if isinstance(self.screen, DestinationScreen):
-            bindings = [
-                ActionBinding(key, "help", desc)
-                for key, desc in self.screen.help_bindings()
-            ]
-            self.push_screen(HelpScreen(self.screen.dest_title(), bindings))
-            return
-        spec = self.current_action_spec
-        self.push_screen(HelpScreen(spec.name, list(spec.bindings)))
+        # Retained for older callers; prefer on-screen shortcut hints.
+        self.action_show_shortcuts_hint()
 
     def delete_query(self, query_id: int) -> None:
         if not self.investigation:

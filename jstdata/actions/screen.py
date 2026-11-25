@@ -6,7 +6,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
-from textual.widgets import Input, Label, ListView, Tree
+from textual.widgets import Input, Label
 
 from ..investigation.shell import ProjectHeader, ResearchSidebar, TabBar
 
@@ -17,17 +17,17 @@ class BaseScreen(Screen):
     Layout: project header → tab bar → (sidebar | body) → footer.
     Subclasses implement :meth:`compose_body`. Drawers/modals stay standalone.
 
-    Pane focus: ``1`` queries · ``2`` workspace · ``3`` main.
+    Sidebar: click to open. ``1`` / ``2`` enter jump mode for queries /
+    workspace; then press the highlighted digit. Esc cancels jump.
     """
 
-    # Investigation-wide keys — keep short; full inventory lives in `:` / `?`.
+    # Investigation-wide keys — shortcuts also appear next to on-screen controls.
     FOOTER_CHROME: tuple[str, ...] = (
         "[bold]/[/bold] search",
+        "[bold]1[/bold]/[bold]2[/bold] jump",
         "[bold]n[/bold] query",
-        "[bold]s[/bold] save",
         "[bold]a[/bold] annotate",
         "[bold]Ctrl+o[/bold] back",
-        "[bold]?[/bold] help",
     )
 
     # Shell-level bindings (host also owns some; these help when focus is here).
@@ -36,10 +36,16 @@ class BaseScreen(Screen):
         Binding("H", "shell_history", "History", show=False),
         Binding("F", "shell_feedback", "Feedback", show=False),
         Binding("n", "shell_new_query", "New query", show=False),
-        Binding("1", "focus_pane_queries", "Queries", show=False),
-        Binding("2", "focus_pane_workspace", "Workspace", show=False),
-        Binding("3", "focus_pane_main", "Main", show=False),
-        Binding("ctrl+h", "focus_pane_queries", "Focus queries", show=False),
+        Binding("1", "sidebar_digit_1", "Jump queries / pick 1", show=False),
+        Binding("2", "sidebar_digit_2", "Jump workspace / pick 2", show=False),
+        Binding("3", "sidebar_digit_3", "Jump pick 3", show=False),
+        Binding("4", "sidebar_digit_4", "Jump pick 4", show=False),
+        Binding("5", "sidebar_digit_5", "Jump pick 5", show=False),
+        Binding("6", "sidebar_digit_6", "Jump pick 6", show=False),
+        Binding("7", "sidebar_digit_7", "Jump pick 7", show=False),
+        Binding("8", "sidebar_digit_8", "Jump pick 8", show=False),
+        Binding("9", "sidebar_digit_9", "Jump pick 9", show=False),
+        Binding("0", "sidebar_digit_0", "Jump pick 10", show=False),
         Binding("ctrl+l", "focus_pane_main", "Focus main", show=False),
         Binding("backslash", "toggle_sidebar", "Toggle sidebar", show=False),
     ]
@@ -92,6 +98,13 @@ class BaseScreen(Screen):
         width: 1fr;
         overflow: hidden;
     }
+
+    #bug-report-hint {
+        width: auto;
+        color: #fbbf24;
+        text-style: bold;
+        padding: 0 1;
+    }
     """
 
     # Screens that should not wrap body in the research shell chrome.
@@ -114,6 +127,11 @@ class BaseScreen(Screen):
             yield from self.compose_body()
         with Horizontal(id="cmd-bar"):
             yield Label("", id="help-hint", markup=True)
+            yield Label(
+                "Problems? Press !",
+                id="bug-report-hint",
+                markup=False,
+            )
 
     def compose_body(self) -> ComposeResult:
         """Yield the screen body above the shared footer."""
@@ -165,6 +183,19 @@ class BaseScreen(Screen):
         """Screen-local key hints (search, enter, …). Override per action."""
         return []
 
+    def bug_report_snapshot(self) -> dict:
+        """Data needed to re-fetch what this screen is showing (not UX state)."""
+        return {
+            "kind": "screen",
+            "screen": type(self).__name__,
+        }
+
+    def bug_report_summary(self) -> str:
+        """One-line markup summary shown in the bug-report modal."""
+        snap = self.bug_report_snapshot()
+        kind = snap.get("kind") or "screen"
+        return f"[dim]Capturing[/] [bold]{kind}[/] [dim]replication data[/]"
+
     def refresh_footer(self) -> None:
         """Rebuild the footer from status + action keys + shared chrome."""
         parts = [
@@ -214,20 +245,11 @@ class BaseScreen(Screen):
         return False
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        # Don't steal digits while typing in an input.
-        if isinstance(self.focused, Input) and action in {
-            "focus_pane_queries",
-            "focus_pane_workspace",
-            "focus_pane_main",
-        }:
+        # Don't steal digits / Esc while typing in an input.
+        if isinstance(self.focused, Input) and action.startswith("sidebar_"):
             return False
-        # Sidebar owns Enter / list motion — don't let the main pane steal them.
-        if self.focus_in_shell_sidebar() and action in {
-            "confirm",
-            "inspect",
-            "collect",
-            "cursor_down",
-            "cursor_up",
+        if isinstance(self.focused, Input) and action in {
+            "focus_pane_main",
         }:
             return False
         return True
@@ -241,21 +263,49 @@ class BaseScreen(Screen):
             sidebar.sidebar_collapsed = False
         return sidebar
 
-    def action_focus_pane_queries(self) -> None:
-        if self._ensure_sidebar_open() is None:
+    def _sidebar_digit(self, digit: int) -> None:
+        sidebar = self._ensure_sidebar_open()
+        if sidebar is None:
             return
-        try:
-            self.query_one("#sidebar-query-list", ListView).focus()
-        except Exception:  # noqa: BLE001
-            pass
+        sidebar.handle_digit(digit)
+
+    def action_sidebar_digit_0(self) -> None:
+        self._sidebar_digit(0)
+
+    def action_sidebar_digit_1(self) -> None:
+        self._sidebar_digit(1)
+
+    def action_sidebar_digit_2(self) -> None:
+        self._sidebar_digit(2)
+
+    def action_sidebar_digit_3(self) -> None:
+        self._sidebar_digit(3)
+
+    def action_sidebar_digit_4(self) -> None:
+        self._sidebar_digit(4)
+
+    def action_sidebar_digit_5(self) -> None:
+        self._sidebar_digit(5)
+
+    def action_sidebar_digit_6(self) -> None:
+        self._sidebar_digit(6)
+
+    def action_sidebar_digit_7(self) -> None:
+        self._sidebar_digit(7)
+
+    def action_sidebar_digit_8(self) -> None:
+        self._sidebar_digit(8)
+
+    def action_sidebar_digit_9(self) -> None:
+        self._sidebar_digit(9)
+
+    def action_focus_pane_queries(self) -> None:
+        """Enter query jump mode (replaces old focus-list behavior)."""
+        self._sidebar_digit(1)
 
     def action_focus_pane_workspace(self) -> None:
-        if self._ensure_sidebar_open() is None:
-            return
-        try:
-            self.query_one("#sidebar-ws-tree", Tree).focus()
-        except Exception:  # noqa: BLE001
-            pass
+        """Enter workspace jump mode (replaces old focus-tree behavior)."""
+        self._sidebar_digit(2)
 
     def action_focus_pane_main(self) -> None:
         body = self.query("#shell-body")

@@ -42,8 +42,8 @@ _HOME = {
 
 _SCREENS = {
     "ResearchRootScreen": (
-        'Press "/" to search, "n" for a new query, or pick a query from the '
-        'sidebar. "Ctrl+o" goes back.'
+        'Click a sidebar query to open it, or press "1" then a digit to jump. '
+        '"2" jumps workspace resources. "/" searches; "n" creates a query.'
     ),
     "MetricScreen": (
         'Tab switches Entities / Definition. "Enter" on an entity opens a draft '
@@ -57,8 +57,11 @@ _SCREENS = {
         'Press "r" to load metrics. "Space" collects; "Enter" opens one.'
     ),
     "QueryScreen": (
-        '"c"/"t"/"v" switch Chart, Table, Sources. "h"/"l" move the observation '
-        'cursor. "+" adds a comparison entity. "s" saves the draft; "Ctrl+o" backs out.'
+        'Compose in the header: "E"/"M"/"S" add; "r" refreshes. Tabs above the chart '
+        'switch Chart/Table ("c"/"t"). Table Enter opens a release. Annotate at bottom.'
+    ),
+    "SeriesScreen": (
+        '"Enter" or "p" plots this series. "m"/"e" open the parent metric or entity.'
     ),
     "TableScreen": (
         'Press "r" to load values. "Enter" on a cell opens the entity or metric.'

@@ -1,7 +1,7 @@
 """Query View — run a saved query and inspect observations.
 
 Idle until ``r``. Results stay JSON records under the hood (one per series);
-the human surface is a formatted table, optional chart, and a Raw JSON mode.
+the human surface is a chart or observation table above research notes.
 """
 
 from __future__ import annotations
@@ -22,15 +22,17 @@ from typing import Any, Optional
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Label, ListItem, ListView, Static
+from textual.widgets import Input, Label, ListItem, ListView, Static
 from textual_plotext import PlotextPlot
 
 from ..client import JSTDataClient
 from ..investigation.model import Query, Workspace
 from ..investigation.nav import annotations_panel
-from ..investigation.query_edit import QueryEditor
+from ..investigation.naming import label_for
+from ..investigation.query_compose import OBS_MODES, QueryComposeHeader
+from ..investigation.ui_primitives import ActionButton
 from ..models import TimeSeries
 from .base import (
     ActionArgument,
@@ -41,7 +43,7 @@ from .base import (
 )
 from .screen import BaseScreen
 
-MODES = ("chart", "table", "sources", "edit")
+MODES = ("chart", "table")
 
 
 def series_to_record(ts: TimeSeries) -> dict[str, Any]:
@@ -794,12 +796,60 @@ class ObservationRow(ListItem):
         period = format_period(self.obs.get("observation_timestamp"), freq)
         raw = self.obs.get("value")
         value = format_exact(raw, units=units)
-        released = format_release(self.obs.get("release_timestamp"))
+        released = format_release(self.obs.get("release_timestamp"), short=True)
+        release_id = str(self.obs.get("release_id") or "")
+        release_bit = release_id[:22] if release_id else released
         classes = "obs-row obs-missing" if raw is None else "obs-row"
         yield Label(
-            f"{period:<14}{value:>18}{released:>16}",
+            f"{period:<12}{value:>16}  {release_bit:<22}",
             classes=classes,
         )
+
+
+class SeriesValuesFallback(ModalScreen[None]):
+    """When an observation has no release_id — series name · value · units."""
+
+    DEFAULT_CSS = """
+    SeriesValuesFallback {
+        align: center middle;
+        background: rgba(0, 0, 0, 0.35);
+    }
+    #sv-box {
+        width: 72;
+        height: auto;
+        max-height: 24;
+        border: tall #4ade80;
+        background: #111111;
+        padding: 1 2;
+    }
+    #sv-kicker { color: #4ade80; text-style: bold; height: 1; }
+    #sv-body { color: #e0e0e0; height: auto; max-height: 18; }
+    #sv-hint { color: #666; height: 1; margin-top: 1; }
+    """
+
+    BINDINGS = [
+        Binding("escape", "dismiss", "Close", show=True),
+        Binding("enter", "dismiss", "Close", show=False),
+    ]
+
+    def __init__(self, rows: list[tuple[str, str, str]], *, title: str) -> None:
+        super().__init__()
+        self._rows = rows
+        self._title = title
+
+    def compose(self) -> ComposeResult:
+        lines = [f"{'Series':<36}{'Value':>14}  {'Units':<12}"]
+        lines.append("─" * 64)
+        for name, value, units in self._rows:
+            lines.append(f"{name[:36]:<36}{value:>14}  {(units or '—')[:12]:<12}")
+        with Vertical(id="sv-box"):
+            yield Label("OBSERVATION", id="sv-kicker")
+            yield Static(
+                f"[bold]{escape(self._title)}[/]\n\n" + "\n".join(lines),
+                id="sv-body",
+                markup=True,
+            )
+            yield Label("Esc to close", id="sv-hint")
 
 
 class SeriesNavRow(ListItem):
@@ -912,16 +962,13 @@ class QueryScreen(BaseScreen):
     """Observation workbench for a saved (or workspace) query."""
 
     BINDINGS = [
-        Binding("r", "load", "Run query", key_display="r"),
+        Binding("r", "load", "Refresh", key_display="r"),
         Binding("a", "annotate", "Annotate", show=False),
         Binding("t", "mode_table", "Table", show=False),
         Binding("c", "mode_chart", "Chart", show=False),
-        Binding("v", "mode_sources", "Sources", show=False),
-        Binding("d", "mode_sources", "Sources", show=False),
-        Binding("e", "mode_edit", "Edit", show=False),
-        Binding("plus", "add_compare", "Add entity", show=False),
-        Binding("=", "add_compare", "Add entity", show=False),
-        Binding("m", "add_metric", "Add metric", show=False),
+        Binding("E", "add_entity", "Add entity", show=False),
+        Binding("M", "add_metric", "Add metric", show=False),
+        Binding("S", "add_series", "Add series", show=False),
         Binding("space", "collect", "Collect into workspace", show=False),
         Binding("j", "cursor_down", "Cursor Down", show=False),
         Binding("k", "cursor_up", "Cursor Up", show=False),
@@ -931,7 +978,6 @@ class QueryScreen(BaseScreen):
         Binding("right", "obs_right", "Newer observation", show=False),
         Binding("x", "toggle_series", "Hide or show series", show=False),
         Binding("o", "toggle_sort", "Sort observations", show=False),
-        Binding("E", "export_csv", "Export CSV", show=False),
         Binding("y", "copy_python", "Copy Python", show=False),
         Binding("[", "prev_group", "Previous chart group", show=False),
         Binding("]", "next_group", "Next chart group", show=False),
@@ -942,20 +988,6 @@ class QueryScreen(BaseScreen):
 
     DEFAULT_CSS = """
     #query-body { height: 1fr; padding: 0 2 0 2; }
-    #query-title { color: #f5f5f5; text-style: bold; height: 1; margin-top: 1; }
-    #query-subtitle { color: #a0a0a0; height: 1; }
-    #query-layers {
-        color: #666;
-        height: 1;
-        margin: 1 0;
-    }
-    #query-headline {
-        height: 2;
-        margin-bottom: 0;
-        display: none;
-    }
-    #hl-values { color: #f5f5f5; text-style: bold; height: 1; }
-    #hl-meta { color: #888; height: 1; }
     #query-status { color: #666; height: 1; display: none; }
     #query-main { height: 1fr; min-height: 12; }
     #query-series {
@@ -966,6 +998,16 @@ class QueryScreen(BaseScreen):
         border-right: solid #222;
     }
     #query-pane { width: 1fr; height: 1fr; }
+    #query-view-tabs {
+        height: 1;
+        margin: 0 0 0 0;
+        border-bottom: solid #2a2a2a;
+    }
+    #query-tab-chart.-active, #query-tab-table.-active {
+        color: #0a0a0a;
+        background: #86efac;
+        text-style: bold;
+    }
     #query-obs-header { color: #888; height: 1; }
     #query-obs { height: 1fr; background: #0a0a0a; }
     #query-chart {
@@ -981,22 +1023,28 @@ class QueryScreen(BaseScreen):
     }
     #strip-line1 { color: #e0e0e0; height: 1; }
     #strip-line2 { color: #888; height: 1; }
-    #query-annotations {
-        color: #c0c0c0;
-        height: 5;
-        min-height: 4;
-        max-height: 8;
+    #query-notes {
+        height: auto;
+        min-height: 5;
+        max-height: 10;
         margin-top: 1;
-        border-top: solid #222;
-        padding-top: 0;
+        border-top: solid #333;
+        padding-top: 1;
+    }
+    #query-notes-header { height: 1; margin-bottom: 0; }
+    #query-notes-kicker {
+        width: 1fr;
+        color: #f5f5f5;
+        text-style: bold;
+        height: 1;
+    }
+    #query-annotations {
+        color: #e8e8e8;
+        height: auto;
+        min-height: 3;
+        max-height: 7;
         overflow-y: auto;
     }
-    #query-raw {
-        height: 1fr;
-        color: #c0c0c0;
-        display: none;
-    }
-    #query-edit { height: 1fr; width: 1fr; display: none; }
     .obs-row { width: 100%; height: 1; color: #e0e0e0; }
     .obs-missing { color: #666; }
     .series-nav-name {
@@ -1060,42 +1108,63 @@ class QueryScreen(BaseScreen):
         self._cursor_i = -1
         self._newest_first = True
         self._busy = False
+        self._has_run_once = False
+        self._needs_refresh = False
+        self._run_token = 0
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="query-body"):
-            yield Label("", id="query-title")
-            yield Label("", id="query-subtitle")
-            yield Static("", id="query-layers", markup=True)
-            with Vertical(id="query-headline"):
-                yield Label("", id="hl-values")
-                yield Label("", id="hl-meta")
+            yield QueryComposeHeader(id="query-compose")
             yield Static("", id="query-status", markup=True)
             with Horizontal(id="query-main"):
                 yield ListView(id="query-series")
                 with Vertical(id="query-pane"):
+                    with Horizontal(id="query-view-tabs"):
+                        yield ActionButton(
+                            "Chart",
+                            action_id="mode_chart",
+                            shortcut="c",
+                            variant="ghost",
+                            id="query-tab-chart",
+                        )
+                        yield ActionButton(
+                            "Table",
+                            action_id="mode_table",
+                            shortcut="t",
+                            variant="ghost",
+                            id="query-tab-table",
+                        )
                     yield Label(
-                        f"{'Period':<14}{'Value':>14}{'Released':>16}",
+                        f"{'Period':<12}{'Value':>16}  {'Release':<22}",
                         id="query-obs-header",
                     )
                     yield ListView(id="query-obs")
                     yield HistoryPlot(id="query-chart")
-                    with VerticalScroll(id="query-raw"):
-                        yield Static("", id="query-raw-body")
-                    yield QueryEditor(self.client, id="query-edit")
-            with Vertical(id="query-obs-strip"):
-                yield Label("", id="strip-line1")
-                yield Label("", id="strip-line2")
-            yield Static("", id="query-annotations", markup=True)
+                    with Vertical(id="query-obs-strip"):
+                        yield Label("", id="strip-line1")
+                        yield Label("", id="strip-line2")
+            with Vertical(id="query-notes"):
+                with Horizontal(id="query-notes-header"):
+                    yield Label("Research notes", id="query-notes-kicker")
+                    yield ActionButton(
+                        "+ Annotate",
+                        action_id="annotate",
+                        shortcut="a",
+                        variant="ghost",
+                        id="query-annotate",
+                    )
+                yield Static("", id="query-annotations", markup=True)
 
     def on_mount(self) -> None:
         super().on_mount()
         self._render_idle()
         self._apply_mode()
+        self._paint_compose()
         self.query_one("#query-obs", ListView).focus()
-        # Chart-first: auto-run when the query has something to execute.
+        # First-time auto-run only when the query is already executable.
         try:
             query = self._resolve_query()
-            if not query.is_empty():
+            if self._is_executable(query) and not self._has_run_once:
                 self.call_later(self.action_load)
         except Exception:  # noqa: BLE001
             pass
@@ -1103,28 +1172,53 @@ class QueryScreen(BaseScreen):
     def footer_status(self) -> list[str]:
         return []
 
-    def footer_action_keys(self) -> list[str]:
-        if self._mode == "edit":
-            return [
-                "[bold #e0e0e0]ctrl+s[/] [#888]update[/]",
-                "[bold #e0e0e0]ctrl+n[/] [#888]save as new[/]",
-                "[bold #e0e0e0]esc[/] [#888]cancel[/]",
-            ]
-        keys = [
-            "[bold #e0e0e0]c[/]/[bold #e0e0e0]t[/]/[bold #e0e0e0]v[/]/[bold #e0e0e0]e[/] [#888]views[/]",
-            "[bold #e0e0e0]a[/] [#888]annotate[/]",
+    def bug_report_snapshot(self) -> dict[str, Any]:
+        try:
+            query = self._resolve_query()
+            query_payload = query.to_dict()
+            api = {"client.query": query.to_query_kwargs()}
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "kind": "query",
+                "error": str(exc),
+                "query_id": self.query_id,
+            }
+        series_ids = [
+            str(r.get("id") or "")
+            for r in self._records
+            if r.get("id")
         ]
-        if self._loaded:
-            if self._mode == "chart":
-                keys.extend(
-                    [
-                        "[bold #e0e0e0]h[/]/[bold #e0e0e0]l[/] [#888]period[/]",
-                        "[bold #e0e0e0]+[/] [#888]entity[/]",
-                        "[bold #e0e0e0]m[/] [#888]metric[/]",
-                    ]
-                )
-            if self._mode == "table":
-                keys.append("[bold #e0e0e0]o[/] [#888]sort[/]")
+        return {
+            "kind": "query",
+            "query_id": self.query_id,
+            "query": query_payload,
+            "api": api,
+            "loaded": self._loaded,
+            "result_series_ids": series_ids,
+            "result_series_count": len(self._records),
+        }
+
+    def bug_report_summary(self) -> str:
+        try:
+            query = self._resolve_query()
+            name = query.name or f"Q{query.id}"
+        except Exception:
+            name = f"query {self.query_id}"
+        return f"[dim]Query[/] [bold]{escape(str(name))}[/] [dim]→ client.query(…)[/]"
+
+    def footer_action_keys(self) -> list[str]:
+        keys = [
+            "[bold #e0e0e0]E[/] [#888]entity[/]",
+            "[bold #e0e0e0]M[/] [#888]metric[/]",
+            "[bold #e0e0e0]S[/] [#888]series[/]",
+            "[bold #e0e0e0]r[/] [#888]refresh[/]",
+            "[bold #e0e0e0]c[/]/[bold #e0e0e0]t[/] [#888]chart/table[/]",
+        ]
+        if self._loaded and self._mode == "chart":
+            keys.append("[bold #e0e0e0]h[/]/[bold #e0e0e0]l[/] [#888]period[/]")
+        if self._mode == "table":
+            keys.append("[bold #e0e0e0]↵[/] [#888]release[/]")
+            keys.append("[bold #e0e0e0]o[/] [#888]sort[/]")
         return keys
 
     def shell_breadcrumb(self) -> str:
@@ -1132,14 +1226,9 @@ class QueryScreen(BaseScreen):
             query = self._resolve_query()
         except Exception:
             return "Query"
-        tag = f"Q{query.id}" if query.id else "Draft"
+        tag = f"Q{query.id}" if query.id else "Query"
         name = query.name or tag
-        mode = {
-            "chart": "Chart",
-            "table": "Table",
-            "sources": "Sources",
-            "edit": "Edit",
-        }.get(self._mode, "Chart")
+        mode = "Table" if self._mode == "table" else "Chart"
         return f"{tag} · {name} · {mode}"
 
     def refresh_footer(self) -> None:
@@ -1157,25 +1246,21 @@ class QueryScreen(BaseScreen):
     def _render_idle(self) -> None:
         try:
             query = self._resolve_query()
-        except Exception as exc:
-            self.query_one("#query-title", Label).update(str(exc))
+        except Exception:
             return
-        tag = f"Q{query.id}" if query.id else "Draft"
-        if query.name:
-            title = f"{tag} · {escape(query.name)}"
-        else:
-            title = tag
-        self.query_one("#query-title", Label).update(title)
-        # Spec line is Sources material — keep subtitle empty until load.
-        self.query_one("#query-subtitle", Label).update("")
         self._render_annotations(query)
-        self.query_one("#query-headline").display = False
         self.query_one("#query-obs-strip").display = False
 
     def _render_annotations(self, query: Query) -> None:
         panel = self.query_one("#query-annotations", Static)
-        lines: list[str] = ["[dim]── Research notes ──[/]"]
+        lines: list[str] = []
+        inv = getattr(self.app, "investigation", None)
+        inv_notes = (getattr(inv, "annotations", None) or "").strip() if inv else ""
+        if inv_notes:
+            lines.append(escape(inv_notes))
         if query.annotations:
+            if lines:
+                lines.append("")
             lines.append(escape(query.annotations))
         for i, note in enumerate(query.notes_on or [], start=1):
             span = ""
@@ -1183,16 +1268,17 @@ class QueryScreen(BaseScreen):
                 span = f" · {note.from_ or '…'} – {note.to or '…'}"
             series = f" · {note.series}" if note.series else ""
             lines.append(
-                f"[bold]{i:02d}[/] {escape(note.text)}[dim]{series}{span}[/]"
+                f"[bold #86efac]{i:02d}[/] {escape(note.text)}[dim]{series}{span}[/]"
             )
-        if len(lines) == 1:
+        if not lines:
             body = annotations_panel(query.annotations) if query.id else ""
             if body:
                 lines.append(body)
             else:
-                lines.append("[dim]No annotations yet. Press a to annotate.[/]")
+                lines.append(
+                    "[dim]No research notes yet. Press a or click Annotate.[/]"
+                )
         panel.update("\n".join(lines))
-        panel.display = self._mode not in {"sources", "edit"}
 
     def refresh_annotations(self) -> None:
         """Host hook after annotation edits."""
@@ -1222,29 +1308,8 @@ class QueryScreen(BaseScreen):
                 flags.add("chart")
         return flags
 
-    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        if self._mode == "edit":
-            # Chart/table navigation keys belong to the editor while editing.
-            if action in {
-                "inspect",
-                "cursor_down",
-                "cursor_up",
-                "obs_left",
-                "obs_right",
-                "toggle_series",
-                "toggle_sort",
-                "add_compare",
-                "add_metric",
-                "collect",
-                "load",
-                "annotate",
-                "export_csv",
-                "copy_python",
-                "prev_group",
-                "next_group",
-            }:
-                return False
-        return True
+    def _is_executable(self, query: Query) -> bool:
+        return bool(query.series) or (bool(query.metric) and bool(query.entity))
 
     def action_load(self) -> None:
         try:
@@ -1252,35 +1317,72 @@ class QueryScreen(BaseScreen):
         except Exception as exc:
             self.notify(str(exc), severity="error")
             return
-        if query.is_empty():
+        if not self._is_executable(query):
             self.notify(
-                "Query is empty — Search / Collect into the workspace first",
+                "Add a metric and entity (or a series) to run this query",
                 severity="warning",
             )
             return
+        self._needs_refresh = False
         self.load_query(query)
 
     @work(exclusive=True, group="query-view")
     async def load_query(self, query: Query) -> None:
         status = self.query_one("#query-status", Static)
         self._busy = True
+        self._run_token += 1
+        token = self._run_token
+        status.display = True
         status.update("Running /query…")
         try:
             results = await asyncio.to_thread(query.execute, self.client)
         except Exception as exc:
+            if token != self._run_token:
+                return
             self._busy = False
             status.update(f"Query failed: {exc}")
             self.notify(str(exc), severity="error")
+            self._paint_compose()
+            return
+        if token != self._run_token:
             return
         self._busy = False
         self._records = [series_to_record(ts) for ts in results]
         self._groups = group_plot_records(self._records)
         self._loaded = True
+        self._has_run_once = True
+        self._needs_refresh = False
         self._series_i = 0
         self._group_i = 0
         self._hidden.clear()
         self._cursor_i = -1
         self._mode = "chart"
+        # First successful plot auto-promotes into the report set.
+        if not query.in_report:
+            query.in_report = True
+            if not query.name:
+                from ..investigation.naming import suggest_query_name
+
+                labels = getattr(self.app, "labels", {}) or {}
+                query.name = suggest_query_name(
+                    query.metric, query.entity, labels=labels
+                )
+            from ..investigation.api import persist_investigation
+
+            persist_investigation(
+                getattr(self.app, "investigation"),
+                app_dir=getattr(self.app, "app_dir", None),
+            )
+            # Mint a fresh empty draft slot after auto-promote.
+            ensure = getattr(self.app, "ensure_draft_query", None)
+            if callable(ensure):
+                try:
+                    ensure(reset=True)
+                except Exception:  # noqa: BLE001
+                    pass
+            refresh = getattr(self.app, "refresh_shell_chrome", None)
+            if callable(refresh):
+                refresh()
         line = coverage_status(query, self._records)
         status.update(line)
         if not self._records:
@@ -1289,6 +1391,7 @@ class QueryScreen(BaseScreen):
             self.notify(line, severity="warning")
         self._fill_nav()
         self._show_selected()
+        self._paint_compose(coverage=line)
         self.refresh_footer()
 
     def _fill_nav(self) -> None:
@@ -1348,11 +1451,9 @@ class QueryScreen(BaseScreen):
     def _show_selected(self) -> None:
         record = self._selected_record()
         if record is None:
-            self.query_one("#query-headline").display = False
             self.query_one("#query-obs-strip").display = False
             self.query_one("#query-obs", ListView).clear()
             self.query_one("#query-chart", HistoryPlot).plot_records(None)
-            self.query_one("#query-raw-body", Static).update("{}")
             self._apply_mode()
             return
         obs_list = self.query_one("#query-obs", ListView)
@@ -1365,60 +1466,9 @@ class QueryScreen(BaseScreen):
         )
         for obs in rows:
             obs_list.append(ObservationRow(record, obs))
-        self._render_headline()
         self._render_chart()
         self._render_obs_strip()
-        self._render_sources_body()
         self._apply_mode()
-
-    def _query_title_line(self, query: Query, record: Optional[dict[str, Any]]) -> str:
-        tag = f"Q{query.id}" if query.id else "Draft"
-        if query.name:
-            return f"{tag} · {escape(query.name)}"
-        if record is not None:
-            return f"{tag} · {escape(record_title(record))}"
-        return tag
-
-    def _context_subtitle(self, record: Optional[dict[str, Any]]) -> str:
-        """Entity · frequency — not a repeat of the query/metric title."""
-        if record is None:
-            return ""
-        entities = record.get("entities") or []
-        entity = ""
-        if entities:
-            entity = str(entities[0].get("label") or entities[0].get("id") or "")
-        freq = str(record.get("frequency") or "")
-        bits = [b for b in (entity, freq) if b]
-        return " · ".join(bits)
-
-    def _render_headline(self) -> None:
-        record = self._selected_record()
-        panel = self.query_one("#query-headline")
-        try:
-            query = self._resolve_query()
-        except Exception:
-            query = None
-        if record is None or query is None:
-            panel.display = False
-            return
-        panel.display = self._mode == "chart"
-        self.query_one("#query-title", Label).update(
-            self._query_title_line(query, record)
-        )
-        self.query_one("#query-subtitle", Label).update(
-            self._context_subtitle(record)
-        )
-        last = record.get("last") or {}
-        units = str(record.get("units") or "")
-        freq = str(record.get("frequency") or "")
-        period = format_period(last.get("observation_timestamp"), freq)
-        value = format_compact(last.get("value"), units=units)
-        pop, yoy = headline_changes(record)
-        self.query_one("#hl-values", Label).update(
-            f"{value}     {pop}     {yoy}"
-        )
-        # Period only under the headline — units live in Sources / strip.
-        self.query_one("#hl-meta", Label).update(period)
 
     def _render_chart(self) -> None:
         visible = self._visible_records()
@@ -1467,115 +1517,34 @@ class QueryScreen(BaseScreen):
             meta += " · missing for selected series"
         self.query_one("#strip-line2", Label).update(meta)
 
-    def _render_sources_body(self) -> None:
-        try:
-            query = self._resolve_query()
-        except Exception as exc:
-            self.query_one("#query-raw-body", Static).update(str(exc))
-            return
-        record = self._selected_record()
-        coverage = (
-            coverage_status(query, self._records) if self._records else "Not run yet"
-        )
-        lines = [
-            "── Query details ──",
-            query_spec_line(query),
-            coverage,
-            f"Span: {coverage_years(self._records)}",
-            "",
-            "── Spec ──",
-            json.dumps(query.to_dict(), indent=2, default=str),
-        ]
-        if record is not None:
-            lines.extend(
-                [
-                    "",
-                    "── Selected series ──",
-                    json.dumps(
-                        {
-                            k: record.get(k)
-                            for k in (
-                                "id",
-                                "label",
-                                "metric_id",
-                                "entities",
-                                "frequency",
-                                "units",
-                                "source",
-                                "n_observations",
-                            )
-                        },
-                        indent=2,
-                        default=str,
-                    ),
-                ]
-            )
-        self.query_one("#query-raw-body", Static).update("\n".join(lines))
+    def _paint_view_tabs(self) -> None:
+        for key in ("chart", "table"):
+            btn = self.query_one(f"#query-tab-{key}", ActionButton)
+            btn.set_class(key == self._mode, "-active")
 
     def _apply_mode(self) -> None:
+        if self._mode not in MODES:
+            self._mode = "chart"
         table = self._mode == "table"
         chart = self._mode == "chart"
-        sources = self._mode == "sources"
-        edit = self._mode == "edit"
         self.query_one("#query-obs-header").display = table
         self.query_one("#query-obs").display = table
         self.query_one("#query-chart").display = chart
-        self.query_one("#query-raw").display = sources
-        editor = self.query_one("#query-edit", QueryEditor)
-        if edit:
-            editor.display = True
-            editor.add_class("-visible")
-        else:
-            if editor.display or editor.has_class("-visible"):
-                editor.hide_editor()
-        self.query_one("#query-headline").display = (
-            chart and self._loaded and self._selected_record() is not None
-        )
         self.query_one("#query-obs-strip").display = (
             chart and self._loaded and bool(self._visible_records())
         )
-        try:
-            self.query_one("#query-annotations").display = not sources and not edit
-        except Exception:  # noqa: BLE001
-            pass
-        if edit:
-            self.query_one("#query-series").display = False
-            self.query_one("#query-title").display = False
-            self.query_one("#query-subtitle").display = False
-        else:
-            self.query_one("#query-title").display = True
-            self.query_one("#query-subtitle").display = True
-        # Tab strip — Chart / Table / Sources / Edit
-        def _tab(active: str) -> str:
-            parts = []
-            for key, label in (
-                ("chart", "Chart"),
-                ("table", "Table"),
-                ("sources", "Sources"),
-                ("edit", "Edit"),
-            ):
-                if key == active:
-                    parts.append(f"[bold #86efac on #163324] {label} [/]")
-                else:
-                    parts.append(f"[#888]{label}[/]")
-            return "  ".join(parts)
-
-        try:
-            self.query_one("#query-layers", Static).update(_tab(self._mode))
-        except Exception:  # noqa: BLE001
-            pass
         order = "latest first" if self._newest_first else "oldest first"
         self.query_one("#query-obs-header", Label).update(
-            f"{'Period':<14}{'Value':>14}{'Released':>16}     {order}"
+            f"{'Period':<12}{'Value':>16}  {'Release':<22}  {order}"
         )
-        if edit:
-            pass  # focus set by show_editor
-        elif table:
+        self._paint_view_tabs()
+        if table:
             self.query_one("#query-obs", ListView).focus()
         elif chart and self.query_one("#query-series").display:
             self.query_one("#query-series", ListView).focus()
-        elif len(self._records) > 1 and not sources:
+        elif len(self._records) > 1:
             self.query_one("#query-series", ListView).focus()
+        self._paint_compose()
         try:
             refresh = getattr(self.app, "refresh_shell_chrome", None)
             if callable(refresh):
@@ -1595,75 +1564,77 @@ class QueryScreen(BaseScreen):
         self._show_selected()
 
     def action_mode_sources(self) -> None:
-        self._mode = "sources"
-        self._fill_nav()
-        self._show_selected()
-
-    def action_mode_edit(self) -> None:
-        """Enter the in-pane query editor (fourth view)."""
-        if self.query_id is None:
-            self.notify("Save as a query first to edit it", severity="warning")
-            return
-        try:
-            query = self._resolve_query()
-        except Exception as exc:
-            self.notify(str(exc), severity="error")
-            return
-        inv = getattr(self.app, "investigation", None)
-        if inv is None:
-            self.notify("No investigation loaded", severity="error")
-            return
-        editor = self.query_one("#query-edit", QueryEditor)
-        active = getattr(self.app, "active", None)
-        editor.show_editor(
-            query,
-            investigation=inv,
-            app_dir=getattr(self.app, "app_dir", None),
-            project_id=getattr(self.app, "project_id", None),
-            investigation_id=getattr(active, "investigation", None) if active else None,
-            labels=getattr(self.app, "labels", None) or {},
-        )
-        self._mode = "edit"
-        self._apply_mode()
+        # Sources view retired — keep alias for older callers.
+        self.action_mode_table()
 
     def action_mode_raw(self) -> None:
-        self.action_mode_sources()
+        self.action_mode_table()
 
     def action_mode_definition(self) -> None:
-        self.action_mode_sources()
+        self.action_mode_table()
 
-    @on(QueryEditor.Applied)
-    def _editor_applied(self, event: QueryEditor.Applied) -> None:
-        event.stop()
-        qid = event.query_id
-        mode = event.mode
-        self.query_one("#query-edit", QueryEditor).hide_editor()
-        open_fn = getattr(self.app, "open_query_view", None)
-        if mode == "new" and callable(open_fn):
-            open_fn(qid)
-        else:
-            self.query_id = qid
-            self._mode = "chart"
-            self._loaded = False
-            self._apply_mode()
-            self._render_idle()
-            self.call_later(self.action_load)
+    def _obs_mode_for(self, query: Query) -> str:
+        if query.tail is not None:
+            return "most_recent"
+        if query.head is not None:
+            return "earliest"
+        return "all"
+
+    def _paint_compose(self, *, coverage: str = "") -> None:
+        try:
+            query = self._resolve_query()
+        except Exception:
+            return
+        labels = getattr(self.app, "labels", {}) or {}
+        badge = "Saved" if query.in_report else "Draft"
+        if self._needs_refresh:
+            badge = f"{badge} · pending refresh"
+        if self._busy:
+            badge = f"{badge} · running…"
+        header = self.query_one("#query-compose", QueryComposeHeader)
+        cov = coverage
+        if not cov and self._records:
+            cov = coverage_status(query, self._records)
+        header.paint(
+            title=query.name or f"Query {query.id}",
+            badge=badge,
+            entities=[(e, label_for(labels, e)) for e in query.entity],
+            metrics=[(m, label_for(labels, m)) for m in query.metric],
+            series=[(s, label_for(labels, s)) for s in query.series],
+            frequency=query.frequency,
+            obs_mode=self._obs_mode_for(query),
+            mode=self._mode,
+            needs_refresh=self._needs_refresh,
+            coverage=cov,
+        )
+
+    def _mark_composition_changed(self) -> None:
+        """After the first plot, further edits require an explicit refresh."""
+        from ..investigation.api import persist_investigation
+
+        persist_investigation(
+            getattr(self.app, "investigation"),
+            app_dir=getattr(self.app, "app_dir", None),
+        )
         refresh = getattr(self.app, "refresh_shell_chrome", None)
         if callable(refresh):
             refresh()
-        self.notify("Query updated" if mode == "update" else f"Saved as Q{qid}")
-
-    @on(QueryEditor.Cancelled)
-    def _editor_cancelled(self, event: QueryEditor.Cancelled) -> None:
-        event.stop()
-        self.query_one("#query-edit", QueryEditor).hide_editor()
-        self._mode = "chart"
-        self._fill_nav()
-        self._show_selected()
-        self._apply_mode()
+        try:
+            query = self._resolve_query()
+        except Exception:
+            return
+        if not self._has_run_once:
+            if self._is_executable(query):
+                self.action_load()
+            else:
+                self._paint_compose()
+            return
+        self._needs_refresh = True
+        self.notify("Composition changed — press r to refresh", timeout=4)
+        self._paint_compose()
 
     def _append_query_resource(self, kind: str, result: dict) -> None:
-        """Persist a picked entity/metric onto the active query and re-run."""
+        """Persist a picked resource onto the active query."""
         try:
             query = self._resolve_query()
         except Exception as exc:
@@ -1672,65 +1643,82 @@ class QueryScreen(BaseScreen):
         rid = str(result.get("id") or "")
         if not rid:
             return
-        bag = query.entity if kind == "entity" else query.metric
+        bag = (
+            query.entity
+            if kind == "entity"
+            else query.metric
+            if kind == "metric"
+            else query.series
+        )
         if rid in bag:
             self.notify(f"{rid} already in query", severity="warning")
             return
         if kind == "entity":
             query.entity = list(query.entity) + [rid]
-        else:
+        elif kind == "metric":
             query.metric = list(query.metric) + [rid]
-        from ..investigation.api import persist_investigation
-        from ..investigation.naming import suggest_query_name
-
+        else:
+            query.series = list(query.series) + [rid]
         labels = getattr(self.app, "labels", {}) or {}
         if result.get("label"):
             labels[rid] = str(result["label"])
             remember = getattr(self.app, "remember_label", None)
             if callable(remember):
                 remember(rid, str(result["label"]))
-        query.name = suggest_query_name(query.metric, query.entity, labels=labels)
-        persist_investigation(
-            getattr(self.app, "investigation"),
-            app_dir=getattr(self.app, "app_dir", None),
-        )
-        self.notify(f"Added {labels.get(rid, rid)} — re-running")
-        self.action_load()
-        refresh = getattr(self.app, "refresh_shell_chrome", None)
-        if callable(refresh):
-            refresh()
+        if not query.name or not query.in_report:
+            from ..investigation.naming import suggest_query_name
+
+            query.name = suggest_query_name(
+                query.metric, query.entity, labels=labels
+            )
+        self._mark_composition_changed()
+
+    def _remove_query_resource(self, kind: str, resource_id: str) -> None:
+        try:
+            query = self._resolve_query()
+        except Exception as exc:
+            self.notify(str(exc), severity="error")
+            return
+        if kind == "entity" and resource_id in query.entity:
+            query.entity = [x for x in query.entity if x != resource_id]
+        elif kind == "metric" and resource_id in query.metric:
+            query.metric = [x for x in query.metric if x != resource_id]
+        elif kind == "series" and resource_id in query.series:
+            query.series = [x for x in query.series if x != resource_id]
+        else:
+            return
+        self._mark_composition_changed()
 
     def _open_scoped_picker(self, kind: str) -> None:
-        """Pick another entity (scoped to first metric) or metric (first entity)."""
+        """Pick entity/metric/series; scope when a seed resource exists."""
         if self.query_id is None:
-            self.notify("Open a draft query first", severity="warning")
+            self.notify("Open a query first", severity="warning")
             return
         try:
             query = self._resolve_query()
         except Exception as exc:
             self.notify(str(exc), severity="error")
             return
-        if kind == "entity" and not query.metric:
-            self.notify("Add a metric first, then compare entities", severity="warning")
-            return
-        if kind == "metric" and not query.entity:
-            self.notify("Add an entity first, then add metrics", severity="warning")
-            return
 
-        from ..investigation.naming import label_for
         from ..investigation.resource_picker import ResourcePickerModal
 
         labels = getattr(self.app, "labels", {}) or {}
         seed_metric = query.metric[0] if query.metric else None
         seed_entity = query.entity[0] if query.entity else None
-        scope_label = (
-            label_for(labels, seed_metric)
-            if kind == "entity" and seed_metric
-            else label_for(labels, seed_entity)
-            if kind == "metric" and seed_entity
-            else None
+        scope_metric = seed_metric if kind == "entity" and seed_metric else None
+        scope_entity = seed_entity if kind == "metric" and seed_entity else None
+        scope_label = None
+        if scope_metric:
+            scope_label = label_for(labels, scope_metric)
+        elif scope_entity:
+            scope_label = label_for(labels, scope_entity)
+        exclude = list(
+            query.entity
+            if kind == "entity"
+            else query.metric
+            if kind == "metric"
+            else query.series
         )
-        exclude = list(query.entity if kind == "entity" else query.metric)
 
         def _done(result: object | None) -> None:
             if isinstance(result, dict):
@@ -1749,21 +1737,69 @@ class QueryScreen(BaseScreen):
                 investigation_id=(
                     getattr(active, "investigation", None) if active else None
                 ),
-                scope_metric=seed_metric if kind == "entity" else None,
-                scope_entity=seed_entity if kind == "metric" else None,
+                scope_metric=scope_metric,
+                scope_entity=scope_entity,
                 scope_label=scope_label,
                 exclude_ids=exclude,
             ),
             _done,
         )
 
-    def action_add_compare(self) -> None:
-        """Append an entity that carries the query's first metric, then re-run."""
+    def action_add_entity(self) -> None:
         self._open_scoped_picker("entity")
 
     def action_add_metric(self) -> None:
-        """Append a metric available on the query's first entity, then re-run."""
         self._open_scoped_picker("metric")
+
+    def action_add_series(self) -> None:
+        self._open_scoped_picker("series")
+
+    def action_add_compare(self) -> None:
+        self.action_add_entity()
+
+    @on(QueryComposeHeader.AddResource)
+    def _compose_add(self, event: QueryComposeHeader.AddResource) -> None:
+        event.stop()
+        self._open_scoped_picker(event.kind)
+
+    @on(QueryComposeHeader.RemoveResource)
+    def _compose_remove(self, event: QueryComposeHeader.RemoveResource) -> None:
+        event.stop()
+        self._remove_query_resource(event.kind, event.resource_id)
+
+    @on(QueryComposeHeader.ScopeChanged)
+    def _compose_scope(self, event: QueryComposeHeader.ScopeChanged) -> None:
+        event.stop()
+        try:
+            query = self._resolve_query()
+        except Exception:
+            return
+        query.frequency = event.frequency
+        if event.obs_mode == "all":
+            query.head = None
+            query.tail = None
+        elif event.obs_mode == "earliest":
+            query.head = 20
+            query.tail = None
+        else:
+            query.head = None
+            query.tail = 20
+        self._mark_composition_changed()
+
+    @on(QueryComposeHeader.Refresh)
+    def _compose_refresh(self, event: QueryComposeHeader.Refresh) -> None:
+        event.stop()
+        self.action_load()
+
+    @on(ActionButton.Pressed)
+    def _action_button(self, event: ActionButton.Pressed) -> None:
+        event.stop()
+        if event.button_id == "mode_chart":
+            self.action_mode_chart()
+        elif event.button_id == "mode_table":
+            self.action_mode_table()
+        elif event.button_id == "annotate":
+            self.action_annotate()
 
     def action_obs_left(self) -> None:
         dates = cursor_dates(self._visible_records())
@@ -1852,6 +1888,21 @@ class QueryScreen(BaseScreen):
         self._show_selected()
 
     def action_inspect(self) -> None:
+        # Series list / legend → series screen (not observation detail).
+        focused = self.focused
+        if isinstance(focused, ListView) and focused.id == "query-series":
+            item = focused.highlighted_child
+            record = getattr(item, "record", None) if item is not None else None
+            sid = str((record or {}).get("id") or "")
+            if sid:
+                open_fn = getattr(self.app, "open_resource_view", None)
+                if callable(open_fn):
+                    open_fn(
+                        "series",
+                        sid,
+                        label=(record or {}).get("label") or sid,
+                    )
+                    return
         if self._mode != "table":
             record = self._selected_record()
             if self._mode == "chart" and record is not None:
@@ -1865,9 +1916,50 @@ class QueryScreen(BaseScreen):
             return
         child = self.query_one("#query-obs", ListView).highlighted_child
         if isinstance(child, ObservationRow):
-            self.app.push_screen(ObservationDetail(child.record, child.obs))
+            self._inspect_table_observation(child.record, child.obs)
             return
         self.notify("No observation highlighted", severity="warning")
+
+    def _inspect_table_observation(
+        self, record: dict[str, Any], obs: dict[str, Any]
+    ) -> None:
+        """Table Enter → release page when possible; else series|value|units."""
+        release_id = str(obs.get("release_id") or "").strip()
+        if release_id:
+            open_fn = getattr(self.app, "open_resource_view", None)
+            if callable(open_fn):
+                open_fn("release", release_id, label=release_id)
+                return
+        day = _parse_stamp(obs.get("observation_timestamp"))
+        freq = record.get("frequency")
+        title = format_period(day, freq) if day else "Observation"
+        rows: list[tuple[str, str, str]] = []
+        for rec in self._records or [record]:
+            match = (
+                observation_on_date(rec, day)
+                if day is not None
+                else (rec.get("last") if rec is record else None)
+            )
+            if match is None and rec is record:
+                match = obs
+            if match is None:
+                continue
+            name = series_line_label(rec)
+            units = str(rec.get("units") or "")
+            rows.append(
+                (
+                    name,
+                    format_exact(match.get("value"), units=units),
+                    units,
+                )
+            )
+        if not rows:
+            name = series_line_label(record)
+            units = str(record.get("units") or "")
+            rows.append(
+                (name, format_exact(obs.get("value"), units=units), units)
+            )
+        self.app.push_screen(SeriesValuesFallback(rows, title=title))
 
     def action_cursor_down(self) -> None:
         focused = self.focused
@@ -1911,14 +2003,19 @@ class QueryScreen(BaseScreen):
         self.notify("Collected " + ", ".join(added))
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if isinstance(self.focused, Input):
+            if action in {
+                "add_entity",
+                "add_metric",
+                "add_series",
+                "inspect",
+            }:
+                return False
         loaded = {
             "collect",
             "inspect",
             "mode_table",
             "mode_chart",
-            "mode_sources",
-            "mode_raw",
-            "add_compare",
             "obs_left",
             "obs_right",
             "toggle_series",
@@ -1930,7 +2027,7 @@ class QueryScreen(BaseScreen):
         }
         if action in loaded:
             return self._loaded and not self._busy
-        return super().check_action(action, parameters)
+        return True
 
     @on(ListView.Highlighted, "#query-series")
     def on_series_highlighted(self, event: ListView.Highlighted) -> None:
@@ -1964,9 +2061,10 @@ QUERY_VIEW = register(
         id="query",
         name="Query",
         description=(
-            "Chart-first observation workbench for a draft or saved query. "
-            "Auto-runs when opened; c/t/v/e switch Chart/Table/Sources/Edit; "
-            "+ adds a comparison entity."
+            "Interactive query composition and chart workbench. "
+            "First executable plot runs automatically; further edits need r. "
+            "E/M/S add entity/metric/series; c/t switch chart/table. "
+            "Table Enter opens the release (or series values)."
         ),
         create_screen=create_query_screen,
         arguments=(
@@ -1977,19 +2075,23 @@ QUERY_VIEW = register(
             ),
         ),
         bindings=(
-            ActionBinding("r", "load", "Re-run GET /query"),
-            ActionBinding("a", "annotate", "Edit query annotations"),
-            ActionBinding("c / t / v / e", "mode", "Chart, table, sources, or edit"),
-            ActionBinding("+", "add_compare", "Add entity on first metric and re-run"),
-            ActionBinding("m", "add_metric", "Add metric on first entity and re-run"),
+            ActionBinding("r", "load", "Refresh / run GET /query"),
+            ActionBinding("a", "annotate", "Annotate research notes"),
+            ActionBinding("c / t", "mode", "Chart or table"),
+            ActionBinding("E", "add_entity", "Add entity (scoped when possible)"),
+            ActionBinding("M", "add_metric", "Add metric (scoped when possible)"),
+            ActionBinding("S", "add_series", "Add direct series"),
             ActionBinding("h / l", "obs", "Move the observation cursor (chart)"),
             ActionBinding("x", "toggle_series", "Hide or show a series on the chart"),
             ActionBinding("[ / ]", "group", "Cycle incompatible-unit chart groups"),
             ActionBinding("o", "sort", "Toggle observation table sort"),
-            ActionBinding("E", "export_csv", "Write observations to CSV"),
             ActionBinding("y", "copy_python", "Copy a Python query snippet"),
             ActionBinding("j / k", "cursor", "Move series or observations"),
-            ActionBinding("enter", "inspect", "Inspect the highlighted observation"),
+            ActionBinding(
+                "enter",
+                "inspect",
+                "Table → release page; chart → observation; series list → series",
+            ),
             ActionBinding("space", "collect", "Collect metric/entity/series into workspace"),
         ),
         example=':add query --args \'{"query_id":1}\'',
