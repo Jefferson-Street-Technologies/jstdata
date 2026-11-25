@@ -8,6 +8,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Input, Label
 
+from ..investigation.bug_report_modal import BugReportPanel
 from ..investigation.shell import ProjectHeader, ResearchSidebar, TabBar
 
 
@@ -17,17 +18,16 @@ class BaseScreen(Screen):
     Layout: project header → tab bar → (sidebar | body) → footer.
     Subclasses implement :meth:`compose_body`. Drawers/modals stay standalone.
 
-    Sidebar: click to open. ``1`` / ``2`` enter jump mode for queries /
+    Sidebar: click to open. ``Q`` / ``w`` enter jump mode for queries /
     workspace; then press the highlighted digit. Esc cancels jump.
+    (``Q`` is Shift+q — plain ``q`` still quits.)
     """
 
-    # Investigation-wide keys — shortcuts also appear next to on-screen controls.
+    # Keep the footer minimal — other shortcuts live next to their controls.
     FOOTER_CHROME: tuple[str, ...] = (
         "[bold]/[/bold] search",
-        "[bold]1[/bold]/[bold]2[/bold] jump",
         "[bold]n[/bold] query",
         "[bold]a[/bold] annotate",
-        "[bold]Ctrl+o[/bold] back",
     )
 
     # Shell-level bindings (host also owns some; these help when focus is here).
@@ -36,8 +36,14 @@ class BaseScreen(Screen):
         Binding("H", "shell_history", "History", show=False),
         Binding("F", "shell_feedback", "Feedback", show=False),
         Binding("n", "shell_new_query", "New query", show=False),
-        Binding("1", "sidebar_digit_1", "Jump queries / pick 1", show=False),
-        Binding("2", "sidebar_digit_2", "Jump workspace / pick 2", show=False),
+        # Shift+X — lowercase x is chart series toggle on QueryScreen.
+        Binding("X", "shell_remove", "Remove tile", show=False),
+        # Shift+Q — plain q quits at the host. w opens workspace jump.
+        Binding("Q", "sidebar_jump_queries", "Jump queries", show=False),
+        Binding("w", "sidebar_jump_workspace", "Jump workspace", show=False),
+        Binding("W", "sidebar_jump_workspace", "Jump workspace", show=False),
+        Binding("1", "sidebar_digit_1", "Jump pick 1", show=False),
+        Binding("2", "sidebar_digit_2", "Jump pick 2", show=False),
         Binding("3", "sidebar_digit_3", "Jump pick 3", show=False),
         Binding("4", "sidebar_digit_4", "Jump pick 4", show=False),
         Binding("5", "sidebar_digit_5", "Jump pick 5", show=False),
@@ -48,6 +54,9 @@ class BaseScreen(Screen):
         Binding("0", "sidebar_digit_0", "Jump pick 10", show=False),
         Binding("ctrl+l", "focus_pane_main", "Focus main", show=False),
         Binding("backslash", "toggle_sidebar", "Toggle sidebar", show=False),
+        # Screen-level Esc so jump/bug cancel isn't lost when the host
+        # binding is shadowed (check_action used to disable this key).
+        Binding("escape", "shell_escape", "Back", show=False),
     ]
 
     DEFAULT_CSS = """
@@ -84,13 +93,23 @@ class BaseScreen(Screen):
         border-bottom: solid #1a1a1a;
     }
 
+    #shell-footer {
+        dock: bottom;
+        height: auto;
+        width: 100%;
+        background: #0f0f0f;
+    }
+
     #cmd-bar {
         height: 3;
         background: #0f0f0f;
         border-top: solid #4ade80;
         align: left middle;
         padding: 0 1;
-        dock: bottom;
+    }
+
+    #shell-footer.-bug-open #cmd-bar {
+        border-top: solid #333;
     }
 
     #help-hint {
@@ -104,6 +123,11 @@ class BaseScreen(Screen):
         color: #fbbf24;
         text-style: bold;
         padding: 0 1;
+    }
+
+    #shell-footer.-bug-open #bug-report-hint {
+        color: #888;
+        text-style: none;
     }
     """
 
@@ -125,13 +149,15 @@ class BaseScreen(Screen):
                     yield from self.compose_body()
         else:
             yield from self.compose_body()
-        with Horizontal(id="cmd-bar"):
-            yield Label("", id="help-hint", markup=True)
-            yield Label(
-                "Problems? Press !",
-                id="bug-report-hint",
-                markup=False,
-            )
+        with Vertical(id="shell-footer"):
+            yield BugReportPanel()
+            with Horizontal(id="cmd-bar"):
+                yield Label("", id="help-hint", markup=True)
+                yield Label(
+                    "Problems? Press !",
+                    id="bug-report-hint",
+                    markup=False,
+                )
 
     def compose_body(self) -> ComposeResult:
         """Yield the screen body above the shared footer."""
@@ -191,7 +217,7 @@ class BaseScreen(Screen):
         }
 
     def bug_report_summary(self) -> str:
-        """One-line markup summary shown in the bug-report modal."""
+        """One-line markup summary shown in the bug-report panel."""
         snap = self.bug_report_snapshot()
         kind = snap.get("kind") or "screen"
         return f"[dim]Capturing[/] [bold]{kind}[/] [dim]replication data[/]"
@@ -207,6 +233,93 @@ class BaseScreen(Screen):
             self.query_one("#help-hint", Label).update(" // ".join(parts))
         except Exception:  # noqa: BLE001
             pass
+        self.refresh_bug_report_chrome()
+
+    def refresh_bug_report_chrome(self) -> None:
+        """Sync the footer bug hint / open class with panel state."""
+        try:
+            panel = self.query_one("#bug-report-panel", BugReportPanel)
+            hint = self.query_one("#bug-report-hint", Label)
+            footer = self.query_one("#shell-footer")
+            if panel.is_open:
+                hint.update("Enter save · Esc cancel")
+                footer.add_class("-bug-open")
+            else:
+                hint.update("Problems? Press !")
+                footer.remove_class("-bug-open")
+        except Exception:  # noqa: BLE001
+            pass
+
+    def open_bug_report(
+        self,
+        *,
+        context_summary: str,
+        replication: dict,
+        screen_name: str,
+    ) -> None:
+        """Expand the footer bug form under the main pane (keeps context)."""
+        panel = self.query_one("#bug-report-panel", BugReportPanel)
+        panel.open_panel(
+            context_summary=context_summary,
+            replication=replication,
+            screen_name=screen_name,
+        )
+        self.refresh_footer()
+
+    def cancel_bug_report(self) -> bool:
+        """Collapse the bug panel if open. Return True if it was open."""
+        try:
+            panel = self.query_one("#bug-report-panel", BugReportPanel)
+        except Exception:  # noqa: BLE001
+            return False
+        if not panel.is_open:
+            return False
+        panel.close_panel()
+        self.refresh_footer()
+        return True
+
+    def action_cancel_bug_report(self) -> None:
+        """Back-compat alias — prefer :meth:`action_shell_escape`."""
+        self.action_shell_escape()
+
+    def action_shell_escape(self) -> None:
+        """Esc: close bug form → cancel Q/w jump → host back."""
+        if self.cancel_bug_report():
+            return
+        try:
+            sidebar = self.query_one("#shell-sidebar", ResearchSidebar)
+        except Exception:  # noqa: BLE001
+            sidebar = None
+        if sidebar is not None and sidebar.cancel_jump():
+            return
+        fn = getattr(self.app, "action_back", None)
+        if callable(fn):
+            fn()
+
+    def on_bug_report_panel_submitted(
+        self, event: BugReportPanel.Submitted
+    ) -> None:
+        event.stop()
+        panel = self.query_one("#bug-report-panel", BugReportPanel)
+        replication = panel.pending_replication
+        screen_name = panel.pending_screen_name or type(self).__name__
+        # Clear pending after read.
+        panel._replication = {}
+        panel._screen_name = ""
+        self.refresh_footer()
+        save = getattr(self.app, "_save_bug_report", None)
+        if callable(save):
+            save(
+                event.message,
+                replication=replication,
+                screen_name=screen_name,
+            )
+
+    def on_bug_report_panel_cancelled(
+        self, event: BugReportPanel.Cancelled
+    ) -> None:
+        event.stop()
+        self.refresh_footer()
 
     def action_shell_search(self) -> None:
         fn = getattr(self.app, "action_universal_search", None)
@@ -245,14 +358,23 @@ class BaseScreen(Screen):
         return False
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        # Don't steal digits / Esc while typing in an input.
-        if isinstance(self.focused, Input) and action.startswith("sidebar_"):
-            return False
-        if isinstance(self.focused, Input) and action in {
-            "focus_pane_main",
+        # Don't steal digits while typing — Esc still clears jump / bug / back.
+        if isinstance(self.focused, Input) and action not in {
+            "shell_escape",
+            "cancel_bug_report",
         }:
-            return False
+            if action.startswith("sidebar_") or action in {
+                "focus_pane_main",
+                "shell_remove",
+            }:
+                return False
         return True
+
+    def action_shell_remove(self) -> None:
+        """Shift+X — remove the active query or the open workspace resource."""
+        fn = getattr(self.app, "remove_active_sidebar_target", None)
+        if callable(fn):
+            fn()
 
     def _ensure_sidebar_open(self) -> ResearchSidebar | None:
         try:
@@ -268,6 +390,16 @@ class BaseScreen(Screen):
         if sidebar is None:
             return
         sidebar.handle_digit(digit)
+
+    def action_sidebar_jump_queries(self) -> None:
+        sidebar = self._ensure_sidebar_open()
+        if sidebar is not None:
+            sidebar.start_jump("queries")
+
+    def action_sidebar_jump_workspace(self) -> None:
+        sidebar = self._ensure_sidebar_open()
+        if sidebar is not None:
+            sidebar.start_jump("workspace")
 
     def action_sidebar_digit_0(self) -> None:
         self._sidebar_digit(0)
@@ -301,11 +433,11 @@ class BaseScreen(Screen):
 
     def action_focus_pane_queries(self) -> None:
         """Enter query jump mode (replaces old focus-list behavior)."""
-        self._sidebar_digit(1)
+        self.action_sidebar_jump_queries()
 
     def action_focus_pane_workspace(self) -> None:
         """Enter workspace jump mode (replaces old focus-tree behavior)."""
-        self._sidebar_digit(2)
+        self.action_sidebar_jump_workspace()
 
     def action_focus_pane_main(self) -> None:
         body = self.query("#shell-body")
@@ -345,6 +477,20 @@ class BaseScreen(Screen):
         fn = getattr(self.app, "open_resource_view", None)
         if callable(fn):
             fn(event.resource_type, event.resource_id)
+
+    def on_research_sidebar_query_removed(
+        self, event: ResearchSidebar.QueryRemoved
+    ) -> None:
+        fn = getattr(self.app, "delete_query", None)
+        if callable(fn):
+            fn(event.query_id, confirmed=True)
+
+    def on_research_sidebar_resource_removed(
+        self, event: ResearchSidebar.ResourceRemoved
+    ) -> None:
+        fn = getattr(self.app, "remove_workspace_resource", None)
+        if callable(fn):
+            fn(event.resource_type, event.resource_id, confirmed=True)
 
     def on_research_sidebar_new_query(
         self, event: ResearchSidebar.NewQuery

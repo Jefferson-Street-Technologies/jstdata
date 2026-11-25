@@ -17,8 +17,8 @@ _TYPING = (
 
 _HOME = {
     None: (
-        'Press "/" to search, "1"/"2"/"3" to move between Queries, Workspace, '
-        'and Main, or "n" for a new draft query. "t" opens tutorials.'
+        'Press "/" to search, "Q"/"w" to jump Queries or Workspace, '
+        'or "n" for a new draft query. "t" opens tutorials.'
     ),
     "recent": (
         'These are the newest filings and data releases. Press "j"/"k" to move '
@@ -42,8 +42,8 @@ _HOME = {
 
 _SCREENS = {
     "ResearchRootScreen": (
-        'Click a sidebar query to open it, or press "1" then a digit to jump. '
-        '"2" jumps workspace resources. "/" searches; "n" creates a query.'
+        'Click a sidebar query to open it, or press "Q" then a digit to jump. '
+        '"w" jumps workspace resources. "/" searches; "n" creates a query.'
     ),
     "MetricScreen": (
         'Tab switches Entities / Definition. "Enter" on an entity opens a draft '
@@ -91,7 +91,7 @@ _SCREENS = {
 }
 
 _FALLBACK = (
-    'Press "/" to search, "1"/"2"/"3" for panes, "Ctrl+o" to go back, '
+    'Press "/" to search, "Q"/"w" to jump the sidebar, "Ctrl+o" to go back, '
     '":" for commands, or "?" for keys.'
 )
 

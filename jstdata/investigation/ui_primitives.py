@@ -96,7 +96,11 @@ class ActionButton(Static, can_focus=True):
 
 
 class ResourceChip(Static, can_focus=True):
-    """Selected resource with remove affordance: ``[ Label × ]``."""
+    """Selected resource with remove affordance: ``Label ×``.
+
+    No Textual ``border`` — on ``height: 1`` borders render as empty grey
+    slabs and hide the label (the misrendered chip zones).
+    """
 
     DEFAULT_CSS = """
     ResourceChip {
@@ -104,13 +108,13 @@ class ResourceChip(Static, can_focus=True):
         height: 1;
         padding: 0 1;
         margin-right: 1;
-        color: #e0e0e0;
-        background: #1a2a1a;
-        border: solid #2a4a2a;
+        color: #e8e8e8;
+        background: #1f2a1f;
+        text-style: none;
     }
     ResourceChip:focus {
-        background: #1a3a2a;
-        border: solid #4ade80;
+        color: #86efac;
+        background: #243324;
         text-style: bold;
     }
     """
@@ -149,6 +153,11 @@ class ChipRow(Horizontal):
         height: 1;
         width: 1fr;
         layout: horizontal;
+        background: #0a0a0a;
+    }
+    ChipRow ActionButton.-ghost {
+        background: #0a0a0a;
+        color: #86efac;
     }
     """
 
@@ -200,6 +209,9 @@ class ChipRow(Horizontal):
             return
         if self._rebuild_running:
             return  # in-flight loop will pick up the new token
+        # Set the guard *before* scheduling so overlapping call_later
+        # callbacks cannot start a second mount worker (triple-list bug).
+        self._rebuild_running = True
         # Never exclusive-cancel DOM work — cancelling mid-remove_children
         # can abort the message pump and blank-quit the TUI.
         self.run_worker(
@@ -211,7 +223,6 @@ class ChipRow(Horizontal):
         )
 
     async def _rebuild_chips(self) -> None:
-        self._rebuild_running = True
         try:
             while self.is_mounted:
                 token = self._rebuild_token
@@ -254,7 +265,7 @@ class ChipRow(Horizontal):
 
 
 class EnumSelect(Static, can_focus=True):
-    """Compact left/right enum: ``[ Quarterly ▾ ]`` style."""
+    """Compact left/right enum: ``Quarterly ▾`` style (borderless at height 1)."""
 
     DEFAULT_CSS = """
     EnumSelect {
@@ -262,13 +273,12 @@ class EnumSelect(Static, can_focus=True):
         height: 1;
         padding: 0 1;
         margin-right: 1;
-        color: #e0e0e0;
-        background: #1a1a1a;
-        border: solid #333;
+        color: #a3a3a3;
+        background: #0a0a0a;
     }
     EnumSelect:focus {
-        border: solid #4ade80;
         color: #86efac;
+        background: #141414;
         text-style: bold;
     }
     """

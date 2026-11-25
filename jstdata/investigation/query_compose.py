@@ -35,29 +35,48 @@ class QueryComposeHeader(Vertical):
     DEFAULT_CSS = """
     QueryComposeHeader {
         height: auto;
-        max-height: 10;
+        max-height: 9;
         width: 100%;
-        padding: 0 0 1 0;
-        border-bottom: solid #222;
+        background: #0a0a0a;
+        padding: 0 0 0 0;
+        border-bottom: none;
         margin-bottom: 0;
     }
-    #qc-title-row { height: 1; margin-bottom: 0; }
+    #qc-title-row { height: 1; margin-bottom: 1; }
     #qc-title { width: 1fr; color: #f5f5f5; text-style: bold; }
-    #qc-badge { width: auto; color: #86efac; }
+    #qc-badge { width: auto; color: #a3a3a3; }
     #qc-entities-label, #qc-metrics-label, #qc-series-label {
-        color: #666;
-        width: 14;
+        color: #737373;
+        width: 13;
         height: 1;
+        content-align: left middle;
     }
     #qc-entities-row, #qc-metrics-row, #qc-series-row {
         height: 1;
+        width: 100%;
         margin-bottom: 0;
+        background: #0a0a0a;
     }
-    #qc-scope-row { height: 1; margin-top: 0; }
+    #qc-entities, #qc-metrics, #qc-series {
+        width: 1fr;
+        background: #0a0a0a;
+    }
+    #qc-scope-row {
+        height: 1;
+        margin-top: 1;
+        background: #0a0a0a;
+    }
+    #qc-scope-row EnumSelect {
+        background: #0a0a0a;
+        border: none;
+        color: #a3a3a3;
+        padding: 0 1 0 0;
+    }
     #qc-refresh-row {
         height: 1;
         margin-top: 0;
         display: none;
+        background: #0a0a0a;
     }
     #qc-refresh-row.-show { display: block; }
     #qc-refresh {
@@ -67,7 +86,12 @@ class QueryComposeHeader(Vertical):
     }
     #qc-refresh-btn { display: none; }
     #qc-refresh-row.-show #qc-refresh-btn { display: block; }
-    #qc-coverage { height: 1; color: #888; }
+    #qc-coverage {
+        height: 1;
+        color: #737373;
+        margin-top: 1;
+        background: #0a0a0a;
+    }
     """
 
     class AddResource(Message):
@@ -98,7 +122,7 @@ class QueryComposeHeader(Vertical):
             yield Label("Entities", id="qc-entities-label")
             yield ChipRow(
                 "entity",
-                add_label="+ Add entity",
+                add_label="+ Add",
                 add_shortcut="E",
                 id="qc-entities",
             )
@@ -106,7 +130,7 @@ class QueryComposeHeader(Vertical):
             yield Label("Metrics", id="qc-metrics-label")
             yield ChipRow(
                 "metric",
-                add_label="+ Add metric",
+                add_label="+ Add",
                 add_shortcut="M",
                 id="qc-metrics",
             )
@@ -114,7 +138,7 @@ class QueryComposeHeader(Vertical):
             yield Label("Direct series", id="qc-series-label")
             yield ChipRow(
                 "series",
-                add_label="+ Add series",
+                add_label="+ Add",
                 add_shortcut="S",
                 id="qc-series",
             )

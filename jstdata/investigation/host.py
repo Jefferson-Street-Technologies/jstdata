@@ -364,6 +364,8 @@ class InvestigationHost(App):
         Binding("exclamation_mark", "bug_report", "Bug report", key_display="!"),
         Binding("n", "new_draft_query", "New query", show=False),
         Binding("s", "save_active_query", "Save query", show=False),
+        # Shift+X removes the open query/resource (lowercase x = chart toggle).
+        Binding("X", "remove_active_sidebar_target", "Remove tile", show=False),
         # UI navigation history (distinct from action-log / H history).
         Binding("ctrl+o", "nav_back", "Back", show=False),
         Binding("ctrl+i", "nav_forward", "Forward", show=False),
@@ -1515,12 +1517,35 @@ class InvestigationHost(App):
         labels = self.labels
 
         def _rows(ids: list[str]) -> list[tuple[str, str]]:
-            return [(rid, labels.get(rid, rid)) for rid in ids]
+            seen: set[str] = set()
+            out: list[tuple[str, str]] = []
+            for rid in ids:
+                if rid in seen:
+                    continue
+                seen.add(rid)
+                out.append((rid, labels.get(rid, rid)))
+            return out
+
+        active_entities: list[tuple[str, str]] = []
+        active_metrics: list[tuple[str, str]] = []
+        active_series: list[tuple[str, str]] = []
+        if active_qid is not None and self.investigation is not None:
+            try:
+                aq = self.investigation.get_query(int(active_qid))
+            except Exception:  # noqa: BLE001
+                aq = None
+            if aq is not None and not aq.is_empty():
+                active_entities = _rows(list(aq.entity))
+                active_metrics = _rows(list(aq.metric))
+                active_series = _rows(list(aq.series))
 
         sidebar.refresh_workspace(
             entities=_rows(list(ws.entity)),
             metrics=_rows(list(ws.metric)),
             series=_rows(list(ws.series)),
+            active_entities=active_entities,
+            active_metrics=active_metrics,
+            active_series=active_series,
         )
 
     def action_universal_search(self) -> None:
@@ -1728,10 +1753,21 @@ class InvestigationHost(App):
         self.push_screen(FeedbackModal(), _done)
 
     def action_bug_report(self) -> None:
-        """``!`` — bug report with free-text + data replication snapshot."""
-        from .bug_report_modal import BugReportModal
-
+        """``!`` — expand footer bug form (keeps the screen context visible)."""
         screen = self.screen
+        # Toggle closed if already open on this screen.
+        cancel = getattr(screen, "cancel_bug_report", None)
+        if callable(cancel):
+            try:
+                panel_open = getattr(
+                    screen.query_one("#bug-report-panel"), "is_open", False
+                )
+            except Exception:  # noqa: BLE001
+                panel_open = False
+            if panel_open:
+                cancel()
+                return
+
         summary = ""
         if hasattr(screen, "bug_report_summary"):
             try:
@@ -1740,20 +1776,24 @@ class InvestigationHost(App):
                 summary = f"[dim]{type(screen).__name__}[/]"
         else:
             summary = f"[dim]{type(screen).__name__}[/]"
-        # Snapshot at ``!`` time — before the user edits anything in the modal.
+        # Snapshot at ``!`` time — before the user edits the form.
         replication = self._screen_bug_replication(screen)
         screen_name = type(screen).__name__
 
-        def _done(message: str | None) -> None:
-            if message is None:
-                return
-            self._save_bug_report(
-                message,
+        open_panel = getattr(screen, "open_bug_report", None)
+        if callable(open_panel):
+            open_panel(
+                context_summary=summary,
                 replication=replication,
                 screen_name=screen_name,
             )
+            return
 
-        self.push_screen(BugReportModal(context_summary=summary), _done)
+        # Non-shell screens: fall back to a quick prompt via notify + empty save.
+        self.notify(
+            "Bug report form needs a research screen — open a query/view first",
+            severity="warning",
+        )
 
     def _screen_bug_replication(self, screen=None) -> dict:
         screen = screen if screen is not None else self.screen
@@ -2727,7 +2767,11 @@ class InvestigationHost(App):
         self._show_current_action(reset=True)
 
     def action_back(self) -> None:
-        # Cancel sidebar jump mode (1/2 digit pick) before other Esc behavior.
+        # Collapse footer bug form before other Esc behavior.
+        cancel_bug = getattr(self.screen, "cancel_bug_report", None)
+        if callable(cancel_bug) and cancel_bug():
+            return
+        # Cancel sidebar jump mode (Q/w → digit pick) before other Esc behavior.
         try:
             from .shell import ResearchSidebar
 
@@ -2777,7 +2821,7 @@ class InvestigationHost(App):
         """``?`` — shortcuts live next to on-screen controls, not a help dump."""
         self.notify(
             "Shortcuts appear beside their controls "
-            "(1/2 jump · ! bug report · E/M/S add · r refresh · / search)",
+            "(Q/w jump · ! bug report · E/M/S add · r refresh · / search)",
             timeout=5,
         )
 
@@ -2785,21 +2829,31 @@ class InvestigationHost(App):
         # Retained for older callers; prefer on-screen shortcut hints.
         self.action_show_shortcuts_hint()
 
-    def delete_query(self, query_id: int) -> None:
+    def delete_query(self, query_id: int, *, confirmed: bool = False) -> None:
+        """Delete a query. Unconfirmed calls arm the sidebar ✕ (press again)."""
         if not self.investigation:
             return
         try:
-            query = self.investigation.get_query(query_id)
+            self.investigation.get_query(query_id)
         except InvestigationError as exc:
             self.notify(str(exc), severity="error")
             return
-        name = escape(query.name or f"query {query_id}")
-        self.push_screen(
-            ConfirmForceModal(
-                f"Delete Q{query_id} · {name}? This cannot be undone."
-            ),
-            lambda ok, qid=query_id: self._confirm_delete_query(qid) if ok else None,
-        )
+        if not confirmed:
+            sidebar = self._shell_sidebar()
+            if sidebar is not None:
+                sidebar.remove_query(int(query_id))
+                return
+            # No shell chrome (legacy screens) — fall back to confirm modal.
+            self.push_screen(
+                ConfirmForceModal(
+                    f"Delete Q{query_id}? This cannot be undone."
+                ),
+                lambda ok, qid=query_id: (
+                    self._confirm_delete_query(qid) if ok else None
+                ),
+            )
+            return
+        self._confirm_delete_query(int(query_id))
 
     def _confirm_delete_query(self, query_id: int) -> None:
         if not self.investigation:
@@ -2813,6 +2867,94 @@ class InvestigationHost(App):
         self._order = self.investigation.bfs_order()
         self.notify(f"Deleted query {query_id}")
         self._show_front(reset=True)
+
+    def _shell_sidebar(self):
+        from .shell.widgets import ResearchSidebar
+
+        for node in (self.screen, *list(getattr(self, "screen_stack", []) or [])):
+            if node is None:
+                continue
+            try:
+                return node.query_one("#shell-sidebar", ResearchSidebar)
+            except Exception:  # noqa: BLE001
+                continue
+        return None
+
+    def remove_workspace_resource(
+        self,
+        resource_type: str,
+        resource_id: str,
+        *,
+        confirmed: bool = False,
+    ) -> None:
+        """Drop a workspace resource. Unconfirmed calls arm the sidebar ✕."""
+        if self.workspace is None:
+            return
+        if not confirmed:
+            sidebar = self._shell_sidebar()
+            if sidebar is not None:
+                sidebar.remove_resource(resource_type, resource_id)
+                return
+        removed = self.workspace.remove_id(resource_id)
+        if not removed:
+            self.notify(f"{resource_id} not in workspace", severity="warning")
+            return
+        self.labels.pop(resource_id, None)
+        self.persist_active_workspace()
+        self.notify(f"Removed {resource_id}")
+        # If we're looking at that resource, step back to a safe screen.
+        try:
+            action = (
+                self.investigation.get_action(self.active.action)
+                if self.investigation and self.active
+                else None
+            )
+        except Exception:  # noqa: BLE001
+            action = None
+        viewing = False
+        if action is not None and action.type == resource_type:
+            ctx = getattr(action, "context", None)
+            bucket = getattr(ctx, resource_type, None) if ctx is not None else None
+            if isinstance(bucket, list) and resource_id in bucket:
+                viewing = True
+            elif action.args.get("series_id") == resource_id:
+                viewing = True
+        if viewing:
+            self._show_front(reset=True)
+        else:
+            self.refresh_shell_chrome()
+
+    def action_remove_active_sidebar_target(self) -> None:
+        """Shift+X — arm / confirm remove of the open query or resource."""
+        self.remove_active_sidebar_target()
+
+    def remove_active_sidebar_target(self) -> None:
+        if self._invalid or not self.investigation or not self.active:
+            return
+        try:
+            action = self.investigation.get_action(self.active.action)
+        except Exception:  # noqa: BLE001
+            return
+        if action.type == "query":
+            qid = action.args.get("query_id")
+            if qid is not None:
+                self.delete_query(int(qid), confirmed=False)
+            return
+        if action.type in {"entity", "metric", "series", "release"}:
+            ctx = getattr(action, "context", None)
+            rid = None
+            if action.type == "series":
+                rid = action.args.get("series_id")
+            if rid is None and ctx is not None:
+                bucket = getattr(ctx, action.type, None)
+                if isinstance(bucket, list) and bucket:
+                    rid = bucket[0]
+            if rid:
+                self.remove_workspace_resource(
+                    action.type, str(rid), confirmed=False
+                )
+            return
+        self.notify("Nothing to remove here — open a query or resource", severity="warning")
 
     # --- Onboarding: tutorials ------------------------------------------
 

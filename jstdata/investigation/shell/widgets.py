@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Union
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.reactive import reactive
+from textual.timer import Timer
 from textual.widgets import Label, Static
 
 JumpKind = Literal["queries", "workspace"]
+# ("query", query_id) or ("resource", resource_type, resource_id)
+ArmedRemove = Union[tuple[str, int], tuple[str, str, str]]
 
 
 class ProjectHeader(Static):
@@ -86,6 +89,23 @@ class TabBar(Static):
         self.update("  ".join(parts) if parts else "[dim](no investigations)[/]")
 
 
+def _sidebar_owner(node: Any) -> Optional["ResearchSidebar"]:
+    parent = getattr(node, "parent", None)
+    while parent is not None and not isinstance(parent, ResearchSidebar):
+        parent = getattr(parent, "parent", None)
+    return parent if isinstance(parent, ResearchSidebar) else None
+
+
+def _clicked_remove(event: Any) -> bool:
+    widget = getattr(event, "widget", None)
+    while widget is not None:
+        classes = getattr(widget, "classes", None) or ()
+        if "sidebar-remove" in classes:
+            return True
+        widget = getattr(widget, "parent", None)
+    return False
+
+
 class _SidebarQueryRow(Static):
     """Clickable query row — draft is always the pinned slot; saved sit below."""
 
@@ -126,6 +146,7 @@ class _SidebarQueryRow(Static):
                         self._label or f"Query {self.query_id}",
                         classes="sidebar-q-title",
                     )
+            yield Label("✕", classes="sidebar-remove")
 
     def on_mount(self) -> None:
         self.set_class(self.active, "-active")
@@ -147,19 +168,24 @@ class _SidebarQueryRow(Static):
             num.update(f"[bold #fbbf24]{index}[/]")
             self.add_class("-jump")
 
-    def on_click(self) -> None:
-        parent = self.parent
-        while parent is not None and not isinstance(parent, ResearchSidebar):
-            parent = parent.parent
-        if isinstance(parent, ResearchSidebar):
-            parent.activate_query(self.query_id)
+    def on_click(self, event) -> None:  # noqa: ANN001
+        sidebar = _sidebar_owner(self)
+        if sidebar is None:
+            return
+        if _clicked_remove(event):
+            event.stop()
+            sidebar.remove_query(self.query_id)
+            return
+        sidebar.activate_query(self.query_id)
 
 
 class _SidebarSectionHeader(Static):
-    """Faint subheader between flat workspace resource groups."""
+    """Subheader between flat workspace resource groups."""
 
-    def __init__(self, title: str) -> None:
-        super().__init__(f"[dim]{title}[/]", markup=True, classes="sidebar-section")
+    def __init__(self, title: str, *, emphasis: bool = False) -> None:
+        classes = "sidebar-section sidebar-section-strong" if emphasis else "sidebar-section"
+        text = f"[bold]{title}[/]" if emphasis else f"[dim]{title}[/]"
+        super().__init__(text, markup=True, classes=classes)
 
 
 class _SidebarResourceRow(Static):
@@ -170,10 +196,13 @@ class _SidebarResourceRow(Static):
         resource_type: str,
         resource_id: str,
         label: str,
+        *,
+        removable: bool = True,
     ) -> None:
         super().__init__()
         self.resource_type = resource_type
         self.resource_id = resource_id
+        self.removable = removable
         self._label = label or resource_id
         self.jump_index: Optional[int] = None
 
@@ -181,6 +210,8 @@ class _SidebarResourceRow(Static):
         with Horizontal(classes="sidebar-row"):
             yield Label(" ", classes="sidebar-jump-num", markup=True)
             yield Label(self._label, classes="sidebar-res-title")
+            if self.removable:
+                yield Label("✕", classes="sidebar-remove")
 
     def on_mount(self) -> None:
         self._paint_jump(None)
@@ -201,12 +232,15 @@ class _SidebarResourceRow(Static):
             num.update(f"[bold #fbbf24]{index}[/]")
             self.add_class("-jump")
 
-    def on_click(self) -> None:
-        parent = self.parent
-        while parent is not None and not isinstance(parent, ResearchSidebar):
-            parent = parent.parent
-        if isinstance(parent, ResearchSidebar):
-            parent.activate_resource(self.resource_type, self.resource_id)
+    def on_click(self, event) -> None:  # noqa: ANN001
+        sidebar = _sidebar_owner(self)
+        if sidebar is None:
+            return
+        if _clicked_remove(event):
+            event.stop()
+            sidebar.remove_resource(self.resource_type, self.resource_id)
+            return
+        sidebar.activate_resource(self.resource_type, self.resource_id)
 
 
 class ResearchSidebar(Static):
@@ -218,6 +252,17 @@ class ResearchSidebar(Static):
             super().__init__()
 
     class ResourceSelected(Message):
+        def __init__(self, resource_type: str, resource_id: str) -> None:
+            self.resource_type = resource_type
+            self.resource_id = resource_id
+            super().__init__()
+
+    class QueryRemoved(Message):
+        def __init__(self, query_id: int) -> None:
+            self.query_id = query_id
+            super().__init__()
+
+    class ResourceRemoved(Message):
         def __init__(self, resource_type: str, resource_id: str) -> None:
             self.resource_type = resource_type
             self.resource_id = resource_id
@@ -330,6 +375,12 @@ class ResearchSidebar(Static):
         padding: 0 1 0 4;
         margin-top: 1;
     }
+    .sidebar-section-strong {
+        color: #86efac;
+        padding: 0 1 0 1;
+        margin-top: 0;
+        text-style: bold;
+    }
     _SidebarResourceRow {
         height: 2;
         min-height: 2;
@@ -352,7 +403,36 @@ class ResearchSidebar(Static):
         color: #d8d8d8;
         content-align: left middle;
     }
+    .sidebar-remove {
+        width: 3;
+        height: 1;
+        color: #f87171;
+        text-style: bold;
+        content-align: center middle;
+        dock: right;
+    }
+    .sidebar-remove:hover {
+        color: #fecaca;
+        background: #3f1d1d;
+    }
+    .sidebar-remove.-armed {
+        width: auto;
+        min-width: 7;
+        color: #fecaca;
+        background: #7f1d1d;
+        text-style: bold;
+        padding: 0 1;
+    }
+    _SidebarQueryRow .sidebar-remove {
+        margin-top: 0;
+    }
+    _SidebarQueryRow.-armed-remove, _SidebarResourceRow.-armed-remove {
+        background: #2a1212;
+        border-left: solid #f87171;
+    }
     """
+
+    _ARM_SECONDS = 2.5
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -367,24 +447,25 @@ class ResearchSidebar(Static):
                 list[tuple[str, str]],
             ]
         ] = None
+        self._pending_active: Optional[
+            tuple[
+                list[tuple[str, str]],
+                list[tuple[str, str]],
+                list[tuple[str, str]],
+            ]
+        ] = None
         self._queries_running = False
         self._workspace_running = False
         self._queries_token = 0
         self._workspace_token = 0
+        self._armed_remove: Optional[ArmedRemove] = None
+        self._armed_timer: Optional[Timer] = None
 
     def compose(self) -> ComposeResult:
-        yield Label(
-            "[bold #86efac]1[/] Queries",
-            id="sidebar-queries-kicker",
-            markup=True,
-        )
+        yield Label("Queries", id="sidebar-queries-kicker")
         yield Label("+ Reset draft", id="sidebar-new-query")
         yield VerticalScroll(id="sidebar-query-list")
-        yield Label(
-            "[bold #86efac]2[/] Workspace",
-            id="sidebar-ws-kicker",
-            markup=True,
-        )
+        yield Label("Workspace", id="sidebar-ws-kicker")
         yield VerticalScroll(id="sidebar-ws-list")
 
     def watch_sidebar_collapsed(self, collapsed: bool) -> None:
@@ -392,23 +473,98 @@ class ResearchSidebar(Static):
 
     def activate_query(self, query_id: int) -> None:
         self.cancel_jump()
+        self.clear_armed_remove()
         self.post_message(self.QuerySelected(query_id))
 
     def activate_resource(self, resource_type: str, resource_id: str) -> None:
         self.cancel_jump()
+        self.clear_armed_remove()
         self.post_message(self.ResourceSelected(resource_type, resource_id))
 
+    def remove_query(self, query_id: int) -> None:
+        """First ✕ arms the tile; second confirms delete (no modal)."""
+        self.cancel_jump()
+        key: ArmedRemove = ("query", int(query_id))
+        if self._armed_remove == key:
+            self.clear_armed_remove()
+            self.post_message(self.QueryRemoved(int(query_id)))
+            return
+        self._arm_remove(key)
+
+    def remove_resource(self, resource_type: str, resource_id: str) -> None:
+        """First ✕ arms the tile; second confirms remove (no modal)."""
+        self.cancel_jump()
+        key: ArmedRemove = ("resource", resource_type, resource_id)
+        if self._armed_remove == key:
+            self.clear_armed_remove()
+            self.post_message(self.ResourceRemoved(resource_type, resource_id))
+            return
+        self._arm_remove(key)
+
+    def clear_armed_remove(self) -> None:
+        if self._armed_timer is not None:
+            self._armed_timer.stop()
+            self._armed_timer = None
+        prev = self._armed_remove
+        self._armed_remove = None
+        if prev is not None:
+            self._paint_armed_remove(prev, armed=False)
+
+    def _arm_remove(self, key: ArmedRemove) -> None:
+        if self._armed_remove is not None and self._armed_remove != key:
+            self._paint_armed_remove(self._armed_remove, armed=False)
+        self._armed_remove = key
+        self._paint_armed_remove(key, armed=True)
+        if self._armed_timer is not None:
+            self._armed_timer.stop()
+        self._armed_timer = self.set_timer(
+            self._ARM_SECONDS, self.clear_armed_remove
+        )
+
+    def _paint_armed_remove(self, key: ArmedRemove, *, armed: bool) -> None:
+        row: Optional[Static] = None
+        if key[0] == "query":
+            qid = int(key[1])
+            for candidate in self.query(_SidebarQueryRow):
+                if isinstance(candidate, _SidebarQueryRow) and candidate.query_id == qid:
+                    row = candidate
+                    break
+        else:
+            rtype, rid = key[1], key[2]
+            # Prefer a removable (Saved) row when Active + Saved share an id.
+            fallback: Optional[Static] = None
+            for candidate in self.query(_SidebarResourceRow):
+                if not (
+                    isinstance(candidate, _SidebarResourceRow)
+                    and candidate.resource_type == rtype
+                    and candidate.resource_id == rid
+                ):
+                    continue
+                if candidate.removable:
+                    row = candidate
+                    break
+                if fallback is None:
+                    fallback = candidate
+            if row is None:
+                row = fallback
+        if row is None:
+            return
+        row.set_class(armed, "-armed-remove")
+        try:
+            btn = row.query_one(".sidebar-remove", Label)
+        except Exception:  # noqa: BLE001
+            return
+        btn.set_class(armed, "-armed")
+        btn.update("again" if armed else "✕")
+
     def handle_digit(self, digit: int) -> bool:
-        """Handle ``1``–``9`` (and ``0`` as 10). Return True if consumed."""
+        """Pick a numbered jump target. Return True if consumed.
+
+        Enter jump mode with ``Q`` / ``w`` first — digits alone do nothing.
+        """
         if digit < 0 or digit > 9:
             return False
         if self._jump_kind is None:
-            if digit == 1:
-                self.start_jump("queries")
-                return True
-            if digit == 2:
-                self.start_jump("workspace")
-                return True
             return False
         index = 10 if digit == 0 else digit
         return self.pick_jump(index)
@@ -523,6 +679,8 @@ class ResearchSidebar(Static):
             return
         if self._queries_running:
             return
+        # Guard before scheduling so overlapping call_later can't triple-mount.
+        self._queries_running = True
         # Never exclusive-cancel DOM work — cancel mid-remove can blank-quit.
         self.run_worker(
             self._refresh_queries_async,
@@ -533,13 +691,15 @@ class ResearchSidebar(Static):
         )
 
     async def _refresh_queries_async(self) -> None:
-        self._queries_running = True
         try:
             while self.is_mounted:
                 token = self._queries_token
                 queries = getattr(self, "_pending_queries", None)
                 if queries is None:
                     return
+                # Dom rebuild drops query ✕ widgets — drop an armed query only.
+                if self._armed_remove and self._armed_remove[0] == "query":
+                    self.clear_armed_remove()
                 active_query_id = self._active_query_id
                 listing = self.query_one("#sidebar-query-list", VerticalScroll)
                 await listing.remove_children()
@@ -588,14 +748,28 @@ class ResearchSidebar(Static):
         entities: list[tuple[str, str]],
         metrics: list[tuple[str, str]],
         series: list[tuple[str, str]],
+        active_entities: Optional[list[tuple[str, str]]] = None,
+        active_metrics: Optional[list[tuple[str, str]]] = None,
+        active_series: Optional[list[tuple[str, str]]] = None,
     ) -> None:
         self._pending_workspace = (entities, metrics, series)
+        ae = list(active_entities or [])
+        am = list(active_metrics or [])
+        a_s = list(active_series or [])
+        self._pending_active = (ae, am, a_s) if (ae or am or a_s) else None
         self._workspace_token += 1
         total = len(entities) + len(metrics) + len(series)
-        self.query_one("#sidebar-ws-kicker", Label).update(
-            f"[bold #86efac]2[/] Workspace  {total}"
-        )
-        self.set_class(total == 0, "-ws-empty")
+        active_n = len(ae) + len(am) + len(a_s)
+        if total and active_n:
+            kicker = f"Workspace  {total} · active {active_n}"
+        elif total:
+            kicker = f"Workspace  {total}"
+        elif active_n:
+            kicker = f"Workspace · active {active_n}"
+        else:
+            kicker = "Workspace"
+        self.query_one("#sidebar-ws-kicker", Label).update(kicker)
+        self.set_class(total == 0 and active_n == 0, "-ws-empty")
         self.call_later(self._launch_refresh_workspace)
 
     def _launch_refresh_workspace(self) -> None:
@@ -605,6 +779,8 @@ class ResearchSidebar(Static):
             return
         if self._workspace_running:
             return
+        # Guard before scheduling so overlapping call_later can't triple-mount.
+        self._workspace_running = True
         self.run_worker(
             self._refresh_workspace_async,
             exclusive=False,
@@ -614,14 +790,16 @@ class ResearchSidebar(Static):
         )
 
     async def _refresh_workspace_async(self) -> None:
-        self._workspace_running = True
         try:
             while self.is_mounted:
                 token = self._workspace_token
                 pending = getattr(self, "_pending_workspace", None)
                 if pending is None:
                     return
+                if self._armed_remove and self._armed_remove[0] == "resource":
+                    self.clear_armed_remove()
                 entities, metrics, series = pending
+                active = getattr(self, "_pending_active", None)
                 listing = self.query_one("#sidebar-ws-list", VerticalScroll)
                 await listing.remove_children()
                 if not self.is_mounted:
@@ -631,15 +809,38 @@ class ResearchSidebar(Static):
                 widgets: list[Static] = []
 
                 def _section(
-                    title: str, rows: list[tuple[str, str]], kind: str
+                    title: str,
+                    rows: list[tuple[str, str]],
+                    kind: str,
+                    *,
+                    removable: bool = True,
                 ) -> None:
                     if not rows:
                         return
                     widgets.append(_SidebarSectionHeader(title))
                     for rid, label in rows:
                         widgets.append(
-                            _SidebarResourceRow(kind, rid, label or rid)
+                            _SidebarResourceRow(
+                                kind,
+                                rid,
+                                label or rid,
+                                removable=removable,
+                            )
                         )
+
+                if active is not None:
+                    ae, am, a_s = active
+                    if ae or am or a_s:
+                        widgets.append(
+                            _SidebarSectionHeader("Active", emphasis=True)
+                        )
+                        _section("Entities", ae, "entity", removable=False)
+                        _section("Metrics", am, "metric", removable=False)
+                        _section("Series", a_s, "series", removable=False)
+                        if entities or metrics or series:
+                            widgets.append(
+                                _SidebarSectionHeader("Saved", emphasis=True)
+                            )
 
                 _section("Entities", entities, "entity")
                 _section("Metrics", metrics, "metric")

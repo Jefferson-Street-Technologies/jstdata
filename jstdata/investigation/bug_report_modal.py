@@ -1,71 +1,154 @@
-"""Bug report popup (! / Shift+1) — free-text + data replication snapshot."""
+"""Bug report footer panel (! / Shift+1) — free-text + replication snapshot.
+
+Expands under the main pane (not a modal) so the screen context stays visible.
+"""
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from textual import on
 from textual.app import ComposeResult
-from textual.binding import Binding
-from textual.containers import Vertical
-from textual.screen import ModalScreen
-from textual.widgets import Footer, Input, Static
+from textual.containers import Horizontal, Vertical
+from textual.message import Message
+from textual.widgets import Input, Label, Static
 
 
-class BugReportModal(ModalScreen[Optional[str]]):
-    """Collect a short note; host attaches the screen replication payload."""
+class BugReportPanel(Vertical):
+    """Collapsible footer form: describe the bug, Enter saves, Esc cancels."""
 
-    BINDINGS = [
-        Binding("escape", "cancel", "Cancel", show=True),
-        Binding("enter", "submit", "Submit", show=True, priority=True),
-    ]
-
-    CSS = """
-    BugReportModal { align: center middle; }
-    #br-panel {
-        width: 72;
+    DEFAULT_CSS = """
+    BugReportPanel {
+        display: none;
         height: auto;
-        max-height: 70%;
-        border: solid #fbbf24;
-        background: #0c0c0c;
-        padding: 1 2;
+        max-height: 10;
+        width: 100%;
+        background: #12100a;
+        border-top: solid #fbbf24;
+        padding: 1 1 0 1;
     }
-    #br-title { text-style: bold; color: #fbbf24; height: 1; margin-bottom: 1; }
-    #br-hint { color: #888; height: auto; margin-bottom: 1; }
-    #br-context { color: #a8a8a8; height: auto; max-height: 8; margin-bottom: 1; }
+    BugReportPanel.-open {
+        display: block;
+    }
+    #br-title-row {
+        height: 1;
+        margin-bottom: 0;
+    }
+    #br-title {
+        width: 1fr;
+        color: #fbbf24;
+        text-style: bold;
+        height: 1;
+    }
+    #br-keys {
+        width: auto;
+        color: #888;
+        height: 1;
+    }
+    #br-context {
+        color: #a8a8a8;
+        height: 1;
+        margin-bottom: 0;
+    }
     #br-input {
-        margin-bottom: 1;
+        margin: 0 0 1 0;
+        background: #0a0a0a;
+        border: tall #333;
+    }
+    #br-input:focus {
+        border: tall #fbbf24;
     }
     """
 
-    def __init__(self, *, context_summary: str = "") -> None:
-        super().__init__()
-        self._context_summary = context_summary
+    class Submitted(Message):
+        def __init__(self, message: str) -> None:
+            super().__init__()
+            self.message = message
+
+    class Cancelled(Message):
+        pass
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(id="bug-report-panel", **kwargs)
+        self._replication: dict[str, Any] = {}
+        self._screen_name: str = ""
+
+    @property
+    def is_open(self) -> bool:
+        return self.has_class("-open")
+
+    @property
+    def pending_replication(self) -> dict[str, Any]:
+        return dict(self._replication)
+
+    @property
+    def pending_screen_name(self) -> str:
+        return self._screen_name
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="br-panel"):
-            yield Static("Bug report", id="br-title")
-            yield Static(
-                "Describe what went wrong. Screen data needed to re-run the "
-                "same API calls is captured automatically.  Enter to save · Esc cancel",
-                id="br-hint",
-            )
-            if self._context_summary:
-                yield Static(self._context_summary, id="br-context", markup=True)
-            yield Input(placeholder="What happened?", id="br-input")
-            yield Footer()
+        with Horizontal(id="br-title-row"):
+            yield Label("Bug report", id="br-title")
+            yield Label("Enter save · Esc cancel", id="br-keys")
+        yield Static("", id="br-context", markup=True)
+        yield Input(placeholder="What happened?", id="br-input")
 
-    def on_mount(self) -> None:
-        self.query_one("#br-input", Input).focus()
+    def open_panel(
+        self,
+        *,
+        context_summary: str,
+        replication: dict[str, Any],
+        screen_name: str,
+    ) -> None:
+        self._replication = dict(replication or {})
+        self._screen_name = screen_name or ""
+        ctx = self.query_one("#br-context", Static)
+        if context_summary:
+            ctx.update(context_summary)
+            ctx.display = True
+        else:
+            ctx.update("")
+            ctx.display = False
+        inp = self.query_one("#br-input", Input)
+        inp.value = ""
+        self.add_class("-open")
+        inp.focus()
+
+    def close_panel(self) -> None:
+        was_open = self.is_open
+        self.remove_class("-open")
+        self._replication = {}
+        self._screen_name = ""
+        try:
+            self.query_one("#br-input", Input).value = ""
+        except Exception:  # noqa: BLE001
+            pass
+        if was_open:
+            self.post_message(self.Cancelled())
+
+    def submit(self) -> None:
+        if not self.is_open:
+            return
+        text = self.query_one("#br-input", Input).value
+        message = text if text is not None else ""
+        # Keep replication on the panel until the screen handler reads it.
+        self.remove_class("-open")
+        try:
+            self.query_one("#br-input", Input).value = ""
+        except Exception:  # noqa: BLE001
+            pass
+        self.post_message(self.Submitted(message))
 
     def action_cancel(self) -> None:
-        self.dismiss(None)
+        self.close_panel()
 
     def action_submit(self) -> None:
-        text = self.query_one("#br-input", Input).value
-        self.dismiss(text if text is not None else "")
+        self.submit()
 
     @on(Input.Submitted, "#br-input")
     def _submitted(self, event: Input.Submitted) -> None:
         event.stop()
-        self.action_submit()
+        self.submit()
+
+
+# Back-compat alias for any leftover imports.
+BugReportModal = BugReportPanel

@@ -987,26 +987,50 @@ class QueryScreen(BaseScreen):
     FOOTER_CHROME: tuple[str, ...] = BaseScreen.FOOTER_CHROME
 
     DEFAULT_CSS = """
-    #query-body { height: 1fr; padding: 0 2 0 2; }
-    #query-status { color: #666; height: 1; display: none; }
-    #query-main { height: 1fr; min-height: 12; }
-    #query-series {
-        width: 28;
+    #query-body {
         height: 1fr;
-        background: #0f0f0f;
-        display: none;
-        border-right: solid #222;
+        padding: 0 2 0 2;
+        background: #0a0a0a;
     }
-    #query-pane { width: 1fr; height: 1fr; }
+    #query-status {
+        color: #a3a3a3;
+        height: 1;
+        display: none;
+        background: #0a0a0a;
+    }
     #query-view-tabs {
         height: 1;
-        margin: 0 0 0 0;
-        border-bottom: solid #2a2a2a;
+        margin: 1 0 0 0;
+        padding: 0;
+        background: #0a0a0a;
+        border-bottom: solid #262626;
+    }
+    #query-tab-chart, #query-tab-table {
+        background: #0a0a0a;
+        color: #737373;
+        text-style: none;
     }
     #query-tab-chart.-active, #query-tab-table.-active {
         color: #0a0a0a;
         background: #86efac;
         text-style: bold;
+    }
+    #query-main {
+        height: 1fr;
+        min-height: 12;
+        background: #0a0a0a;
+    }
+    #query-series {
+        width: 28;
+        height: 1fr;
+        background: #0a0a0a;
+        display: none;
+        border-right: solid #262626;
+    }
+    #query-pane {
+        width: 1fr;
+        height: 1fr;
+        background: #0a0a0a;
     }
     #query-obs-header { color: #888; height: 1; }
     #query-obs { height: 1fr; background: #0a0a0a; }
@@ -1015,6 +1039,7 @@ class QueryScreen(BaseScreen):
         width: 1fr;
         min-height: 14;
         display: none;
+        background: #0a0a0a;
     }
     #query-obs-strip {
         height: 2;
@@ -1116,24 +1141,24 @@ class QueryScreen(BaseScreen):
         with Vertical(id="query-body"):
             yield QueryComposeHeader(id="query-compose")
             yield Static("", id="query-status", markup=True)
+            with Horizontal(id="query-view-tabs"):
+                yield ActionButton(
+                    "Chart",
+                    action_id="mode_chart",
+                    shortcut="c",
+                    variant="ghost",
+                    id="query-tab-chart",
+                )
+                yield ActionButton(
+                    "Table",
+                    action_id="mode_table",
+                    shortcut="t",
+                    variant="ghost",
+                    id="query-tab-table",
+                )
             with Horizontal(id="query-main"):
                 yield ListView(id="query-series")
                 with Vertical(id="query-pane"):
-                    with Horizontal(id="query-view-tabs"):
-                        yield ActionButton(
-                            "Chart",
-                            action_id="mode_chart",
-                            shortcut="c",
-                            variant="ghost",
-                            id="query-tab-chart",
-                        )
-                        yield ActionButton(
-                            "Table",
-                            action_id="mode_table",
-                            shortcut="t",
-                            variant="ghost",
-                            id="query-tab-table",
-                        )
                     yield Label(
                         f"{'Period':<12}{'Value':>16}  {'Release':<22}",
                         id="query-obs-header",
@@ -1208,19 +1233,8 @@ class QueryScreen(BaseScreen):
         return f"[dim]Query[/] [bold]{escape(str(name))}[/] [dim]→ client.query(…)[/]"
 
     def footer_action_keys(self) -> list[str]:
-        keys = [
-            "[bold #e0e0e0]E[/] [#888]entity[/]",
-            "[bold #e0e0e0]M[/] [#888]metric[/]",
-            "[bold #e0e0e0]S[/] [#888]series[/]",
-            "[bold #e0e0e0]r[/] [#888]refresh[/]",
-            "[bold #e0e0e0]c[/]/[bold #e0e0e0]t[/] [#888]chart/table[/]",
-        ]
-        if self._loaded and self._mode == "chart":
-            keys.append("[bold #e0e0e0]h[/]/[bold #e0e0e0]l[/] [#888]period[/]")
-        if self._mode == "table":
-            keys.append("[bold #e0e0e0]↵[/] [#888]release[/]")
-            keys.append("[bold #e0e0e0]o[/] [#888]sort[/]")
-        return keys
+        # Keep the shared footer minimal (/, n, a) — local shortcuts sit on controls.
+        return []
 
     def shell_breadcrumb(self) -> str:
         try:
@@ -1234,7 +1248,11 @@ class QueryScreen(BaseScreen):
 
     def refresh_footer(self) -> None:
         parts = [*self.footer_action_keys(), *self.FOOTER_CHROME]
-        self.query_one("#help-hint", Label).update("    ".join(parts))
+        try:
+            self.query_one("#help-hint", Label).update("    ".join(parts))
+        except Exception:  # noqa: BLE001
+            pass
+        self.refresh_bug_report_chrome()
 
     def _resolve_query(self) -> Query:
         inv = getattr(self.app, "investigation", None)
@@ -1388,7 +1406,9 @@ class QueryScreen(BaseScreen):
             if callable(refresh):
                 refresh()
         line = coverage_status(query, self._records)
-        status.update(line)
+        # Coverage lives once in the compose header; status is run/error only.
+        status.update("")
+        status.display = False
         if not self._records:
             self.notify("No series returned", severity="warning")
         elif "missing" in line:
