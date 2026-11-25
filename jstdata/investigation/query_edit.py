@@ -618,6 +618,24 @@ class QueryEditor(Vertical):
         if kind not in {"entity", "metric", "series"}:
             return
 
+        # Seed from the first selected resource so further picks stay in coverage.
+        scope_metric = self._metric[0] if self._metric else None
+        scope_entity = self._entity[0] if self._entity else None
+        scope_metric_kw = scope_metric if kind == "entity" else None
+        scope_entity_kw = scope_entity if kind == "metric" else None
+        scope_label = None
+        if scope_metric_kw:
+            scope_label = self._label(scope_metric_kw)
+        elif scope_entity_kw:
+            scope_label = self._label(scope_entity_kw)
+        exclude = (
+            self._entity
+            if kind == "entity"
+            else self._metric
+            if kind == "metric"
+            else self._series
+        )
+
         def _done(result: object | None) -> None:
             if not isinstance(result, dict):
                 return
@@ -645,6 +663,10 @@ class QueryEditor(Vertical):
                 app_dir=self.app_dir,
                 project_id=self.project_id,
                 investigation_id=self.investigation_id,
+                scope_metric=scope_metric_kw,
+                scope_entity=scope_entity_kw,
+                scope_label=scope_label,
+                exclude_ids=exclude,
             ),
             _done,
         )

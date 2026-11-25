@@ -36,7 +36,7 @@ _HOME = {
         'query to chart them.'
     ),
     "queries": (
-        'Press "Enter" on a query to open its chart. Drafts stay local until "s".'
+        'One draft lives in the sidebar. Press "s" to save it into the report.'
     ),
 }
 

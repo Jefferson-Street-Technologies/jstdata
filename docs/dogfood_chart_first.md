@@ -12,8 +12,10 @@ Acceptance targets after the one-pass redesign.
 ## Query construction
 
 - [ ] `/` search → Enter inspect company → load → Enter metric → chart (draft)
-- [ ] `e` add another entity → Update → chart refreshes
-- [ ] `s` promotes draft to Saved (appears under Saved in sidebar)
+- [ ] `+` add another entity (scoped to first metric) → chart refreshes
+- [ ] `m` add another metric (scoped to first entity) → chart refreshes
+- [ ] `e` Edit view → add entity/metric the same way → Update
+- [ ] `s` saves the single draft into the query list (new empty draft appears)
 - [ ] Workspace collect (Space) → `n` builds draft from workspace
 
 ## Progressive disclosure
@@ -40,8 +42,9 @@ Acceptance targets after the one-pass redesign.
 |------|------|
 | Query a known series | `/` → select → chart |
 | Company metric | `/` company → metric → chart |
-| Add company to chart | `e` / Ctrl+Enter from search |
-| Change date range | `e` tail/head |
+| Add company to chart | `+` (entities on first metric) |
+| Add metric to chart | `m` (metrics on first entity) |
+| Change date range | `e` → Observations |
 | Review agent findings | `}` tab → sidebar query |
 | Inspect evidence | `H` → Enter |
 | Bug report | `F` |

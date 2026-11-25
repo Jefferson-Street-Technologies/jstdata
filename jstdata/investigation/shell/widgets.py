@@ -6,6 +6,7 @@ from typing import Any, Optional
 
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.containers import Vertical
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import Label, ListItem, ListView, Static, Tree
@@ -86,24 +87,44 @@ class TabBar(Static):
 
 
 class _SidebarQueryItem(ListItem):
-    def __init__(self, query_id: int, label: str, *, draft: bool) -> None:
+    """One query row — draft is always the pinned slot; saved sit below."""
+
+    def __init__(
+        self,
+        query_id: int,
+        label: str,
+        *,
+        draft: bool,
+        empty: bool = False,
+    ) -> None:
         self.query_id = query_id
         self.draft = draft
-        prefix = "·" if draft else ""
-        display = f"{prefix}{query_id:02d} {label}"
-        super().__init__(Label(display))
+        self.empty = empty
+        super().__init__()
+        self._label = label
 
-
-class _SidebarHeaderItem(ListItem):
-    """Section label inside the query list — not selectable."""
-
-    def __init__(self, text: str) -> None:
-        super().__init__(Label(text, markup=True))
-        self.disabled = True
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="sidebar-q-body"):
+            if self.draft:
+                yield Label("DRAFT", classes="sidebar-q-kicker")
+                if self.empty or not self._label:
+                    yield Label(
+                        "[dim]Empty · / search or n from workspace[/]",
+                        classes="sidebar-q-title",
+                        markup=True,
+                    )
+                else:
+                    yield Label(self._label, classes="sidebar-q-title")
+            else:
+                yield Label(f"Q{self.query_id}", classes="sidebar-q-kicker")
+                yield Label(
+                    self._label or f"Query {self.query_id}",
+                    classes="sidebar-q-title",
+                )
 
 
 class ResearchSidebar(Static):
-    """Left sidebar: queries (draft/saved) + workspace resources."""
+    """Left sidebar: one draft + saved queries, then workspace resources."""
 
     class QuerySelected(Message):
         def __init__(self, query_id: int) -> None:
@@ -131,7 +152,7 @@ class ResearchSidebar(Static):
 
     DEFAULT_CSS = """
     ResearchSidebar {
-        width: 28;
+        width: 32;
         height: 100%;
         background: #0c0c0c;
         border-right: solid #222;
@@ -154,6 +175,7 @@ class ResearchSidebar(Static):
         color: #86efac;
         height: 1;
         padding: 0 1;
+        margin-bottom: 1;
     }
     #sidebar-query-list {
         height: 1fr;
@@ -174,19 +196,36 @@ class ResearchSidebar(Static):
         max-height: 6;
         height: 6;
     }
-    #sidebar-query-list > ListItem.--highlight {
+    _SidebarQueryItem {
+        height: 3;
+        min-height: 3;
+        max-height: 3;
+        padding: 0 1;
+        border-left: solid #0c0c0c;
+    }
+    _SidebarQueryItem.--highlight {
         background: #1a3a2a;
         border-left: solid #4ade80;
     }
-    #sidebar-query-list > ListItem:disabled {
-        color: #666;
-        background: transparent;
-        border-left: solid #0c0c0c;
+    .sidebar-q-body {
+        height: 3;
+        width: 100%;
     }
-    #sidebar-query-list > ListItem:disabled.--highlight {
-        background: transparent;
-        border-left: solid #0c0c0c;
+    .sidebar-q-kicker {
+        height: 1;
         color: #666;
+        text-style: bold;
+    }
+    _SidebarQueryItem.--highlight .sidebar-q-kicker {
+        color: #86efac;
+    }
+    .sidebar-q-title {
+        height: 1;
+        color: #e8e8e8;
+        text-style: bold;
+    }
+    #sidebar-ws-tree > .tree--guides {
+        color: #333;
     }
     """
 
@@ -196,7 +235,7 @@ class ResearchSidebar(Static):
             id="sidebar-queries-kicker",
             markup=True,
         )
-        yield Label("+ New query", id="sidebar-new-query")
+        yield Label("+ Reset draft", id="sidebar-new-query")
         yield ListView(id="sidebar-query-list")
         yield Label(
             "[bold #86efac]2[/] Workspace",
@@ -223,20 +262,14 @@ class ResearchSidebar(Static):
         return [c for c in listing.children if isinstance(c, ListItem)]
 
     def _move_query_cursor(self, delta: int) -> None:
-        """Move highlight only onto real queries — skip Drafts/Saved headers."""
         listing = self.query_one("#sidebar-query-list", ListView)
         items = self._query_items()
         if not items:
             return
         idx = listing.index if listing.index is not None else 0
-        n = len(items)
-        for _ in range(n):
-            idx += delta
-            if idx < 0 or idx >= n:
-                return
-            if isinstance(items[idx], _SidebarQueryItem):
-                listing.index = idx
-                return
+        nxt = idx + delta
+        if 0 <= nxt < len(items):
+            listing.index = nxt
 
     def action_cursor_down(self) -> None:
         target = self._nav_target()
@@ -274,45 +307,42 @@ class ResearchSidebar(Static):
         *,
         active_query_id: Optional[int] = None,
     ) -> None:
-        """``queries`` items: ``{id, name, in_report}``."""
+        """``queries`` items: ``{id, name, in_report, empty?}``.
+
+        Exactly one draft (``in_report=False``) is shown first; saved queries
+        follow with no section headers.
+        """
         listing = self.query_one("#sidebar-query-list", ListView)
         listing.clear()
         drafts = [q for q in queries if not q.get("in_report")]
         saved = [q for q in queries if q.get("in_report")]
+        # Prefer newest draft if multiples slipped through.
+        drafts.sort(key=lambda q: int(q["id"]))
+        draft = drafts[-1] if drafts else None
         highlight_index = 0
         i = 0
-        if drafts:
-            listing.append(_SidebarHeaderItem("[dim]— Drafts —[/]"))
-            i += 1
-            for q in drafts:
-                label = q.get("name") or f"Query {q['id']}"
-                listing.append(
-                    _SidebarQueryItem(int(q["id"]), str(label), draft=True)
+        if draft is not None:
+            label = str(draft.get("name") or "")
+            listing.append(
+                _SidebarQueryItem(
+                    int(draft["id"]),
+                    label,
+                    draft=True,
+                    empty=bool(draft.get("empty")) or not label,
                 )
-                if active_query_id == q["id"]:
-                    highlight_index = i
-                i += 1
-        if saved:
-            listing.append(_SidebarHeaderItem("[dim]— Saved —[/]"))
+            )
+            if active_query_id == draft["id"]:
+                highlight_index = i
             i += 1
-            for q in saved:
-                label = q.get("name") or f"Query {q['id']}"
-                listing.append(
-                    _SidebarQueryItem(int(q["id"]), str(label), draft=False)
-                )
-                if active_query_id == q["id"]:
-                    highlight_index = i
-                i += 1
-        if not drafts and not saved:
-            listing.append(_SidebarHeaderItem("[dim](no queries)[/]"))
-        # Never leave the cursor parked on a section header.
-        items = [c for c in listing.children if isinstance(c, ListItem)]
-        if items and not isinstance(items[highlight_index], _SidebarQueryItem):
-            for j, item in enumerate(items):
-                if isinstance(item, _SidebarQueryItem):
-                    highlight_index = j
-                    break
-        listing.index = highlight_index
+        for q in saved:
+            label = str(q.get("name") or f"Query {q['id']}")
+            listing.append(
+                _SidebarQueryItem(int(q["id"]), label, draft=False)
+            )
+            if active_query_id == q["id"]:
+                highlight_index = i
+            i += 1
+        listing.index = highlight_index if i else 0
 
     def refresh_workspace(
         self,
@@ -327,9 +357,9 @@ class ResearchSidebar(Static):
         root.expand()
 
         def _branch(title: str, rows: list[tuple[str, str]], kind: str) -> None:
-            node = root.add(f"{title}  {len(rows)}", expand=True)
+            node = root.add(f"{title}  ({len(rows)})", expand=True)
             for rid, label in rows:
-                child = node.add_leaf(label or rid)
+                child = node.add_leaf(f"{label or rid}")
                 child.data = {"type": kind, "id": rid}
 
         _branch("Entities", entities, "entity")
@@ -344,24 +374,6 @@ class ResearchSidebar(Static):
         item = event.item
         if isinstance(item, _SidebarQueryItem):
             self.post_message(self.QuerySelected(item.query_id))
-
-    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
-        # Arrow keys / mouse can still land on section headers — bounce off.
-        if event.list_view is None or event.list_view.id != "sidebar-query-list":
-            return
-        if not isinstance(event.item, _SidebarHeaderItem):
-            return
-        listing = event.list_view
-        items = self._query_items()
-        idx = listing.index if listing.index is not None else 0
-        for j in range(idx + 1, len(items)):
-            if isinstance(items[j], _SidebarQueryItem):
-                listing.index = j
-                return
-        for j in range(idx - 1, -1, -1):
-            if isinstance(items[j], _SidebarQueryItem):
-                listing.index = j
-                return
 
     def on_tree_node_selected(self, event: Tree.NodeSelected[Any]) -> None:
         node: TreeNode[Any] = event.node

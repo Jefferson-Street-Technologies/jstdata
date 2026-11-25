@@ -92,18 +92,44 @@ def _metric_browse_key(metric: Metric) -> tuple[int, str]:
 
 
 class MetricAssocRow(ListItem):
+    """Multi-line metric card — name plus every variant field we have."""
+
     def __init__(self, metric: Metric) -> None:
         super().__init__()
         self.metric = metric
 
     def compose(self) -> ComposeResult:
-        name = self.metric.name or self.metric.id
-        freq = ""
-        if self.metric.variants:
-            freq = self.metric.variants[0].frequency or ""
-        # Columnar: name left, frequency right. Truncate long names.
-        short = name if len(name) <= 48 else name[:45] + "…"
-        yield Label(f"{short:<48}  {freq:>10}")
+        m = self.metric
+        name = m.name or m.id
+        yield Label(name, classes="assoc-name")
+        if m.variants:
+            v = m.variants[0]
+            bits: list[str] = []
+            if v.units:
+                bits.append(v.units)
+            if v.frequency:
+                bits.append(v.frequency)
+            if v.source:
+                bits.append(v.source)
+            if v.series_count:
+                bits.append(
+                    f"{v.series_count} series"
+                    if v.series_count != 1
+                    else "1 series"
+                )
+            if v.seasonal_adjustment:
+                bits.append(v.seasonal_adjustment)
+            extra = len(m.variants) - 1
+            if extra > 0:
+                bits.append(f"+{extra} variant{'s' if extra != 1 else ''}")
+            if bits:
+                yield Label(" · ".join(bits), classes="assoc-meta")
+        if m.description:
+            desc = m.description.strip().replace("\n", " ")
+            if len(desc) > 100:
+                desc = desc[:97] + "…"
+            yield Label(desc, classes="assoc-desc")
+        yield Label(m.id, classes="assoc-id")
 
 
 class RelationRow(ListItem):
@@ -185,6 +211,47 @@ class EntityScreen(BaseScreen):
     #metrics-list, #relations-list {
         height: 1fr;
         background: #0c0c0c;
+    }
+    MetricAssocRow {
+        height: auto;
+        min-height: 4;
+        max-height: 6;
+        padding: 1 1;
+        border-left: solid #0c0c0c;
+        background: transparent;
+        color: #e0e0e0;
+    }
+    MetricAssocRow.--highlight {
+        background: #1a3a2a;
+        border-left: solid #4ade80;
+    }
+    RelationRow {
+        height: 2;
+        min-height: 2;
+        max-height: 2;
+        padding: 0 1;
+        border-left: solid #0c0c0c;
+    }
+    RelationRow.--highlight {
+        background: #1a3a2a;
+        border-left: solid #4ade80;
+    }
+    .assoc-name {
+        height: 1;
+        color: #f5f5f5;
+        text-style: bold;
+    }
+    .assoc-meta {
+        height: 1;
+        color: #a8a8a8;
+    }
+    .assoc-desc {
+        height: 1;
+        color: #888;
+    }
+    .assoc-id {
+        height: 1;
+        color: #555;
     }
     ListView > ListItem,
     ListView > ListItem:hover {

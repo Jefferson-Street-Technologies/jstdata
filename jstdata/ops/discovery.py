@@ -45,6 +45,8 @@ def search_entities(
     query: Optional[str] = None,
     *,
     taxonomy: Optional[str] = None,
+    metric: Optional[Sequence[str]] = None,
+    mode: str = "union",
     relation: Optional[Sequence[str]] = None,
     relation_direction: Optional[str] = None,
     relation_taxonomy: Optional[str] = None,
@@ -58,6 +60,8 @@ def search_entities(
     inputs = {
         "query": query,
         "taxonomy": taxonomy,
+        "metric": list(metric or ()),
+        "mode": mode,
         "relation": list(relation or ()),
         "relation_direction": relation_direction,
         "relation_taxonomy": relation_taxonomy,
@@ -78,6 +82,9 @@ def search_entities(
             "limit": limit,
             "offset": offset,
         }
+        if metric:
+            kwargs["metric"] = list(metric)
+            kwargs["mode"] = mode
         if relation:
             kwargs["relation"] = list(relation)
         # Prefer A's new params when the client supports them.

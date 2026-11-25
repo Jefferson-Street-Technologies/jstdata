@@ -32,15 +32,43 @@ SEARCH_DEBOUNCE_S = 0.3
 
 
 class EntityAssocRow(ListItem):
-    def __init__(self, entity: Entity, *, frequency: str = "") -> None:
+    """Multi-line entity card — label plus every field we have for the row."""
+
+    def __init__(
+        self,
+        entity: Entity,
+        *,
+        frequency: str = "",
+        units: str = "",
+        source: str = "",
+        series_count: int = 0,
+    ) -> None:
         super().__init__()
         self.entity = entity
         self.frequency = frequency
+        self.units = units
+        self.source = source
+        self.series_count = series_count
 
     def compose(self) -> ComposeResult:
         name = self.entity.label or self.entity.id
-        pad = f"  {self.frequency}" if self.frequency else ""
-        yield Label(f"{name}{pad}")
+        yield Label(name, classes="assoc-name")
+        bits: list[str] = []
+        if self.frequency:
+            bits.append(self.frequency)
+        if self.units:
+            bits.append(self.units)
+        if self.source:
+            bits.append(self.source)
+        if self.series_count:
+            bits.append(
+                f"{self.series_count} series"
+                if self.series_count != 1
+                else "1 series"
+            )
+        if bits:
+            yield Label(" · ".join(bits), classes="assoc-meta")
+        yield Label(self.entity.id, classes="assoc-id")
 
 
 class MetricScreen(BaseScreen):
@@ -97,6 +125,32 @@ class MetricScreen(BaseScreen):
         color: #c0c0c0;
         display: none;
         padding: 1;
+    }
+    EntityAssocRow {
+        height: auto;
+        min-height: 3;
+        max-height: 5;
+        padding: 1 1;
+        border-left: solid #0c0c0c;
+        background: transparent;
+        color: #e0e0e0;
+    }
+    EntityAssocRow.--highlight {
+        background: #1a3a2a;
+        border-left: solid #4ade80;
+    }
+    .assoc-name {
+        height: 1;
+        color: #f5f5f5;
+        text-style: bold;
+    }
+    .assoc-meta {
+        height: 1;
+        color: #a8a8a8;
+    }
+    .assoc-id {
+        height: 1;
+        color: #555;
     }
     ListView > ListItem,
     ListView > ListItem:hover {
@@ -468,12 +522,24 @@ class MetricScreen(BaseScreen):
     def _append_entities(self, entities: list[Entity]) -> None:
         list_view = self.query_one("#entities-list", ListView)
         freq = ""
+        units = ""
+        source = ""
         if self._metric_obj and self._metric_obj.variants:
-            freq = self._metric_obj.variants[0].frequency or ""
+            v = self._metric_obj.variants[0]
+            freq = v.frequency or ""
+            units = v.units or ""
+            source = v.source or ""
         for ent in entities:
             if hasattr(self.app, "remember_label"):
                 self.app.remember_label(ent.id, ent.label or ent.id)
-            list_view.append(EntityAssocRow(ent, frequency=freq))
+            list_view.append(
+                EntityAssocRow(
+                    ent,
+                    frequency=freq,
+                    units=units,
+                    source=source,
+                )
+            )
 
     def _update_status(self, query: str | None) -> None:
         status = self.query_one("#metric-status", Static)

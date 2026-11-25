@@ -24,9 +24,11 @@ class WorkspaceResourceRow(ListItem):
 
     def compose(self) -> ComposeResult:
         yield Label(
-            f"{self.resource_type.upper():<8} {self.display_name}  [{self.resource_id}]",
-            classes="sess-row-label",
+            self.resource_type.upper(),
+            classes="sess-row-kind",
         )
+        yield Label(self.display_name, classes="sess-row-label")
+        yield Label(self.resource_id, classes="sess-row-id")
 
 
 class WorkspaceDrawer(ModalScreen[None]):
@@ -60,30 +62,48 @@ class WorkspaceDrawer(ModalScreen[None]):
     }
 
     WorkspaceResourceRow {
-        height: 1;
-        min-height: 1;
-        max-height: 1;
+        height: 4;
+        min-height: 4;
+        max-height: 4;
         width: 100%;
-        padding: 0 1;
+        padding: 1 1;
         overflow: hidden;
+        border-left: solid #111111;
     }
 
     WorkspaceResourceRow:hover,
-    WorkspaceResourceRow.-highlighted {
+    WorkspaceResourceRow.-highlighted,
+    WorkspaceResourceRow.--highlight {
         background: #1a3a1a;
+        border-left: solid #4ade80;
+    }
+
+    .sess-row-kind {
+        width: 100%;
+        height: 1;
+        color: #86efac;
+        text-style: bold;
     }
 
     .sess-row-label {
         width: 100%;
         height: 1;
-        color: #e0e0e0;
+        color: #f0f0f0;
+        text-style: bold;
+        overflow: hidden;
+    }
+
+    .sess-row-id {
+        width: 100%;
+        height: 1;
+        color: #666;
         overflow: hidden;
     }
 
     ListView > ListItem {
-        height: 1;
-        min-height: 1;
-        max-height: 1;
+        height: 4;
+        min-height: 4;
+        max-height: 4;
     }
 
     #ws-drawer-hint {

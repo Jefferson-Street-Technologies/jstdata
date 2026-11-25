@@ -810,9 +810,17 @@ class SeriesNavRow(ListItem):
     def compose(self) -> ComposeResult:
         last = self.record.get("last") or {}
         entities = self.record.get("entities") or []
-        name = entities[0]["label"] if entities else (self.record.get("label") or self.record.get("id"))
+        name = (
+            entities[0]["label"]
+            if entities
+            else (self.record.get("label") or self.record.get("id"))
+        )
         value = format_value(last.get("value"))
-        yield Label(f"{name:<22}{value:>10}", classes="series-nav-row")
+        freq = self.record.get("frequency") or ""
+        units = self.record.get("units") or ""
+        yield Label(str(name), classes="series-nav-name")
+        meta = " · ".join(p for p in (value, freq, units) if p)
+        yield Label(meta or "—", classes="series-nav-meta")
 
 
 class PlotGroupRow(ListItem):
@@ -911,8 +919,9 @@ class QueryScreen(BaseScreen):
         Binding("v", "mode_sources", "Sources", show=False),
         Binding("d", "mode_sources", "Sources", show=False),
         Binding("e", "mode_edit", "Edit", show=False),
-        Binding("plus", "add_compare", "Add compare", show=False),
-        Binding("=", "add_compare", "Add compare", show=False),
+        Binding("plus", "add_compare", "Add entity", show=False),
+        Binding("=", "add_compare", "Add entity", show=False),
+        Binding("m", "add_metric", "Add metric", show=False),
         Binding("space", "collect", "Collect into workspace", show=False),
         Binding("j", "cursor_down", "Cursor Down", show=False),
         Binding("k", "cursor_up", "Cursor Up", show=False),
@@ -950,7 +959,7 @@ class QueryScreen(BaseScreen):
     #query-status { color: #666; height: 1; display: none; }
     #query-main { height: 1fr; min-height: 12; }
     #query-series {
-        width: 22;
+        width: 28;
         height: 1fr;
         background: #0f0f0f;
         display: none;
@@ -990,17 +999,42 @@ class QueryScreen(BaseScreen):
     #query-edit { height: 1fr; width: 1fr; display: none; }
     .obs-row { width: 100%; height: 1; color: #e0e0e0; }
     .obs-missing { color: #666; }
+    .series-nav-name {
+        width: 100%;
+        height: 1;
+        color: #f0f0f0;
+        text-style: bold;
+    }
+    .series-nav-meta {
+        width: 100%;
+        height: 1;
+        color: #888;
+    }
     .series-nav-row { width: 100%; height: 1; color: #d0d0d0; }
     ListView > ListItem.--highlight {
         background: #1a3a2a;
         border-left: solid #4ade80;
     }
-    ObservationRow, SeriesNavRow, PlotGroupRow, LegendRow {
-        height: 1;
-        min-height: 1;
-        max-height: 1;
+    ObservationRow {
+        height: 2;
+        min-height: 2;
+        max-height: 2;
         border-left: solid #0a0a0a;
-        padding: 0 1 0 0;
+        padding: 0 1;
+    }
+    SeriesNavRow {
+        height: 3;
+        min-height: 3;
+        max-height: 3;
+        border-left: solid #0a0a0a;
+        padding: 0 1;
+    }
+    PlotGroupRow, LegendRow {
+        height: 2;
+        min-height: 2;
+        max-height: 2;
+        border-left: solid #0a0a0a;
+        padding: 0 1;
     }
     """
 
@@ -1085,7 +1119,8 @@ class QueryScreen(BaseScreen):
                 keys.extend(
                     [
                         "[bold #e0e0e0]h[/]/[bold #e0e0e0]l[/] [#888]period[/]",
-                        "[bold #e0e0e0]+[/] [#888]compare[/]",
+                        "[bold #e0e0e0]+[/] [#888]entity[/]",
+                        "[bold #e0e0e0]m[/] [#888]metric[/]",
                     ]
                 )
             if self._mode == "table":
@@ -1199,6 +1234,7 @@ class QueryScreen(BaseScreen):
                 "toggle_series",
                 "toggle_sort",
                 "add_compare",
+                "add_metric",
                 "collect",
                 "load",
                 "annotate",
@@ -1626,8 +1662,46 @@ class QueryScreen(BaseScreen):
         self._show_selected()
         self._apply_mode()
 
-    def action_add_compare(self) -> None:
-        """Append an entity to this draft query and re-run (exploratory compare)."""
+    def _append_query_resource(self, kind: str, result: dict) -> None:
+        """Persist a picked entity/metric onto the active query and re-run."""
+        try:
+            query = self._resolve_query()
+        except Exception as exc:
+            self.notify(str(exc), severity="error")
+            return
+        rid = str(result.get("id") or "")
+        if not rid:
+            return
+        bag = query.entity if kind == "entity" else query.metric
+        if rid in bag:
+            self.notify(f"{rid} already in query", severity="warning")
+            return
+        if kind == "entity":
+            query.entity = list(query.entity) + [rid]
+        else:
+            query.metric = list(query.metric) + [rid]
+        from ..investigation.api import persist_investigation
+        from ..investigation.naming import suggest_query_name
+
+        labels = getattr(self.app, "labels", {}) or {}
+        if result.get("label"):
+            labels[rid] = str(result["label"])
+            remember = getattr(self.app, "remember_label", None)
+            if callable(remember):
+                remember(rid, str(result["label"]))
+        query.name = suggest_query_name(query.metric, query.entity, labels=labels)
+        persist_investigation(
+            getattr(self.app, "investigation"),
+            app_dir=getattr(self.app, "app_dir", None),
+        )
+        self.notify(f"Added {labels.get(rid, rid)} — re-running")
+        self.action_load()
+        refresh = getattr(self.app, "refresh_shell_chrome", None)
+        if callable(refresh):
+            refresh()
+
+    def _open_scoped_picker(self, kind: str) -> None:
+        """Pick another entity (scoped to first metric) or metric (first entity)."""
         if self.query_id is None:
             self.notify("Open a draft query first", severity="warning")
             return
@@ -1636,39 +1710,31 @@ class QueryScreen(BaseScreen):
         except Exception as exc:
             self.notify(str(exc), severity="error")
             return
+        if kind == "entity" and not query.metric:
+            self.notify("Add a metric first, then compare entities", severity="warning")
+            return
+        if kind == "metric" and not query.entity:
+            self.notify("Add an entity first, then add metrics", severity="warning")
+            return
+
+        from ..investigation.naming import label_for
         from ..investigation.resource_picker import ResourcePickerModal
 
-        def _done(result: object | None) -> None:
-            if not isinstance(result, dict):
-                return
-            rid = str(result.get("id") or "")
-            if not rid:
-                return
-            if rid in query.entity:
-                self.notify(f"{rid} already in query", severity="warning")
-                return
-            query.entity = list(query.entity) + [rid]
-            from ..investigation.api import persist_investigation
-            from ..investigation.naming import suggest_query_name
+        labels = getattr(self.app, "labels", {}) or {}
+        seed_metric = query.metric[0] if query.metric else None
+        seed_entity = query.entity[0] if query.entity else None
+        scope_label = (
+            label_for(labels, seed_metric)
+            if kind == "entity" and seed_metric
+            else label_for(labels, seed_entity)
+            if kind == "metric" and seed_entity
+            else None
+        )
+        exclude = list(query.entity if kind == "entity" else query.metric)
 
-            labels = getattr(self.app, "labels", {}) or {}
-            if result.get("label"):
-                labels[rid] = str(result["label"])
-                remember = getattr(self.app, "remember_label", None)
-                if callable(remember):
-                    remember(rid, str(result["label"]))
-            query.name = suggest_query_name(
-                query.metric, query.entity, labels=labels
-            )
-            persist_investigation(
-                getattr(self.app, "investigation"),
-                app_dir=getattr(self.app, "app_dir", None),
-            )
-            self.notify(f"Added {labels.get(rid, rid)} — re-running")
-            self.action_load()
-            refresh = getattr(self.app, "refresh_shell_chrome", None)
-            if callable(refresh):
-                refresh()
+        def _done(result: object | None) -> None:
+            if isinstance(result, dict):
+                self._append_query_resource(kind, result)
 
         client = getattr(self.app, "client", None)
         if client is None:
@@ -1677,14 +1743,27 @@ class QueryScreen(BaseScreen):
         self.app.push_screen(
             ResourcePickerModal(
                 client,
-                "entity",
+                kind,  # type: ignore[arg-type]
                 app_dir=getattr(self.app, "app_dir", None),
                 project_id=getattr(self.app, "project_id", None),
-                investigation_id=getattr(active, "investigation", None) if active else None,
-                title="Compare entity",
+                investigation_id=(
+                    getattr(active, "investigation", None) if active else None
+                ),
+                scope_metric=seed_metric if kind == "entity" else None,
+                scope_entity=seed_entity if kind == "metric" else None,
+                scope_label=scope_label,
+                exclude_ids=exclude,
             ),
             _done,
         )
+
+    def action_add_compare(self) -> None:
+        """Append an entity that carries the query's first metric, then re-run."""
+        self._open_scoped_picker("entity")
+
+    def action_add_metric(self) -> None:
+        """Append a metric available on the query's first entity, then re-run."""
+        self._open_scoped_picker("metric")
 
     def action_obs_left(self) -> None:
         dates = cursor_dates(self._visible_records())
@@ -1901,7 +1980,8 @@ QUERY_VIEW = register(
             ActionBinding("r", "load", "Re-run GET /query"),
             ActionBinding("a", "annotate", "Edit query annotations"),
             ActionBinding("c / t / v / e", "mode", "Chart, table, sources, or edit"),
-            ActionBinding("+", "add_compare", "Add comparison entity and re-run"),
+            ActionBinding("+", "add_compare", "Add entity on first metric and re-run"),
+            ActionBinding("m", "add_metric", "Add metric on first entity and re-run"),
             ActionBinding("h / l", "obs", "Move the observation cursor (chart)"),
             ActionBinding("x", "toggle_series", "Hide or show a series on the chart"),
             ActionBinding("[ / ]", "group", "Cycle incompatible-unit chart groups"),

@@ -569,13 +569,18 @@ class WorkspaceBrowser(DestinationScreen):
         margin-bottom: 1;
     }
     #ws-inspector { color: #c0c0c0; height: 1fr; }
-    .group-header { color: #4ade80; text-style: bold; height: 1; }
+    .group-header { color: #4ade80; text-style: bold; height: 2; padding: 0 1; }
     WorkspaceResourceRow {
-        height: 1;
-        min-height: 1;
-        max-height: 1;
+        height: 4;
+        min-height: 4;
+        max-height: 4;
         width: 100%;
-        padding: 0 1;
+        padding: 1 1;
+        border-left: solid #0f0f0f;
+    }
+    WorkspaceResourceRow.--highlight {
+        background: #1a3a2a;
+        border-left: solid #4ade80;
     }
     ListView > ListItem.--highlight { background: #1a3a2a; }
     """
@@ -793,12 +798,19 @@ class QueriesBrowser(DestinationScreen):
         margin-bottom: 1;
     }
     #queries-inspector { color: #c0c0c0; height: 1fr; }
-    QueryListItem { height: 2; min-height: 2; padding: 0 1; }
+    QueryListItem {
+        height: 3;
+        min-height: 3;
+        max-height: 3;
+        padding: 1 1;
+        border-left: solid #0f0f0f;
+    }
     QueryListItem.-highlighted, QueryListItem.--highlight {
         background: #1a3a2a;
+        border-left: solid #4ade80;
     }
-    .query-create { color: #4ade80; height: 1; }
-    .query-title { color: #e0e0e0; height: 1; }
+    .query-create { color: #4ade80; height: 1; text-style: bold; }
+    .query-title { color: #f0f0f0; height: 1; text-style: bold; }
     .query-meta { color: #888; height: 1; }
     """
 

@@ -2,11 +2,15 @@
 
 Used by query composition, chart compare, workspace management, and search.
 Not query-editor-specific: callers scope by ``kind`` (entity | metric | series).
+
+When a query already has a seed pair, scope further picks:
+- add entities → ``scope_metric`` (entities that carry that metric)
+- add metrics → ``scope_entity`` (metrics available on that entity)
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Sequence
 
 from textual import on, work
 from textual.app import ComposeResult
@@ -39,6 +43,9 @@ class ResourcePickerModal(ModalScreen[Optional[dict[str, Any]]]):
     """Search catalog for one kind; Enter confirms, Esc cancels.
 
     Dismisses with ``{action: "pick", type, id, label}`` or ``None``.
+
+    ``scope_metric`` / ``scope_entity`` constrain results to resources that
+    resolve against an existing seed (first metric / first entity on a query).
     """
 
     BINDINGS = [
@@ -80,6 +87,10 @@ class ResourcePickerModal(ModalScreen[Optional[dict[str, Any]]]):
         project_id: Optional[str] = None,
         investigation_id: Optional[str] = None,
         title: Optional[str] = None,
+        scope_metric: Optional[str] = None,
+        scope_entity: Optional[str] = None,
+        exclude_ids: Optional[Sequence[str]] = None,
+        scope_label: Optional[str] = None,
     ) -> None:
         super().__init__()
         self.client = client
@@ -87,20 +98,43 @@ class ResourcePickerModal(ModalScreen[Optional[dict[str, Any]]]):
         self.app_dir = app_dir
         self.project_id = project_id
         self.investigation_id = investigation_id
-        self._title = title or _KIND_TITLE.get(self.kind, "Add resource")
+        self.scope_metric = scope_metric or None
+        self.scope_entity = scope_entity or None
+        self.exclude_ids = {str(x) for x in (exclude_ids or ()) if x}
+        self._scope_label = scope_label
+        self._title = title or self._default_title()
         self._hits: list[_PickHit] = []
+
+    def _default_title(self) -> str:
+        base = _KIND_TITLE.get(self.kind, "Add resource")
+        if self.kind == "entity" and self.scope_metric:
+            label = self._scope_label or self.scope_metric
+            return f"{base} · on {label}"
+        if self.kind == "metric" and self.scope_entity:
+            label = self._scope_label or self.scope_entity
+            return f"{base} · on {label}"
+        return base
 
     def compose(self) -> ComposeResult:
         with Vertical(id="rp-panel"):
             yield Static(self._title, id="rp-title")
-            yield Static("enter add · esc cancel", id="rp-hint")
-            yield Input(placeholder="Search…", id="rp-input")
+            hint = "enter add · esc cancel"
+            if self.scope_metric or self.scope_entity:
+                hint = "scoped to current query · enter add · esc cancel"
+            yield Static(hint, id="rp-hint")
+            placeholder = "Search… or Enter blank to list"
+            if self.scope_metric or self.scope_entity:
+                placeholder = "Filter… or Enter blank to list available"
+            yield Input(placeholder=placeholder, id="rp-input")
             yield Static("", id="rp-status")
             yield ListView(id="rp-list")
             yield Footer()
 
     def on_mount(self) -> None:
         self.query_one("#rp-input", Input).focus()
+        # Seeded queries: show the available set immediately.
+        if self.scope_metric or self.scope_entity:
+            self._search("")
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if self._input_focused() and action in {
@@ -123,8 +157,10 @@ class ResourcePickerModal(ModalScreen[Optional[dict[str, Any]]]):
     @on(Input.Submitted, "#rp-input")
     def _submitted(self, event: Input.Submitted) -> None:
         query = event.value.strip()
-        if not query:
-            self.query_one("#rp-status", Static).update("Type a search, then press Enter.")
+        if not query and not (self.scope_metric or self.scope_entity):
+            self.query_one("#rp-status", Static).update(
+                "Type a search, then press Enter."
+            )
             return
         self._search(query)
 
@@ -156,7 +192,12 @@ class ResourcePickerModal(ModalScreen[Optional[dict[str, Any]]]):
         import asyncio
 
         status = self.query_one("#rp-status", Static)
-        status.update(f"Searching {self.kind}…")
+        if self.kind == "entity" and self.scope_metric:
+            status.update(f"Entities with {self._scope_label or self.scope_metric}…")
+        elif self.kind == "metric" and self.scope_entity:
+            status.update(f"Metrics on {self._scope_label or self.scope_entity}…")
+        else:
+            status.update(f"Searching {self.kind}…")
         rows = await asyncio.to_thread(self._fetch_sync, query)
         hits = [_PickHit(self.kind, rid, label) for rid, label in rows]
         self._hits = hits
@@ -169,15 +210,17 @@ class ResourcePickerModal(ModalScreen[Optional[dict[str, Any]]]):
             status.update(f"{len(hits)} result{'s' if len(hits) != 1 else ''}")
             listing.focus()
         else:
-            status.update("No results")
+            status.update("No results in scope" if (self.scope_metric or self.scope_entity) else "No results")
 
     def _fetch_sync(self, query: str) -> list[tuple[str, str]]:
         out: list[tuple[str, str]] = []
+        q = query.strip() or None
         if self.kind == "entity":
             result = disc.search_entities(
                 self.client,
-                query,
-                limit=20,
+                q,
+                metric=[self.scope_metric] if self.scope_metric else None,
+                limit=30,
                 project=self.project_id,
                 investigation=self.investigation_id,
                 app_dir=self.app_dir,
@@ -186,8 +229,9 @@ class ResourcePickerModal(ModalScreen[Optional[dict[str, Any]]]):
         elif self.kind == "metric":
             result = disc.search_metrics(
                 self.client,
-                query,
-                limit=20,
+                q,
+                entity=[self.scope_entity] if self.scope_entity else None,
+                limit=30,
                 project=self.project_id,
                 investigation=self.investigation_id,
                 app_dir=self.app_dir,
@@ -195,11 +239,11 @@ class ResourcePickerModal(ModalScreen[Optional[dict[str, Any]]]):
             rows = result.data if isinstance(result.data, list) else []
         else:
             try:
-                found = self.client.search_series(query, limit=20)
+                found = self.client.search_series(q or "", limit=30)
             except Exception:  # noqa: BLE001
                 found = []
             rows = found if isinstance(found, list) else []
-        for row in rows[:15]:
+        for row in rows[:25]:
             if isinstance(row, dict):
                 rid = str(row.get("id") or "")
                 label = str(row.get("label") or row.get("name") or rid)
@@ -210,7 +254,7 @@ class ResourcePickerModal(ModalScreen[Optional[dict[str, Any]]]):
                     or getattr(row, "name", None)
                     or rid
                 )
-            if rid:
+            if rid and rid not in self.exclude_ids:
                 out.append((rid, label))
         return out
 

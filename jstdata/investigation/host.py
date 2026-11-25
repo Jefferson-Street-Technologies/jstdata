@@ -1306,12 +1306,140 @@ class InvestigationHost(App):
     def _preferred_query_id(self) -> int | None:
         if not self.investigation or not self.investigation.queries:
             return None
-        # Prefer report queries, else any draft, highest id first.
+        # Prefer the single draft, else newest saved.
+        draft = self._find_draft_query()
+        if draft is not None:
+            return draft.id
         queries = sorted(
             self.investigation.queries.values(),
-            key=lambda q: (not q.in_report, -q.id),
+            key=lambda q: -q.id,
         )
         return queries[0].id if queries else None
+
+    def _find_draft_query(self):
+        """Return the investigation's sole draft (``in_report=False``), if any."""
+        if not self.investigation:
+            return None
+        drafts = [
+            q for q in self.investigation.queries.values() if not q.in_report
+        ]
+        if not drafts:
+            return None
+        drafts.sort(key=lambda q: q.id)
+        return drafts[-1]
+
+    def _consolidate_drafts(self) -> None:
+        """Enforce at most one draft — keep newest; save or drop the rest."""
+        if not self.investigation:
+            return
+        drafts = sorted(
+            (q for q in self.investigation.queries.values() if not q.in_report),
+            key=lambda q: q.id,
+        )
+        if len(drafts) <= 1:
+            return
+        keep = drafts[-1]
+        for orphan in drafts[:-1]:
+            if orphan.is_empty():
+                try:
+                    remove_query(
+                        self.investigation,
+                        orphan.id,
+                        app_dir=self.app_dir,
+                        persist=False,
+                    )
+                except Exception:  # noqa: BLE001
+                    orphan.in_report = True
+            else:
+                # Salvage content rather than delete research.
+                orphan.in_report = True
+        persist_investigation(self.investigation, app_dir=self.app_dir)
+        _ = keep
+
+    def ensure_draft_query(
+        self,
+        *,
+        reset: bool = False,
+        name: Optional[str] = None,
+        metric: Optional[list[str]] = None,
+        entity: Optional[list[str]] = None,
+        series: Optional[list[str]] = None,
+        frequency: Optional[str] = None,
+        head: Optional[int] = None,
+        tail: Optional[int] = None,
+        from_workspace: bool = False,
+    ):
+        """Return the single draft query, creating or replacing contents as needed."""
+        if not self.investigation:
+            raise InvestigationError("No investigation loaded")
+        self._consolidate_drafts()
+        draft = self._find_draft_query()
+        if draft is None:
+            draft = add_query(
+                self.investigation,
+                name=name,
+                metric=metric,
+                entity=entity,
+                series=series,
+                frequency=frequency,
+                head=head,
+                tail=tail,
+                from_workspace=from_workspace,
+                app_dir=self.app_dir,
+                persist=False,
+            )
+            draft.in_report = False
+            persist_investigation(self.investigation, app_dir=self.app_dir)
+            return draft
+
+        replace = reset or from_workspace or any(
+            x is not None for x in (metric, entity, series, name, frequency, head, tail)
+        )
+        if not replace:
+            return draft
+
+        if from_workspace:
+            ws = self.workspace
+            draft.metric = list(ws.metric)
+            draft.entity = list(ws.entity)
+            draft.series = list(ws.series)
+            draft.frequency = ws.frequency
+            draft.head = ws.head
+            draft.tail = ws.tail
+            draft.name = name
+        elif reset and metric is None and entity is None and series is None:
+            # Fresh empty draft slot (e.g. after save).
+            draft.name = None
+            draft.metric = []
+            draft.entity = []
+            draft.series = []
+            draft.frequency = None
+            draft.head = None
+            draft.tail = None
+        else:
+            if metric is not None:
+                draft.metric = list(metric)
+            if entity is not None:
+                draft.entity = list(entity)
+            if series is not None:
+                draft.series = list(series)
+            elif reset:
+                draft.series = []
+            if frequency is not None:
+                draft.frequency = frequency
+            if head is not None:
+                draft.head = head
+            elif reset:
+                draft.head = None
+            if tail is not None:
+                draft.tail = tail
+            elif reset:
+                draft.tail = None
+            if name is not None:
+                draft.name = name
+        draft.in_report = False
+        persist_investigation(self.investigation, app_dir=self.app_dir)
+        return draft
 
     def refresh_shell_chrome(self, screen: Screen | None = None) -> None:
         """Push project/tabs/sidebar state into the front BaseScreen shell."""
@@ -1351,12 +1479,19 @@ class InvestigationHost(App):
         queries = []
         active_qid = None
         if self.investigation:
+            self._consolidate_drafts()
+            if self._find_draft_query() is None:
+                try:
+                    self.ensure_draft_query()
+                except Exception:  # noqa: BLE001
+                    pass
             for q in sorted(self.investigation.queries.values(), key=lambda x: x.id):
                 queries.append(
                     {
                         "id": q.id,
-                        "name": q.name or f"Query {q.id}",
+                        "name": q.name or "",
                         "in_report": bool(q.in_report),
+                        "empty": q.is_empty(),
                     }
                 )
             # Detect active query view.
@@ -1457,8 +1592,8 @@ class InvestigationHost(App):
         if action and action.type == "query":
             qid = action.args.get("query_id")
         if qid is None:
-            # Create a fresh draft around this resource.
-            kwargs: dict = {"persist": False, "app_dir": self.app_dir}
+            # Seed / replace the single draft around this resource.
+            kwargs: dict = {"reset": True}
             if resource_type == "metric":
                 kwargs["metric"] = [resource_id]
             elif resource_type == "entity":
@@ -1468,9 +1603,11 @@ class InvestigationHost(App):
             else:
                 self.notify(f"Cannot add {resource_type} to query", severity="warning")
                 return
-            query = add_query(self.investigation, **kwargs)
-            query.in_report = False
-            persist_investigation(self.investigation, app_dir=self.app_dir)
+            try:
+                query = self.ensure_draft_query(**kwargs)
+            except InvestigationError as exc:
+                self.notify(str(exc), severity="error")
+                return
             self.open_query_view(query.id)
             self.refresh_shell_chrome()
             return
@@ -1490,7 +1627,7 @@ class InvestigationHost(App):
         self.refresh_shell_chrome()
 
     def action_new_draft_query(self) -> None:
-        """Create a draft query (from workspace) or search to seed one."""
+        """Reset the single draft (from workspace) or search to seed one."""
         if self._invalid or not self.investigation:
             self.notify("No investigation loaded", severity="error")
             return
@@ -1499,15 +1636,7 @@ class InvestigationHost(App):
             self._open_universal_search(context="new_query", resource="all")
             return
         try:
-            query = add_query(
-                self.investigation,
-                from_workspace=True,
-                name=None,
-                app_dir=self.app_dir,
-                persist=False,
-            )
-            query.in_report = False
-            persist_investigation(self.investigation, app_dir=self.app_dir)
+            query = self.ensure_draft_query(reset=True, from_workspace=True)
         except InvestigationError as exc:
             self.notify(str(exc), severity="error")
             return
@@ -1516,7 +1645,7 @@ class InvestigationHost(App):
         self.refresh_shell_chrome()
 
     def action_save_active_query(self) -> None:
-        """Promote the active query draft to saved (in_report=True)."""
+        """Promote the active query to saved (``s``); mint a fresh empty draft."""
         if not self.investigation or not self.active:
             return
         try:
@@ -1531,6 +1660,9 @@ class InvestigationHost(App):
         if qid is None:
             return
         query = self.investigation.get_query(int(qid))
+        if query.is_empty():
+            self.notify("Nothing to save — draft is empty", severity="warning")
+            return
         if not query.name:
             from .naming import suggest_query_name
 
@@ -1549,6 +1681,11 @@ class InvestigationHost(App):
                 investigation=self.active.investigation,
                 app_dir=self.app_dir,
             )
+        except Exception:  # noqa: BLE001
+            pass
+        # Always keep one empty draft slot after save.
+        try:
+            self.ensure_draft_query(reset=True)
         except Exception:  # noqa: BLE001
             pass
         self.notify(f"Saved query {qid}")
@@ -1673,17 +1810,13 @@ class InvestigationHost(App):
             auto_name = name or suggest_query_name(
                 metric_ids, entity_ids, labels=self.labels
             )
-            query = add_query(
-                self.investigation,
+            query = self.ensure_draft_query(
+                reset=True,
                 name=auto_name,
                 metric=list(metric_ids),
                 entity=list(entity_ids),
                 tail=20,
-                app_dir=self.app_dir,
-                persist=False,
             )
-            query.in_report = False
-            persist_investigation(self.investigation, app_dir=self.app_dir)
         except InvestigationError as exc:
             self.notify(str(exc), severity="error")
             return
@@ -1691,7 +1824,7 @@ class InvestigationHost(App):
         self.refresh_shell_chrome()
 
     def query_from_workspace(self) -> None:
-        """Snapshot the workspace bag into a saved query and open it."""
+        """Snapshot the workspace bag into the single draft and open it."""
         if self._invalid or not self.investigation:
             self.notify("No investigation loaded", severity="error")
             return
@@ -1702,14 +1835,7 @@ class InvestigationHost(App):
             )
             return
         try:
-            query = add_query(
-                self.investigation,
-                from_workspace=True,
-                app_dir=self.app_dir,
-                persist=False,
-            )
-            query.in_report = False  # draft until explicitly saved
-            persist_investigation(self.investigation, app_dir=self.app_dir)
+            query = self.ensure_draft_query(reset=True, from_workspace=True)
         except InvestigationError as exc:
             self.notify(str(exc), severity="error")
             return

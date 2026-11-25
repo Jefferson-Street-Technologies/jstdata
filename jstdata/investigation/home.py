@@ -278,10 +278,16 @@ class HomeScreen(BaseScreen):
         border-left: solid #0a0a0a;
         padding: 0 1 0 0;
     }
-    SearchResultRow, WorkspaceResourceRow, GroupHeader {
+    SearchResultRow, GroupHeader {
         height: 1;
         min-height: 1;
         max-height: 1;
+    }
+    WorkspaceResourceRow {
+        height: 4;
+        min-height: 4;
+        max-height: 4;
+        padding: 1 1;
     }
     ReleaseTile, EventTile {
         height: 5;
