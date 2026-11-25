@@ -300,8 +300,11 @@ def mark_completed(app_dir: Path, tutorial_id: str) -> None:
 
 
 def tips_enabled(app_dir: Path) -> bool:
-    """Contextual tips are on until the user turns them off."""
-    return load_state(app_dir).get("tips", True) is not False
+    """Contextual tips are opt-in for chart-first UX (outdated by default)."""
+    state = load_state(app_dir)
+    if "tips" not in state:
+        return False
+    return state.get("tips") is not False
 
 
 def set_tips_enabled(app_dir: Path, enabled: bool) -> None:

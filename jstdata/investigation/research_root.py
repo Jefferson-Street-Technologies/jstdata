@@ -69,13 +69,17 @@ class ResearchRootScreen(BaseScreen):
                 markup=True,
             )
 
+    def shell_breadcrumb(self) -> str:
+        return "Research"
+
     def footer_status(self) -> list[str]:
-        return ["root"]
+        return []
 
     def footer_action_keys(self) -> list[str]:
         return [
             "[bold #e0e0e0]/[/] [#888]search[/]",
             "[bold #e0e0e0]n[/] [#888]new query[/]",
+            "[bold #e0e0e0]1[/]/[bold #e0e0e0]2[/]/[bold #e0e0e0]3[/] [#888]panes[/]",
         ]
 
 

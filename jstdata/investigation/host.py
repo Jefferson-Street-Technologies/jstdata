@@ -364,6 +364,9 @@ class InvestigationHost(App):
         Binding("n", "new_draft_query", "New query", show=False),
         Binding("s", "save_active_query", "Save query", show=False),
         Binding("e", "edit_active_query", "Edit query", show=False),
+        # UI navigation history (distinct from action-log / H history).
+        Binding("ctrl+o", "nav_back", "Back", show=False),
+        Binding("ctrl+i", "nav_forward", "Forward", show=False),
         # ``dd`` is handled in on_key — Textual commas mean alternate keys, not chords.
     ]
 
@@ -419,6 +422,10 @@ class InvestigationHost(App):
         self._nav_dest: str | None = None
         self._nav_return: str | None = None
         self._dest_index: dict[str, int] = {}
+        # Browser-style view history (action ids). Not the research action log.
+        self._ui_nav_back: list[tuple[str, int]] = []
+        self._ui_nav_fwd: list[tuple[str, int]] = []
+        self._ui_nav_silent = False
         # Onboarding: running tutorial coach + where to return on leave.
         self._initial_tutorial = load_tutorial(start_tutorial) if start_tutorial else None
         self.coach: TutorialCoach | None = None
@@ -750,6 +757,7 @@ class InvestigationHost(App):
         if self._invalid or not self.investigation or not self.active:
             self.notify("No investigation loaded", severity="error")
             return
+        self._record_ui_nav()
         self._leave_destination_for_action()
         try:
             action = add_action(
@@ -1097,7 +1105,71 @@ class InvestigationHost(App):
         if reopen:
             self.push_screen(WorkspaceDrawer(self.workspace, self.labels))
 
+    def _ui_nav_frame(self) -> tuple[str, int] | None:
+        if not self.investigation or not self.active:
+            return None
+        return (self.investigation.id, self.active.action)
+
+    def _record_ui_nav(self) -> None:
+        if self._ui_nav_silent:
+            return
+        frame = self._ui_nav_frame()
+        if frame is None:
+            return
+        if self._ui_nav_back and self._ui_nav_back[-1] == frame:
+            return
+        self._ui_nav_back.append(frame)
+        self._ui_nav_fwd.clear()
+
+    def _jump_ui_nav(self, frame: tuple[str, int]) -> None:
+        inv_id, action_id = frame
+        self._ui_nav_silent = True
+        try:
+            if self.investigation is None or self.investigation.id != inv_id:
+                order = list(self.project.investigations) if self.project else []
+                if inv_id not in order:
+                    self.notify(
+                        f"Cannot restore tab {inv_id}", severity="warning"
+                    )
+                    return
+                self._switch_investigation(
+                    inv_id, action_id, workspace=DEFAULT_WORKSPACE_ID
+                )
+                return
+            if action_id not in self.investigation.actions:
+                self.notify("Previous view no longer exists", severity="warning")
+                return
+            self._leave_destination_for_action()
+            assert self.active is not None
+            self._write_active(self._make_active(action=action_id))
+            self._show_current_action(reset=True)
+        finally:
+            self._ui_nav_silent = False
+
+    def action_nav_back(self) -> None:
+        """Ctrl-o — previous UI view (not the research action log)."""
+        if not self._ui_nav_back:
+            self.notify("No previous view", severity="warning")
+            return
+        current = self._ui_nav_frame()
+        if current is not None:
+            self._ui_nav_fwd.append(current)
+        frame = self._ui_nav_back.pop()
+        self._jump_ui_nav(frame)
+
+    def action_nav_forward(self) -> None:
+        """Ctrl-i — next UI view after a back."""
+        if not self._ui_nav_fwd:
+            self.notify("No forward view", severity="warning")
+            return
+        current = self._ui_nav_frame()
+        if current is not None:
+            self._ui_nav_back.append(current)
+        frame = self._ui_nav_fwd.pop()
+        self._jump_ui_nav(frame)
+
     def _activate_action(self, action_id: int) -> None:
+        self._record_ui_nav()
         self._leave_destination_for_action()
         assert self.active is not None
         self._write_active(self._make_active(action=action_id))
@@ -1460,7 +1532,11 @@ class InvestigationHost(App):
             return
         query = self.investigation.get_query(int(qid))
         if not query.name:
-            query.name = f"Query {query.id}"
+            from .naming import suggest_query_name
+
+            query.name = suggest_query_name(
+                query.metric, query.entity, labels=self.labels
+            )
         query.in_report = True
         persist_investigation(self.investigation, app_dir=self.app_dir)
         # Log via promote_query for audit trail.
@@ -1479,7 +1555,7 @@ class InvestigationHost(App):
         self.refresh_shell_chrome()
 
     def action_edit_active_query(self) -> None:
-        """Open incremental edit overlay for the active query."""
+        """Enter the in-pane Edit view for the active query."""
         if not self.investigation or not self.active:
             return
         try:
@@ -1493,28 +1569,23 @@ class InvestigationHost(App):
         qid = action.args.get("query_id")
         if qid is None:
             return
-        from .query_edit import QueryEditModal
+        qid = int(qid)
+        screen = self.screen
+        if (
+            getattr(screen, "query_id", None) == qid
+            and hasattr(screen, "action_mode_edit")
+        ):
+            screen.action_mode_edit()
+            return
 
-        def _done(result: object | None) -> None:
-            if not result:
-                return
-            self.open_query_view(int(qid))
-            self.refresh_shell_chrome()
-            # Auto-run after edit.
-            run = getattr(self.screen, "action_load", None)
-            if callable(run):
-                self.call_later(run)
+        self.open_query_view(qid)
 
-        self.push_screen(
-            QueryEditModal(
-                self.investigation.get_query(int(qid)),
-                investigation=self.investigation,
-                app_dir=self.app_dir,
-                project_id=self.project_id,
-                investigation_id=self.active.investigation,
-            ),
-            _done,
-        )
+        def _enter_edit() -> None:
+            edit = getattr(self.screen, "action_mode_edit", None)
+            if callable(edit):
+                edit()
+
+        self.call_later(_enter_edit)
 
     def action_feedback_prompt(self) -> None:
         """Prompt for feedback text then queue the local outbox."""
@@ -1546,6 +1617,7 @@ class InvestigationHost(App):
                 continue
             self._activate_action(child.id)
             return child
+        self._record_ui_nav()
         try:
             action = add_action(
                 self.investigation,
@@ -1596,9 +1668,14 @@ class InvestigationHost(App):
             self.notify("Need metric and entity for a chart", severity="warning")
             return
         try:
+            from .naming import suggest_query_name
+
+            auto_name = name or suggest_query_name(
+                metric_ids, entity_ids, labels=self.labels
+            )
             query = add_query(
                 self.investigation,
-                name=name,
+                name=auto_name,
                 metric=list(metric_ids),
                 entity=list(entity_ids),
                 tail=20,

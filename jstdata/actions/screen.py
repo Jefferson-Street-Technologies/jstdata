@@ -20,20 +20,14 @@ class BaseScreen(Screen):
     Pane focus: ``1`` queries · ``2`` workspace · ``3`` main.
     """
 
-    # Investigation-wide keys — defined once, shown on every action screen.
+    # Investigation-wide keys — keep short; full inventory lives in `:` / `?`.
     FOOTER_CHROME: tuple[str, ...] = (
-        "[bold]1[/bold]/[bold]2[/bold]/[bold]3[/bold] panes",
         "[bold]/[/bold] search",
-        "[bold]:[/bold] commands",
         "[bold]n[/bold] query",
-        "[bold]e[/bold] edit",
         "[bold]s[/bold] save",
         "[bold]a[/bold] annotate",
-        "[bold]H[/bold] history",
-        "[bold]F[/bold] feedback",
-        "[bold]{[/bold]/[bold]}[/bold] tabs",
+        "[bold]Ctrl+o[/bold] back",
         "[bold]?[/bold] help",
-        "[bold]q[/bold] quit",
     )
 
     # Shell-level bindings (host also owns some; these help when focus is here).
@@ -78,10 +72,10 @@ class BaseScreen(Screen):
 
     #shell-main-kicker {
         height: 1;
-        color: #4ade80;
-        text-style: bold;
+        color: #888;
         padding: 0 1;
         background: #0c0c0c;
+        border-bottom: solid #1a1a1a;
     }
 
     #cmd-bar {
@@ -111,7 +105,7 @@ class BaseScreen(Screen):
                 yield ResearchSidebar(id="shell-sidebar")
                 with Vertical(id="shell-body"):
                     yield Label(
-                        "[bold #86efac]3[/] MAIN",
+                        "",
                         id="shell-main-kicker",
                         markup=True,
                     )
@@ -128,6 +122,22 @@ class BaseScreen(Screen):
     def on_mount(self) -> None:
         self.refresh_footer()
         self.refresh_shell_chrome()
+        self.refresh_breadcrumb()
+
+    def shell_breadcrumb(self) -> str:
+        """Contextual trail for the main pane (override per screen)."""
+        return "Main"
+
+    def refresh_breadcrumb(self) -> None:
+        if not self.SHELL_ENABLED:
+            return
+        try:
+            crumb = self.shell_breadcrumb()
+            self.query_one("#shell-main-kicker", Label).update(
+                f"[bold #86efac]3[/]  {crumb}"
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     def refresh_shell_chrome(self) -> None:
         """Pull project/tabs/sidebar state from the host."""
@@ -139,6 +149,7 @@ class BaseScreen(Screen):
                 refresh(self)
             except Exception:  # noqa: BLE001
                 pass
+        self.refresh_breadcrumb()
 
     def footer_status(self) -> list[str]:
         """Leading status chips (action id, scope, …). Tabs live in TabBar."""
@@ -186,12 +197,37 @@ class BaseScreen(Screen):
         if callable(fn):
             fn()
 
+    def focus_in_shell_sidebar(self) -> bool:
+        """True when focus is inside the research sidebar (queries / workspace)."""
+        focused = self.focused
+        if focused is None or not self.SHELL_ENABLED:
+            return False
+        try:
+            sidebar = self.query_one("#shell-sidebar", ResearchSidebar)
+        except Exception:  # noqa: BLE001
+            return False
+        node = focused
+        while node is not None:
+            if node is sidebar:
+                return True
+            node = node.parent
+        return False
+
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         # Don't steal digits while typing in an input.
         if isinstance(self.focused, Input) and action in {
             "focus_pane_queries",
             "focus_pane_workspace",
             "focus_pane_main",
+        }:
+            return False
+        # Sidebar owns Enter / list motion — don't let the main pane steal them.
+        if self.focus_in_shell_sidebar() and action in {
+            "confirm",
+            "inspect",
+            "collect",
+            "cursor_down",
+            "cursor_up",
         }:
             return False
         return True

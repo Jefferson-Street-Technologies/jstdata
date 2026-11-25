@@ -12,7 +12,7 @@ from typing import Optional
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Input, Label, ListItem, ListView, Static
 
 from ..client import JSTDataClient
@@ -32,24 +32,28 @@ SEARCH_DEBOUNCE_S = 0.3
 
 
 class EntityAssocRow(ListItem):
-    def __init__(self, entity: Entity) -> None:
+    def __init__(self, entity: Entity, *, frequency: str = "") -> None:
         super().__init__()
         self.entity = entity
+        self.frequency = frequency
 
     def compose(self) -> ComposeResult:
-        yield Label(f"{self.entity.label or self.entity.id}  [{self.entity.id}]")
+        name = self.entity.label or self.entity.id
+        pad = f"  {self.frequency}" if self.frequency else ""
+        yield Label(f"{name}{pad}")
 
 
 class MetricScreen(BaseScreen):
-    """Show id/label for the Input Context metric focus, plus covered entities."""
+    """Show metric focus plus covered entities — inverse of Entity view."""
 
     BINDINGS = [
         Binding("r", "load", "Load", key_display="r"),
         Binding("f", "focus_filter", "Search entities", key_display="f"),
         Binding("escape", "leave_filter", "Leave search", show=False),
-        Binding("enter", "confirm", "Open entity", priority=True),
+        Binding("enter", "confirm", "Open chart", priority=True),
         Binding("j", "cursor_down", "Cursor Down", show=False),
         Binding("k", "cursor_up", "Cursor Up", show=False),
+        Binding("tab", "cycle_pane", "Entities / definition", priority=True),
         Binding("space", "collect", "Collect highlighted entity", show=False),
         Binding("a", "collect_self", "Add this metric to workspace", show=False),
     ]
@@ -57,37 +61,25 @@ class MetricScreen(BaseScreen):
     DEFAULT_CSS = """
     #metric-body {
         height: 1fr;
-    }
-    .pane-container {
-        border: solid #222;
-        background: #0f0f0f;
-        height: 1fr;
-    }
-    .pane-header {
-        background: #1a1a1a;
-        color: #4ade80;
         padding: 0 1;
+    }
+    #metric-title {
+        color: #f5f5f5;
         text-style: bold;
         height: 1;
+        margin-top: 1;
     }
-    #metric-fields {
-        color: #e0e0e0;
-        padding: 1 1 0 1;
-        height: auto;
-        max-height: 14;
+    #metric-meta {
+        color: #888;
+        height: 1;
+    }
+    #metric-tabs {
+        height: 1;
+        margin: 1 0 0 0;
     }
     #metric-status {
-        color: #888;
-        padding: 0 1;
+        color: #666;
         height: 1;
-    }
-    #entities-header {
-        background: #111;
-        color: #888;
-        text-style: bold;
-        padding: 0 1;
-        height: 1;
-        border-top: solid #333;
     }
     #assoc-filter {
         height: 3;
@@ -98,7 +90,13 @@ class MetricScreen(BaseScreen):
     }
     #entities-list {
         height: 1fr;
-        background: #0f0f0f;
+        background: #0c0c0c;
+    }
+    #metric-definition {
+        height: 1fr;
+        color: #c0c0c0;
+        display: none;
+        padding: 1;
     }
     ListView > ListItem,
     ListView > ListItem:hover {
@@ -131,6 +129,8 @@ class MetricScreen(BaseScreen):
         self._search_task: asyncio.Task | None = None
         self._metric_meta_loaded = False
         self._taxonomies: list[MetricTaxonomy] = []
+        self._metric_obj: Optional[Metric] = None
+        self._pane: str = "entities"
         self.page_offset = 0
         self.has_more = False
         self.loading_more = False
@@ -151,20 +151,21 @@ class MetricScreen(BaseScreen):
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="metric-body"):
-            with Vertical(classes="pane-container"):
-                yield Label("METRIC", classes="pane-header")
-                yield Static("", id="metric-fields", markup=True)
-                yield Static(
-                    "Idle — press [bold]r[/bold] to load",
-                    id="metric-status",
-                    markup=True,
-                )
-                yield Label("ENTITIES", id="entities-header")
-                yield Input(
-                    placeholder="/ search entities for this metric…",
-                    id="assoc-filter",
-                )
-                yield ListView(id="entities-list")
+            yield Label("", id="metric-title")
+            yield Static("", id="metric-meta", markup=True)
+            yield Static("", id="metric-tabs", markup=True)
+            yield Static(
+                "Press [bold]r[/bold] to load entities",
+                id="metric-status",
+                markup=True,
+            )
+            yield Input(
+                placeholder="/ search entities…",
+                id="assoc-filter",
+            )
+            yield ListView(id="entities-list")
+            with VerticalScroll(id="metric-definition"):
+                yield Static("", id="metric-def-body", markup=True)
 
     def on_mount(self) -> None:
         super().on_mount()
@@ -177,9 +178,9 @@ class MetricScreen(BaseScreen):
                 self._parent_overrides = None
         ctx = self._resolved_input_context()
         if not ctx.metric:
-            self.query_one("#metric-fields", Static).update(
-                "No metric in Input Context.\n"
-                "Drill into a metric from a table, or stage one via :search."
+            self.query_one("#metric-title", Label).update("No metric selected")
+            self.query_one("#metric-meta", Static).update(
+                "Search [/] and open a metric, or stage one into the workspace."
             )
             self.query_one("#metric-status", Static).update("")
             return
@@ -187,9 +188,13 @@ class MetricScreen(BaseScreen):
         self._label = label_for(self._labels(), self._metric_id)
         note = ""
         if len(ctx.metric) > 1:
-            note = f"\n(+{len(ctx.metric) - 1} more metrics in Input Context; showing first)"
+            note = f" (+{len(ctx.metric) - 1} more in context)"
         self._render_fields(self._metric_id, self._label, note=note)
-        self.query_one("#entities-list", ListView).focus()
+        self._focus_pane("entities")
+        self.call_later(self.action_load)
+
+    def shell_breadcrumb(self) -> str:
+        return self._label or self._metric_id or "Metric"
 
     def _render_fields(
         self,
@@ -200,49 +205,106 @@ class MetricScreen(BaseScreen):
         metric: Optional[Metric] = None,
         taxonomies: Optional[list[MetricTaxonomy]] = None,
     ) -> None:
-        lines = [
-            f"[bold]id[/bold]     {metric_id}",
-            f"[bold]label[/bold]  {label or '—'}",
-        ]
-        if metric is not None and metric.description:
-            desc = metric.description.strip()
-            if len(desc) > 280:
-                desc = desc[:277] + "…"
-            lines.append(f"[bold]desc[/bold]   {desc}")
+        self._metric_obj = metric
+        self.query_one("#metric-title", Label).update(label or metric_id)
+        bits: list[str] = []
         if metric is not None and metric.variants:
-            lines.append("[bold]variants[/bold]")
-            for variant in metric.variants[:6]:
-                freq = variant.frequency or "?"
-                sa = variant.seasonal_adjustment or "—"
+            v0 = metric.variants[0]
+            if v0.units:
+                bits.append(v0.units)
+            if v0.source:
+                bits.append(v0.source)
+            if v0.frequency:
+                bits.append(v0.frequency)
+        if note:
+            bits.append(note.strip())
+        self.query_one("#metric-meta", Static).update(
+            " · ".join(bits) if bits else "Metric"
+        )
+        self._render_definition(metric=metric, taxonomies=taxonomies)
+        self._refresh_tabs()
+
+    def _render_definition(
+        self,
+        *,
+        metric: Optional[Metric] = None,
+        taxonomies: Optional[list[MetricTaxonomy]] = None,
+    ) -> None:
+        lines: list[str] = ["[dim]── Definition ──[/]"]
+        m = metric if metric is not None else self._metric_obj
+        if m is not None and m.description:
+            lines.append(m.description.strip())
+        else:
+            lines.append("[dim]No description in catalog.[/]")
+        if m is not None and m.variants:
+            lines.append("")
+            lines.append("[dim]── Variants ──[/]")
+            for variant in m.variants[:8]:
                 lines.append(
-                    f"  · {freq} · {variant.source or '—'} · "
-                    f"{variant.units or '—'} · sa {sa} · "
-                    f"{variant.series_count} series"
+                    f"· {variant.frequency or '?'} · {variant.source or '—'} · "
+                    f"{variant.units or '—'} · {variant.series_count} series"
                 )
-            if len(metric.variants) > 6:
-                lines.append(f"  · +{len(metric.variants) - 6} more")
         tax = taxonomies if taxonomies is not None else self._taxonomies
         if tax:
-            lines.append("[bold]taxonomies[/bold]")
-            for row in tax[:5]:
+            lines.append("")
+            lines.append("[dim]── Taxonomies ──[/]")
+            for row in tax[:6]:
                 lines.append(
-                    f"  · {row.name or row.id} · {row.relationship} · "
-                    f"{row.entity_count} entities"
+                    f"· {row.name or row.id} · {row.entity_count} entities"
                 )
-            if len(tax) > 5:
-                lines.append(f"  · +{len(tax) - 5} more")
-        if note:
-            lines.append(note.lstrip("\n"))
-        self.query_one("#metric-fields", Static).update("\n".join(lines))
+        try:
+            self.query_one("#metric-def-body", Static).update("\n".join(lines))
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _refresh_tabs(self) -> None:
+        n = len(self._entities)
+        extra = "+" if self.has_more else ""
+        if self._pane == "entities":
+            text = (
+                f"[bold #86efac on #163324] Entities ({n}{extra}) [/]  "
+                f"[#888]Definition[/]"
+            )
+        else:
+            text = (
+                f"[#888]Entities ({n}{extra})[/]  "
+                f"[bold #86efac on #163324] Definition [/]"
+            )
+        try:
+            self.query_one("#metric-tabs", Static).update(text)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _focus_pane(self, pane: str) -> None:
+        self._pane = pane
+        entities = pane == "entities"
+        self.query_one("#entities-list", ListView).display = entities
+        self.query_one("#assoc-filter", Input).display = entities
+        self.query_one("#metric-definition").display = not entities
+        self._refresh_tabs()
+        if entities:
+            self.query_one("#entities-list", ListView).focus()
+        self.refresh_footer()
+
+    def action_cycle_pane(self) -> None:
+        if isinstance(self.focused, Input):
+            self.action_leave_filter()
+            return
+        self._focus_pane(
+            "definition" if self._pane == "entities" else "entities"
+        )
 
     def footer_action_keys(self) -> list[str]:
-        keys = ["[bold]r[/bold] load"]
+        keys: list[str] = []
         if self._loaded:
-            keys.append("[bold]/[/bold] search")
-            keys.append("[bold]j[/bold]/[bold]k[/bold] entities (more at end)")
-            keys.append("[bold]enter[/bold] entity")
-            keys.append("[bold]space[/bold] collect entity")
-        keys.append("[bold]a[/bold] add metric")
+            keys.append("[bold]tab[/bold] entities/def")
+            if self._pane == "entities":
+                keys.append("[bold]/[/bold] filter")
+                keys.append("[bold]enter[/bold] chart")
+                keys.append("[bold]space[/bold] collect")
+        else:
+            keys.append("[bold]r[/bold] load")
+        keys.append("[bold]a[/bold] workspace")
         return keys
 
     def coach_flags(self) -> set[str]:
@@ -348,12 +410,7 @@ class MetricScreen(BaseScreen):
             return
         # Chart-first: Enter on an entity opens a draft query for this metric.
         chart_fn = getattr(self.app, "open_direct_query_chart", None)
-        metric_ids = []
-        ctx = getattr(self, "_input_context", None) or getattr(
-            self, "_parent_overrides", None
-        )
-        if ctx is not None:
-            metric_ids = list(getattr(ctx, "metric", None) or [])
+        metric_ids = [self._metric_id] if self._metric_id else []
         if callable(chart_fn) and metric_ids:
             chart_fn(metric_ids=metric_ids, entity_ids=[entity.id])
             return
@@ -410,10 +467,13 @@ class MetricScreen(BaseScreen):
 
     def _append_entities(self, entities: list[Entity]) -> None:
         list_view = self.query_one("#entities-list", ListView)
+        freq = ""
+        if self._metric_obj and self._metric_obj.variants:
+            freq = self._metric_obj.variants[0].frequency or ""
         for ent in entities:
             if hasattr(self.app, "remember_label"):
                 self.app.remember_label(ent.id, ent.label or ent.id)
-            list_view.append(EntityAssocRow(ent))
+            list_view.append(EntityAssocRow(ent, frequency=freq))
 
     def _update_status(self, query: str | None) -> None:
         status = self.query_one("#metric-status", Static)
@@ -426,6 +486,7 @@ class MetricScreen(BaseScreen):
             )
         else:
             status.update(f"No entities{qbit}")
+        self._refresh_tabs()
 
     @work(exclusive=True, group="metric-view")
     async def load_metric(self, *, reset: bool = True, reset_meta: bool = False) -> None:

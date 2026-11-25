@@ -94,6 +94,14 @@ class _SidebarQueryItem(ListItem):
         super().__init__(Label(display))
 
 
+class _SidebarHeaderItem(ListItem):
+    """Section label inside the query list — not selectable."""
+
+    def __init__(self, text: str) -> None:
+        super().__init__(Label(text, markup=True))
+        self.disabled = True
+
+
 class ResearchSidebar(Static):
     """Left sidebar: queries (draft/saved) + workspace resources."""
 
@@ -114,6 +122,9 @@ class ResearchSidebar(Static):
     BINDINGS = [
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
+        Binding("down", "cursor_down", "Down", show=False),
+        Binding("up", "cursor_up", "Up", show=False),
+        Binding("enter", "activate", "Open", show=False, priority=True),
     ]
 
     sidebar_collapsed: reactive[bool] = reactive(False)
@@ -133,14 +144,11 @@ class ResearchSidebar(Static):
         display: none;
     }
     #sidebar-queries-kicker, #sidebar-ws-kicker {
-        color: #4ade80;
+        color: #a0a0a0;
         text-style: bold;
         height: 1;
         padding: 0 1;
         margin-top: 1;
-    }
-    #sidebar-queries-kicker .-key, #sidebar-ws-kicker .-key {
-        color: #86efac;
     }
     #sidebar-new-query {
         color: #86efac;
@@ -149,31 +157,49 @@ class ResearchSidebar(Static):
     }
     #sidebar-query-list {
         height: 1fr;
-        max-height: 40%;
+        max-height: 55%;
         background: #0c0c0c;
         padding: 0 0 0 0;
     }
     #sidebar-ws-tree {
         height: 1fr;
+        max-height: 45%;
         background: #0c0c0c;
         padding: 0 1;
+    }
+    ResearchSidebar.-ws-empty #sidebar-query-list {
+        max-height: 75%;
+    }
+    ResearchSidebar.-ws-empty #sidebar-ws-tree {
+        max-height: 6;
+        height: 6;
     }
     #sidebar-query-list > ListItem.--highlight {
         background: #1a3a2a;
         border-left: solid #4ade80;
     }
+    #sidebar-query-list > ListItem:disabled {
+        color: #666;
+        background: transparent;
+        border-left: solid #0c0c0c;
+    }
+    #sidebar-query-list > ListItem:disabled.--highlight {
+        background: transparent;
+        border-left: solid #0c0c0c;
+        color: #666;
+    }
     """
 
     def compose(self) -> ComposeResult:
         yield Label(
-            "[bold #86efac]1[/] QUERIES",
+            "[bold #86efac]1[/] Queries",
             id="sidebar-queries-kicker",
             markup=True,
         )
         yield Label("+ New query", id="sidebar-new-query")
         yield ListView(id="sidebar-query-list")
         yield Label(
-            "[bold #86efac]2[/] WORKSPACE",
+            "[bold #86efac]2[/] Workspace",
             id="sidebar-ws-kicker",
             markup=True,
         )
@@ -192,15 +218,52 @@ class ResearchSidebar(Static):
             node = node.parent
         return None
 
+    def _query_items(self) -> list[ListItem]:
+        listing = self.query_one("#sidebar-query-list", ListView)
+        return [c for c in listing.children if isinstance(c, ListItem)]
+
+    def _move_query_cursor(self, delta: int) -> None:
+        """Move highlight only onto real queries — skip Drafts/Saved headers."""
+        listing = self.query_one("#sidebar-query-list", ListView)
+        items = self._query_items()
+        if not items:
+            return
+        idx = listing.index if listing.index is not None else 0
+        n = len(items)
+        for _ in range(n):
+            idx += delta
+            if idx < 0 or idx >= n:
+                return
+            if isinstance(items[idx], _SidebarQueryItem):
+                listing.index = idx
+                return
+
     def action_cursor_down(self) -> None:
         target = self._nav_target()
+        if isinstance(target, ListView) and target.id == "sidebar-query-list":
+            self._move_query_cursor(1)
+            return
         if target is not None and hasattr(target, "action_cursor_down"):
             target.action_cursor_down()
 
     def action_cursor_up(self) -> None:
         target = self._nav_target()
+        if isinstance(target, ListView) and target.id == "sidebar-query-list":
+            self._move_query_cursor(-1)
+            return
         if target is not None and hasattr(target, "action_cursor_up"):
             target.action_cursor_up()
+
+    def action_activate(self) -> None:
+        """Enter in the sidebar opens the highlighted query / workspace node."""
+        target = self._nav_target()
+        if isinstance(target, ListView) and target.id == "sidebar-query-list":
+            item = target.highlighted_child
+            if isinstance(item, _SidebarQueryItem):
+                self.post_message(self.QuerySelected(item.query_id))
+            return
+        if isinstance(target, Tree):
+            target.action_select_cursor()
 
     def watch_sidebar_collapsed(self, collapsed: bool) -> None:
         self.set_class(collapsed, "-collapsed")
@@ -219,7 +282,7 @@ class ResearchSidebar(Static):
         highlight_index = 0
         i = 0
         if drafts:
-            listing.append(ListItem(Label("[dim]— Drafts —[/]", markup=True)))
+            listing.append(_SidebarHeaderItem("[dim]— Drafts —[/]"))
             i += 1
             for q in drafts:
                 label = q.get("name") or f"Query {q['id']}"
@@ -230,7 +293,7 @@ class ResearchSidebar(Static):
                     highlight_index = i
                 i += 1
         if saved:
-            listing.append(ListItem(Label("[dim]— Saved —[/]", markup=True)))
+            listing.append(_SidebarHeaderItem("[dim]— Saved —[/]"))
             i += 1
             for q in saved:
                 label = q.get("name") or f"Query {q['id']}"
@@ -241,7 +304,14 @@ class ResearchSidebar(Static):
                     highlight_index = i
                 i += 1
         if not drafts and not saved:
-            listing.append(ListItem(Label("[dim](no queries)[/]", markup=True)))
+            listing.append(_SidebarHeaderItem("[dim](no queries)[/]"))
+        # Never leave the cursor parked on a section header.
+        items = [c for c in listing.children if isinstance(c, ListItem)]
+        if items and not isinstance(items[highlight_index], _SidebarQueryItem):
+            for j, item in enumerate(items):
+                if isinstance(item, _SidebarQueryItem):
+                    highlight_index = j
+                    break
         listing.index = highlight_index
 
     def refresh_workspace(
@@ -267,12 +337,31 @@ class ResearchSidebar(Static):
         _branch("Series", series, "series")
         ws_kicker = self.query_one("#sidebar-ws-kicker", Label)
         total = len(entities) + len(metrics) + len(series)
-        ws_kicker.update(f"[bold #86efac]2[/] WORKSPACE  {total}")
+        ws_kicker.update(f"[bold #86efac]2[/] Workspace  {total}")
+        self.set_class(total == 0, "-ws-empty")
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         item = event.item
         if isinstance(item, _SidebarQueryItem):
             self.post_message(self.QuerySelected(item.query_id))
+
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        # Arrow keys / mouse can still land on section headers — bounce off.
+        if event.list_view is None or event.list_view.id != "sidebar-query-list":
+            return
+        if not isinstance(event.item, _SidebarHeaderItem):
+            return
+        listing = event.list_view
+        items = self._query_items()
+        idx = listing.index if listing.index is not None else 0
+        for j in range(idx + 1, len(items)):
+            if isinstance(items[j], _SidebarQueryItem):
+                listing.index = j
+                return
+        for j in range(idx - 1, -1, -1):
+            if isinstance(items[j], _SidebarQueryItem):
+                listing.index = j
+                return
 
     def on_tree_node_selected(self, event: Tree.NodeSelected[Any]) -> None:
         node: TreeNode[Any] = event.node

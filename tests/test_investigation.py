@@ -1011,6 +1011,23 @@ def test_query_formats_periods_and_values():
     assert format_release(datetime(2024, 8, 1), short=True) == "Aug 2024"
     assert format_value(71.5228842446577) == "71.52"
     assert format_value(None) == "—"
+    from jstdata.actions.query_view import (
+        format_compact,
+        format_exact,
+        format_pct_change,
+    )
+
+    assert format_compact(8_924_516_000) == "8.92B"
+    assert format_compact(8_924_516_000, units="USD") == "$8.92B"
+    assert format_compact(240_000_000, units="USD") == "$240M"
+    # Thousands of dollars: 14.34M raw → $14.34B actual.
+    assert (
+        format_compact(14_336_729, units="Thousands of Dollars") == "$14.34B"
+    )
+    assert format_exact(14_336_729, units="Thousands of Dollars") == "$14,336,729,000"
+    assert format_compact(4.25, units="Percent") == "4.25%"
+    assert format_pct_change(110, 100) == "+10.0%"
+    assert format_pct_change(90, 100) == "-10.0%"
     record = {
         "id": "HDTGPDUSQ163N",
         "label": "Household debt to GDP",

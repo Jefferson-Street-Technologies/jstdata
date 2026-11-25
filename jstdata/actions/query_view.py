@@ -14,7 +14,7 @@ import json
 from collections import OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import StringIO
 from pathlib import Path
 from typing import Any, Optional
@@ -30,6 +30,7 @@ from textual_plotext import PlotextPlot
 from ..client import JSTDataClient
 from ..investigation.model import Query, Workspace
 from ..investigation.nav import annotations_panel
+from ..investigation.query_edit import QueryEditor
 from ..models import TimeSeries
 from .base import (
     ActionArgument,
@@ -40,7 +41,7 @@ from .base import (
 )
 from .screen import BaseScreen
 
-MODES = ("table", "chart", "raw")
+MODES = ("chart", "table", "sources", "edit")
 
 
 def series_to_record(ts: TimeSeries) -> dict[str, Any]:
@@ -83,7 +84,7 @@ def _parse_stamp(value: Any) -> Optional[datetime]:
 
 
 def format_value(value: Any, *, digits: int = 2) -> str:
-    """Human-facing number; raw precision stays on the record."""
+    """Exact-ish table/detail number; raw precision stays on the record."""
     if value is None:
         return "—"
     try:
@@ -96,6 +97,204 @@ def format_value(value: Any, *, digits: int = 2) -> str:
     if "." in formatted:
         formatted = formatted.rstrip("0").rstrip(".")
     return formatted or "0"
+
+
+def unit_scale(units: str | None) -> tuple[float, bool]:
+    """Scale factor from reported units → display units, plus currency flag.
+
+    Catalog values are often stored in thousands/millions of dollars. A raw
+    ``14336729`` with units ``Thousands of Dollars`` is **$14.34B**, not $14.34M.
+    """
+    unit = (units or "").strip().lower()
+    if not unit:
+        return 1.0, False
+    currency = any(
+        tok in unit
+        for tok in ("dollar", "usd", "$", "euro", "eur", "pound", "gbp", "yen")
+    )
+    # Explicit scale words (order matters: "thousands of millions" rare — skip).
+    if "trillion" in unit:
+        return 1_000_000_000_000.0, currency
+    if "billion" in unit:
+        return 1_000_000_000.0, currency
+    if "million" in unit:
+        return 1_000_000.0, currency
+    if "thousand" in unit:
+        return 1_000.0, currency
+    return 1.0, currency
+
+
+def scaled_number(value: Any, *, units: str | None = None) -> Optional[float]:
+    """Apply unit scale; None when value is missing/non-numeric."""
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number:
+        return None
+    scale, _ = unit_scale(units)
+    return number * scale
+
+
+def format_compact(value: Any, *, units: str | None = None) -> str:
+    """Headline / chart-axis number: $14.34B, 4.3%, 71.5, … (unit-aware)."""
+    unit = (units or "").strip().lower()
+    # Percents / rates / ratios: no magnitude scaling.
+    if any(tok in unit for tok in ("percent", "%", "ratio", "index")) and "dollar" not in unit:
+        if value is None:
+            return "—"
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+        if number != number:
+            return "—"
+        sign = "-" if number < 0 else ""
+        body = f"{abs(number):.2f}".rstrip("0").rstrip(".")
+        suffix = "%" if "percent" in unit or unit == "%" else ""
+        return f"{sign}{body}{suffix}"
+
+    scaled = scaled_number(value, units=units)
+    if scaled is None:
+        return "—" if value is None else str(value)
+    _, currency = unit_scale(units)
+    sign = "-" if scaled < 0 else ""
+    mag = abs(scaled)
+    prefix = "$" if currency else ""
+    if mag >= 1_000_000_000_000:
+        body = f"{mag / 1_000_000_000_000:.2f}".rstrip("0").rstrip(".")
+        return f"{sign}{prefix}{body}T"
+    if mag >= 1_000_000_000:
+        body = f"{mag / 1_000_000_000:.2f}".rstrip("0").rstrip(".")
+        return f"{sign}{prefix}{body}B"
+    if mag >= 1_000_000:
+        body = f"{mag / 1_000_000:.2f}".rstrip("0").rstrip(".")
+        return f"{sign}{prefix}{body}M"
+    if mag >= 10_000:
+        body = f"{mag / 1_000:.2f}".rstrip("0").rstrip(".")
+        return f"{sign}{prefix}{body}K"
+    body = format_value(mag)
+    return f"{sign}{prefix}{body}"
+
+
+def format_exact(value: Any, *, units: str | None = None) -> str:
+    """Full-precision display after unit scaling (observation strip / table)."""
+    unit = (units or "").strip().lower()
+    if any(tok in unit for tok in ("percent", "%", "ratio", "index")) and "dollar" not in unit:
+        return format_value(value)
+    scaled = scaled_number(value, units=units)
+    if scaled is None:
+        return format_value(value)
+    _, currency = unit_scale(units)
+    formatted = format_value(scaled, digits=0 if abs(scaled) >= 1000 else 2)
+    return f"${formatted}" if currency else formatted
+
+
+def format_pct_change(current: Any, prior: Any) -> str:
+    """Signed percent change for headlines (e.g. ``+3.3%``)."""
+    try:
+        cur = float(current)
+        old = float(prior)
+    except (TypeError, ValueError):
+        return "—"
+    if old == 0 or cur != cur or old != old:
+        return "—"
+    pct = (cur - old) / abs(old) * 100.0
+    sign = "+" if pct > 0 else ""
+    return f"{sign}{pct:.1f}%"
+
+
+def _obs_chronological(record: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = list(record.get("observations") or [])
+    rows.sort(
+        key=lambda obs: _parse_stamp(obs.get("observation_timestamp"))
+        or datetime.min
+    )
+    return rows
+
+
+def headline_changes(
+    record: dict[str, Any],
+) -> tuple[str, str]:
+    """Return ``(pop_label, yoy_label)`` for the selected series."""
+    rows = _obs_chronological(record)
+    if len(rows) < 2:
+        return "—", "—"
+    latest = rows[-1]
+    prev = rows[-2]
+    freq = str(record.get("frequency") or "").lower()
+    pop_tag = "QoQ" if "quarter" in freq else ("MoM" if "month" in freq else "PoP")
+    pop = format_pct_change(latest.get("value"), prev.get("value"))
+    pop_label = f"{pop} {pop_tag}" if pop != "—" else "—"
+
+    latest_dt = _parse_stamp(latest.get("observation_timestamp"))
+    yoy = "—"
+    if latest_dt is not None:
+        target_year = latest_dt.year - 1
+        # Prefer same month/quarter in prior year; else nearest earlier stamp ≥11mo.
+        candidates = [
+            obs
+            for obs in rows[:-1]
+            if (dt := _parse_stamp(obs.get("observation_timestamp"))) is not None
+            and dt.year == target_year
+            and dt.month == latest_dt.month
+        ]
+        if not candidates:
+            floor = latest_dt - timedelta(days=400)
+            ceiling = latest_dt - timedelta(days=300)
+            candidates = [
+                obs
+                for obs in rows[:-1]
+                if (dt := _parse_stamp(obs.get("observation_timestamp"))) is not None
+                and floor <= dt <= ceiling
+            ]
+        if candidates:
+            yoy = format_pct_change(latest.get("value"), candidates[-1].get("value"))
+    yoy_label = f"{yoy} YoY" if yoy != "—" else "—"
+    return pop_label, yoy_label
+
+
+def format_compact_scaled(scaled_value: float, *, units: str | None = None) -> str:
+    """Format a value that is **already** unit-scaled (chart ticks)."""
+    _, currency = unit_scale(units)
+    unit = (units or "").strip().lower()
+    if any(tok in unit for tok in ("percent", "%", "ratio", "index")) and "dollar" not in unit:
+        sign = "-" if scaled_value < 0 else ""
+        body = f"{abs(scaled_value):.2f}".rstrip("0").rstrip(".")
+        suffix = "%" if "percent" in unit or unit == "%" else ""
+        return f"{sign}{body}{suffix}"
+    sign = "-" if scaled_value < 0 else ""
+    mag = abs(scaled_value)
+    prefix = "$" if currency else ""
+    if mag >= 1_000_000_000_000:
+        body = f"{mag / 1_000_000_000_000:.2f}".rstrip("0").rstrip(".")
+        return f"{sign}{prefix}{body}T"
+    if mag >= 1_000_000_000:
+        body = f"{mag / 1_000_000_000:.2f}".rstrip("0").rstrip(".")
+        return f"{sign}{prefix}{body}B"
+    if mag >= 1_000_000:
+        body = f"{mag / 1_000_000:.2f}".rstrip("0").rstrip(".")
+        return f"{sign}{prefix}{body}M"
+    if mag >= 10_000:
+        body = f"{mag / 1_000:.2f}".rstrip("0").rstrip(".")
+        return f"{sign}{prefix}{body}K"
+    return f"{sign}{prefix}{format_value(mag)}"
+
+
+def _compact_yticks(
+    values: Sequence[float], *, units: str | None = None
+) -> tuple[list[float], list[str]]:
+    if not values:
+        return [], []
+    lo, hi = min(values), max(values)
+    if lo == hi:
+        return [lo], [format_compact_scaled(lo, units=units)]
+    span = hi - lo
+    step = span / 4.0
+    ticks = [lo + step * i for i in range(5)]
+    return ticks, [format_compact_scaled(t, units=units) for t in ticks]
 
 
 def format_period(stamp: Any, frequency: Optional[str] = None) -> str:
@@ -488,6 +687,8 @@ def plot_history(
     plt.ylabel("")
     drawn = 0
     units = ""
+    all_values: list[float] = []
+    cursor_point: tuple[str, float] | None = None
     names = line_labels(recs)
     for i, (rec, name) in enumerate(zip(recs, names)):
         times, values = history_points(rec)
@@ -495,25 +696,64 @@ def plot_history(
             continue
         if not units:
             units = str(rec.get("units") or "").strip()
+        scale, _ = unit_scale(units)
+        # Skip scaling for percent-like units (handled as identity in unit_scale).
+        unit_l = units.lower()
+        if any(tok in unit_l for tok in ("percent", "%", "ratio", "index")) and "dollar" not in unit_l:
+            scale = 1.0
+        scaled = [v * scale for v in values]
+        all_values.extend(scaled)
         plt.date_form(CHART_DATE_FORM)
-        draw = plt.scatter if len(values) == 1 else plt.plot
+        draw = plt.scatter if len(scaled) == 1 else plt.plot
         if colors and i < len(colors):
             color = colors[i]
         elif len(recs) == 1:
             color = CHART_LINE_COLOR
         else:
             color = CHART_PALETTE[i % len(CHART_PALETTE)]
-        draw(times, values, marker="braille", label=name, color=color)
+        draw(times, scaled, marker="braille", label=name, color=color)
         drawn += 1
+        if cursor_date is not None and cursor_point is None:
+            target = _naive(cursor_date).strftime("%Y-%m-%d")
+            for t, v in zip(times, scaled):
+                if t == target:
+                    cursor_point = (t, v)
+                    break
     if not drawn:
         plt.title("No observations")
         return False
-    plt.ylabel(units)
+    y_ticks, y_labels = _compact_yticks(all_values, units=units)
+    if y_ticks:
+        try:
+            plt.yticks(y_ticks, y_labels)
+        except Exception:  # noqa: BLE001
+            pass
+    # Axis label: prefer currency when we scaled thousands/millions of dollars.
+    _, currency = unit_scale(units)
+    if currency and unit_scale(units)[0] != 1.0:
+        plt.ylabel("USD")
+    else:
+        plt.ylabel(units)
     ticks, labels = calendar_xticks(recs)
     if ticks:
         plt.xticks(ticks, labels)
     if cursor_date is not None:
-        plt.vline(_naive(cursor_date).strftime("%Y-%m-%d"))
+        day = _naive(cursor_date).strftime("%Y-%m-%d")
+        try:
+            plt.vline(day)
+        except Exception:  # noqa: BLE001
+            pass
+        # Bright marker so h/l movement is visible on the series, not just a line.
+        if cursor_point is not None:
+            try:
+                plt.scatter(
+                    [cursor_point[0]],
+                    [cursor_point[1]],
+                    marker="hd",
+                    color=(250, 250, 250),
+                )
+            except Exception:  # noqa: BLE001
+                pass
     return True
 
 
@@ -550,13 +790,14 @@ class ObservationRow(ListItem):
 
     def compose(self) -> ComposeResult:
         freq = self.record.get("frequency")
+        units = self.record.get("units")
         period = format_period(self.obs.get("observation_timestamp"), freq)
         raw = self.obs.get("value")
-        value = format_value(raw)
+        value = format_exact(raw, units=units)
         released = format_release(self.obs.get("release_timestamp"))
         classes = "obs-row obs-missing" if raw is None else "obs-row"
         yield Label(
-            f"{period:<14}{value:>14}{released:>16}",
+            f"{period:<14}{value:>18}{released:>16}",
             classes=classes,
         )
 
@@ -667,8 +908,11 @@ class QueryScreen(BaseScreen):
         Binding("a", "annotate", "Annotate", show=False),
         Binding("t", "mode_table", "Table", show=False),
         Binding("c", "mode_chart", "Chart", show=False),
-        Binding("d", "mode_definition", "Definition", show=False),
-        Binding("v", "mode_raw", "Raw / History", show=False),
+        Binding("v", "mode_sources", "Sources", show=False),
+        Binding("d", "mode_sources", "Sources", show=False),
+        Binding("e", "mode_edit", "Edit", show=False),
+        Binding("plus", "add_compare", "Add compare", show=False),
+        Binding("=", "add_compare", "Add compare", show=False),
         Binding("space", "collect", "Collect into workspace", show=False),
         Binding("j", "cursor_down", "Cursor Down", show=False),
         Binding("k", "cursor_up", "Cursor Up", show=False),
@@ -688,73 +932,62 @@ class QueryScreen(BaseScreen):
     FOOTER_CHROME: tuple[str, ...] = BaseScreen.FOOTER_CHROME
 
     DEFAULT_CSS = """
-    #query-body { height: 1fr; padding: 1 2 0 2; }
-    #query-kicker { color: #4ade80; text-style: bold; height: 1; }
-    #query-title { color: #e0e0e0; text-style: bold; height: 1; }
-    #query-spec { color: #888; height: 1; }
-    #query-layers { color: #666; height: 1; margin-bottom: 0; }
-    #query-annotations {
-        color: #c0c0c0;
-        height: auto;
-        max-height: 8;
-        margin-bottom: 1;
-        border-top: solid #222;
-        padding-top: 1;
+    #query-body { height: 1fr; padding: 0 2 0 2; }
+    #query-title { color: #f5f5f5; text-style: bold; height: 1; margin-top: 1; }
+    #query-subtitle { color: #a0a0a0; height: 1; }
+    #query-layers {
+        color: #666;
+        height: 1;
+        margin: 1 0;
     }
-    #query-status { color: #888; height: 1; margin-bottom: 1; }
-    #query-summary {
-        height: 7;
-        background: #111a14;
-        padding: 0 1;
-        margin-bottom: 1;
+    #query-headline {
+        height: 2;
+        margin-bottom: 0;
         display: none;
     }
-    #sum-kicker { color: #4ade80; height: 1; }
-    #sum-cols { height: 4; }
-    #sum-left, #sum-right { width: 1fr; height: 4; }
-    #sum-latest-kicker { color: #888; height: 1; }
-    #sum-latest-value { color: #f5f5f5; text-style: bold; height: 1; }
-    #sum-units { color: #888; height: 1; }
-    #sum-cov-kicker { color: #888; height: 1; }
-    #sum-cov-value { color: #f5f5f5; text-style: bold; height: 1; }
-    #sum-cov-meta { color: #888; height: 1; }
-    #sum-foot { color: #666; height: 1; }
-    #query-cursor {
-        height: 4;
-        background: #111a14;
-        padding: 0 1;
-        margin-bottom: 1;
-        display: none;
-    }
-    #cur-kicker { color: #4ade80; height: 1; }
-    #cur-period { color: #e0e0e0; text-style: bold; height: 1; }
-    #cur-meta { color: #888; height: 1; }
-    #cur-compare { color: #c0c0c0; height: 1; }
-    #cur-value { color: #86efac; text-style: bold; height: 1; text-align: right; }
-    #cur-left { width: 1fr; }
-    #cur-right { width: 16; }
-    #query-main { height: 1fr; }
+    #hl-values { color: #f5f5f5; text-style: bold; height: 1; }
+    #hl-meta { color: #888; height: 1; }
+    #query-status { color: #666; height: 1; display: none; }
+    #query-main { height: 1fr; min-height: 12; }
     #query-series {
-        width: 28;
+        width: 22;
         height: 1fr;
         background: #0f0f0f;
         display: none;
         border-right: solid #222;
     }
     #query-pane { width: 1fr; height: 1fr; }
-    #query-pane-kicker { color: #4ade80; text-style: bold; height: 1; margin-bottom: 1; }
     #query-obs-header { color: #888; height: 1; }
     #query-obs { height: 1fr; background: #0a0a0a; }
     #query-chart {
         height: 1fr;
         width: 1fr;
+        min-height: 14;
         display: none;
+    }
+    #query-obs-strip {
+        height: 2;
+        margin-top: 0;
+        display: none;
+    }
+    #strip-line1 { color: #e0e0e0; height: 1; }
+    #strip-line2 { color: #888; height: 1; }
+    #query-annotations {
+        color: #c0c0c0;
+        height: 5;
+        min-height: 4;
+        max-height: 8;
+        margin-top: 1;
+        border-top: solid #222;
+        padding-top: 0;
+        overflow-y: auto;
     }
     #query-raw {
         height: 1fr;
         color: #c0c0c0;
         display: none;
     }
+    #query-edit { height: 1fr; width: 1fr; display: none; }
     .obs-row { width: 100%; height: 1; color: #e0e0e0; }
     .obs-missing { color: #666; }
     .series-nav-row { width: 100%; height: 1; color: #d0d0d0; }
@@ -796,45 +1029,16 @@ class QueryScreen(BaseScreen):
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="query-body"):
-            yield Label("QUERY", id="query-kicker")
             yield Label("", id="query-title")
-            yield Static("", id="query-spec")
-            yield Static(
-                "[Chart] [Table] [Definition] [History]",
-                id="query-layers",
-                markup=True,
-            )
-            yield Static("", id="query-annotations", markup=True)
-            yield Static(
-                "Loading…",
-                id="query-status",
-                markup=True,
-            )
-            with Vertical(id="query-summary"):
-                yield Label("", id="sum-kicker")
-                with Horizontal(id="sum-cols"):
-                    with Vertical(id="sum-left"):
-                        yield Label("", id="sum-latest-kicker")
-                        yield Label("—", id="sum-latest-value")
-                        yield Label("", id="sum-units")
-                    with Vertical(id="sum-right"):
-                        yield Label("Historical coverage", id="sum-cov-kicker")
-                        yield Label("—", id="sum-cov-value")
-                        yield Label("", id="sum-cov-meta")
-                yield Label("", id="sum-foot")
-            with Horizontal(id="query-cursor"):
-                with Vertical(id="cur-left"):
-                    yield Label("SELECTED OBSERVATION          h / l", id="cur-kicker")
-                    yield Label("", id="cur-period")
-                    yield Label("", id="cur-meta")
-                    yield Label("", id="cur-compare")
-                with Vertical(id="cur-right"):
-                    yield Label("")
-                    yield Label("—", id="cur-value")
+            yield Label("", id="query-subtitle")
+            yield Static("", id="query-layers", markup=True)
+            with Vertical(id="query-headline"):
+                yield Label("", id="hl-values")
+                yield Label("", id="hl-meta")
+            yield Static("", id="query-status", markup=True)
             with Horizontal(id="query-main"):
                 yield ListView(id="query-series")
                 with Vertical(id="query-pane"):
-                    yield Label("OBSERVATIONS", id="query-pane-kicker")
                     yield Label(
                         f"{'Period':<14}{'Value':>14}{'Released':>16}",
                         id="query-obs-header",
@@ -843,6 +1047,11 @@ class QueryScreen(BaseScreen):
                     yield HistoryPlot(id="query-chart")
                     with VerticalScroll(id="query-raw"):
                         yield Static("", id="query-raw-body")
+                    yield QueryEditor(self.client, id="query-edit")
+            with Vertical(id="query-obs-strip"):
+                yield Label("", id="strip-line1")
+                yield Label("", id="strip-line2")
+            yield Static("", id="query-annotations", markup=True)
 
     def on_mount(self) -> None:
         super().on_mount()
@@ -861,40 +1070,42 @@ class QueryScreen(BaseScreen):
         return []
 
     def footer_action_keys(self) -> list[str]:
+        if self._mode == "edit":
+            return [
+                "[bold #e0e0e0]ctrl+s[/] [#888]update[/]",
+                "[bold #e0e0e0]ctrl+n[/] [#888]save as new[/]",
+                "[bold #e0e0e0]esc[/] [#888]cancel[/]",
+            ]
         keys = [
-            "[bold #e0e0e0]r[/] [#888]run[/]",
+            "[bold #e0e0e0]c[/]/[bold #e0e0e0]t[/]/[bold #e0e0e0]v[/]/[bold #e0e0e0]e[/] [#888]views[/]",
             "[bold #e0e0e0]a[/] [#888]annotate[/]",
         ]
         if self._loaded:
-            keys.extend(
-                [
-                    "[bold #e0e0e0]t[/] [#888]table[/]",
-                    "[bold #e0e0e0]c[/] [#888]chart[/]",
-                    "[bold #e0e0e0]v[/] [#888]raw[/]",
-                    "[bold #e0e0e0]j[/]/[bold #e0e0e0]k[/] [#888]move[/]",
-                ]
-            )
             if self._mode == "chart":
                 keys.extend(
                     [
-                        "[bold #e0e0e0]h[/]/[bold #e0e0e0]l[/] [#888]obs[/]",
-                        "[bold #e0e0e0]x[/] [#888]hide[/]",
+                        "[bold #e0e0e0]h[/]/[bold #e0e0e0]l[/] [#888]period[/]",
+                        "[bold #e0e0e0]+[/] [#888]compare[/]",
                     ]
                 )
-                if len(self._groups) > 1:
-                    keys.append("[bold #e0e0e0]\\[\\][/] [#888]group[/]")
             if self._mode == "table":
                 keys.append("[bold #e0e0e0]o[/] [#888]sort[/]")
-            keys.extend(
-                [
-                    "[bold #e0e0e0]d[/] [#888]definition[/]",
-                    "[bold #e0e0e0]E[/] [#888]csv[/]",
-                    "[bold #e0e0e0]y[/] [#888]python[/]",
-                    "[bold #e0e0e0]↵[/] [#888]inspect[/]",
-                    "[bold #e0e0e0]space[/] [#888]collect[/]",
-                ]
-            )
         return keys
+
+    def shell_breadcrumb(self) -> str:
+        try:
+            query = self._resolve_query()
+        except Exception:
+            return "Query"
+        tag = f"Q{query.id}" if query.id else "Draft"
+        name = query.name or tag
+        mode = {
+            "chart": "Chart",
+            "table": "Table",
+            "sources": "Sources",
+            "edit": "Edit",
+        }.get(self._mode, "Chart")
+        return f"{tag} · {name} · {mode}"
 
     def refresh_footer(self) -> None:
         parts = [*self.footer_action_keys(), *self.FOOTER_CHROME]
@@ -912,21 +1123,23 @@ class QueryScreen(BaseScreen):
         try:
             query = self._resolve_query()
         except Exception as exc:
-            self.query_one("#query-kicker", Label).update("QUERY")
             self.query_one("#query-title", Label).update(str(exc))
             return
-        tag = f"Q{query.id}" if query.id else "WORKSPACE"
-        title = escape(query.name) if query.name else tag
-        self.query_one("#query-kicker", Label).update(f"QUERY / {tag}")
+        tag = f"Q{query.id}" if query.id else "Draft"
+        if query.name:
+            title = f"{tag} · {escape(query.name)}"
+        else:
+            title = tag
         self.query_one("#query-title", Label).update(title)
-        self.query_one("#query-spec", Static).update(query_spec_line(query))
+        # Spec line is Sources material — keep subtitle empty until load.
+        self.query_one("#query-subtitle", Label).update("")
         self._render_annotations(query)
-        self.query_one("#query-summary").display = False
-        self.query_one("#query-cursor").display = False
+        self.query_one("#query-headline").display = False
+        self.query_one("#query-obs-strip").display = False
 
     def _render_annotations(self, query: Query) -> None:
         panel = self.query_one("#query-annotations", Static)
-        lines: list[str] = ["[bold #4ade80]ANNOTATIONS[/]"]
+        lines: list[str] = ["[dim]── Research notes ──[/]"]
         if query.annotations:
             lines.append(escape(query.annotations))
         for i, note in enumerate(query.notes_on or [], start=1):
@@ -937,16 +1150,14 @@ class QueryScreen(BaseScreen):
             lines.append(
                 f"[bold]{i:02d}[/] {escape(note.text)}[dim]{series}{span}[/]"
             )
-        if len(lines) == 1 and query.id:
-            body = annotations_panel(query.annotations)
+        if len(lines) == 1:
+            body = annotations_panel(query.annotations) if query.id else ""
             if body:
                 lines.append(body)
             else:
-                lines.append("[dim](none — press a to annotate)[/]")
-        elif len(lines) == 1:
-            lines.append("[dim](none)[/]")
+                lines.append("[dim]No annotations yet. Press a to annotate.[/]")
         panel.update("\n".join(lines))
-        panel.display = True
+        panel.display = self._mode not in {"sources", "edit"}
 
     def refresh_annotations(self) -> None:
         """Host hook after annotation edits."""
@@ -975,6 +1186,29 @@ class QueryScreen(BaseScreen):
             if self._mode == "chart":
                 flags.add("chart")
         return flags
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if self._mode == "edit":
+            # Chart/table navigation keys belong to the editor while editing.
+            if action in {
+                "inspect",
+                "cursor_down",
+                "cursor_up",
+                "obs_left",
+                "obs_right",
+                "toggle_series",
+                "toggle_sort",
+                "add_compare",
+                "collect",
+                "load",
+                "annotate",
+                "export_csv",
+                "copy_python",
+                "prev_group",
+                "next_group",
+            }:
+                return False
+        return True
 
     def action_load(self) -> None:
         try:
@@ -1078,8 +1312,8 @@ class QueryScreen(BaseScreen):
     def _show_selected(self) -> None:
         record = self._selected_record()
         if record is None:
-            self.query_one("#query-summary").display = False
-            self.query_one("#query-cursor").display = False
+            self.query_one("#query-headline").display = False
+            self.query_one("#query-obs-strip").display = False
             self.query_one("#query-obs", ListView).clear()
             self.query_one("#query-chart", HistoryPlot).plot_records(None)
             self.query_one("#query-raw-body", Static).update("{}")
@@ -1095,68 +1329,60 @@ class QueryScreen(BaseScreen):
         )
         for obs in rows:
             obs_list.append(ObservationRow(record, obs))
-        self.query_one("#query-raw-body", Static).update(
-            json.dumps(record, indent=2, default=str)
-        )
-        self._render_summary()
+        self._render_headline()
         self._render_chart()
-        self._render_cursor()
+        self._render_obs_strip()
+        self._render_sources_body()
         self._apply_mode()
 
-    def _render_summary(self) -> None:
-        record = self._selected_record()
-        group = self._selected_group()
-        panel = self.query_one("#query-summary")
+    def _query_title_line(self, query: Query, record: Optional[dict[str, Any]]) -> str:
+        tag = f"Q{query.id}" if query.id else "Draft"
+        if query.name:
+            return f"{tag} · {escape(query.name)}"
+        if record is not None:
+            return f"{tag} · {escape(record_title(record))}"
+        return tag
+
+    def _context_subtitle(self, record: Optional[dict[str, Any]]) -> str:
+        """Entity · frequency — not a repeat of the query/metric title."""
         if record is None:
+            return ""
+        entities = record.get("entities") or []
+        entity = ""
+        if entities:
+            entity = str(entities[0].get("label") or entities[0].get("id") or "")
+        freq = str(record.get("frequency") or "")
+        bits = [b for b in (entity, freq) if b]
+        return " · ".join(bits)
+
+    def _render_headline(self) -> None:
+        record = self._selected_record()
+        panel = self.query_one("#query-headline")
+        try:
+            query = self._resolve_query()
+        except Exception:
+            query = None
+        if record is None or query is None:
             panel.display = False
             return
-        panel.display = True
-        title = record_title(record)
-        if self._mode == "chart" and group is not None and len(group.records) > 1:
-            title = plot_group_title(group)
-        self.query_one("#query-title", Label).update(title)
-        self.query_one("#sum-kicker", Label).update(title.upper())
+        panel.display = self._mode == "chart"
+        self.query_one("#query-title", Label).update(
+            self._query_title_line(query, record)
+        )
+        self.query_one("#query-subtitle", Label).update(
+            self._context_subtitle(record)
+        )
         last = record.get("last") or {}
-        freq = record.get("frequency") or ""
-        units = record.get("units") or ""
+        units = str(record.get("units") or "")
+        freq = str(record.get("frequency") or "")
         period = format_period(last.get("observation_timestamp"), freq)
-        self.query_one("#sum-latest-kicker", Label).update(
-            f"Latest · {period}" if period != "—" else "Latest"
+        value = format_compact(last.get("value"), units=units)
+        pop, yoy = headline_changes(record)
+        self.query_one("#hl-values", Label).update(
+            f"{value}     {pop}     {yoy}"
         )
-        self.query_one("#sum-latest-value", Label).update(
-            format_value(last.get("value"))
-        )
-        bits = [p for p in (units, freq) if p]
-        self.query_one("#sum-units", Label).update(" · ".join(bits))
-        span_records = (
-            list(group.records)
-            if self._mode == "chart" and group is not None
-            else [record]
-        )
-        n = sum(int(r.get("n_observations") or 0) for r in span_records)
-        self.query_one("#sum-cov-value", Label).update(coverage_years(span_records))
-        self.query_one("#sum-cov-meta", Label).update(
-            f"{n} observation" + ("" if n == 1 else "s")
-        )
-        released = format_release(last.get("release_timestamp"), short=True)
-        sources = []
-        for rec in span_records:
-            src = str(rec.get("source") or "").strip()
-            if src and src not in sources:
-                sources.append(src)
-        source = sources[0] if len(sources) == 1 else " · ".join(sources[:2])
-        foot = []
-        if released != "—":
-            foot.append(f"Latest released {released}")
-        if source:
-            foot.append(f"Source: {source}")
-        if self._mode == "chart" and group is not None and len(self._groups) > 1:
-            foot.append(
-                f"Other units not overlaid ({len(self._groups) - 1} group"
-                + ("s" if len(self._groups) > 2 else "")
-                + ")"
-            )
-        self.query_one("#sum-foot", Label).update(" · ".join(foot))
+        # Period only under the headline — units live in Sources / strip.
+        self.query_one("#hl-meta", Label).update(period)
 
     def _render_chart(self) -> None:
         visible = self._visible_records()
@@ -1172,8 +1398,8 @@ class QueryScreen(BaseScreen):
             visible, cursor_date=self._cursor_day(), colors=colors
         )
 
-    def _render_cursor(self) -> None:
-        strip = self.query_one("#query-cursor")
+    def _render_obs_strip(self) -> None:
+        strip = self.query_one("#query-obs-strip")
         if self._mode != "chart" or not self._visible_records():
             strip.display = False
             return
@@ -1181,94 +1407,146 @@ class QueryScreen(BaseScreen):
         day = self._cursor_day()
         record = self._selected_record()
         freq = (record or {}).get("frequency") if record else None
+        units = (record or {}).get("units") if record else None
         if day is None:
-            self.query_one("#cur-period", Label).update("No observations")
-            self.query_one("#cur-value", Label).update("—")
-            self.query_one("#cur-meta", Label).update("")
-            self.query_one("#cur-compare", Label).update("")
+            self.query_one("#strip-line1", Label).update("No observations")
+            self.query_one("#strip-line2", Label).update("")
             return
-        self.query_one("#cur-period", Label).update(format_period(day, freq))
-        primary = None
+        primary = (
+            observation_on_date(record, day) if record is not None else None
+        )
+        exact = format_exact(
+            primary.get("value") if primary else None, units=units
+        )
+        self.query_one("#strip-line1", Label).update(
+            f"◀ {format_period(day, freq)} ▶     {exact}"
+        )
+        meta = f"Observed {format_release(day)}"
+        if primary:
+            meta += (
+                f" · Reported "
+                f"{format_release(primary.get('release_timestamp'))}"
+            )
+        else:
+            meta += " · missing for selected series"
+        self.query_one("#strip-line2", Label).update(meta)
+
+    def _render_sources_body(self) -> None:
+        try:
+            query = self._resolve_query()
+        except Exception as exc:
+            self.query_one("#query-raw-body", Static).update(str(exc))
+            return
+        record = self._selected_record()
+        coverage = (
+            coverage_status(query, self._records) if self._records else "Not run yet"
+        )
+        lines = [
+            "── Query details ──",
+            query_spec_line(query),
+            coverage,
+            f"Span: {coverage_years(self._records)}",
+            "",
+            "── Spec ──",
+            json.dumps(query.to_dict(), indent=2, default=str),
+        ]
         if record is not None:
-            primary = observation_on_date(record, day)
-        self.query_one("#cur-value", Label).update(
-            format_value(primary.get("value") if primary else None)
-        )
-        self.query_one("#cur-meta", Label).update(
-            f"Observed {format_release(day)}"
-            + (
-                f"  ·  Released {format_release(primary.get('release_timestamp'))}"
-                if primary
-                else "  ·  missing for selected series"
+            lines.extend(
+                [
+                    "",
+                    "── Selected series ──",
+                    json.dumps(
+                        {
+                            k: record.get(k)
+                            for k in (
+                                "id",
+                                "label",
+                                "metric_id",
+                                "entities",
+                                "frequency",
+                                "units",
+                                "source",
+                                "n_observations",
+                            )
+                        },
+                        indent=2,
+                        default=str,
+                    ),
+                ]
             )
-        )
-        bits = []
-        for rec in self._visible_records():
-            obs = observation_on_date(rec, day)
-            bits.append(
-                f"{series_line_label(rec)} {format_value(obs.get('value') if obs else None)}"
-            )
-        self.query_one("#cur-compare", Label).update("  ·  ".join(bits))
+        self.query_one("#query-raw-body", Static).update("\n".join(lines))
 
     def _apply_mode(self) -> None:
         table = self._mode == "table"
         chart = self._mode == "chart"
-        raw = self._mode in ("raw", "definition")
+        sources = self._mode == "sources"
+        edit = self._mode == "edit"
         self.query_one("#query-obs-header").display = table
         self.query_one("#query-obs").display = table
         self.query_one("#query-chart").display = chart
-        self.query_one("#query-raw").display = raw
-        self.query_one("#query-cursor").display = (
+        self.query_one("#query-raw").display = sources
+        editor = self.query_one("#query-edit", QueryEditor)
+        if edit:
+            editor.display = True
+            editor.add_class("-visible")
+        else:
+            if editor.display or editor.has_class("-visible"):
+                editor.hide_editor()
+        self.query_one("#query-headline").display = (
+            chart and self._loaded and self._selected_record() is not None
+        )
+        self.query_one("#query-obs-strip").display = (
             chart and self._loaded and bool(self._visible_records())
         )
-        # Layer strip highlight
-        layers = {
-            "chart": "[bold #4ade80]\\[Chart\\][/] [Table] [Definition] [History]",
-            "table": "[Chart] [bold #4ade80]\\[Table\\][/] [Definition] [History]",
-            "definition": "[Chart] [Table] [bold #4ade80]\\[Definition\\][/] [History]",
-            "raw": "[Chart] [Table] [Definition] [bold #4ade80]\\[History\\][/]",
-        }
         try:
-            self.query_one("#query-layers", Static).update(
-                layers.get(self._mode, layers["chart"])
-            )
+            self.query_one("#query-annotations").display = not sources and not edit
         except Exception:  # noqa: BLE001
             pass
-        if self._mode == "definition":
-            try:
-                query = self._resolve_query()
-                body = json.dumps(query.to_dict(), indent=2, default=str)
-                self.query_one("#query-raw-body", Static).update(body)
-            except Exception as exc:  # noqa: BLE001
-                self.query_one("#query-raw-body", Static).update(str(exc))
+        if edit:
+            self.query_one("#query-series").display = False
+            self.query_one("#query-title").display = False
+            self.query_one("#query-subtitle").display = False
+        else:
+            self.query_one("#query-title").display = True
+            self.query_one("#query-subtitle").display = True
+        # Tab strip — Chart / Table / Sources / Edit
+        def _tab(active: str) -> str:
+            parts = []
+            for key, label in (
+                ("chart", "Chart"),
+                ("table", "Table"),
+                ("sources", "Sources"),
+                ("edit", "Edit"),
+            ):
+                if key == active:
+                    parts.append(f"[bold #86efac on #163324] {label} [/]")
+                else:
+                    parts.append(f"[#888]{label}[/]")
+            return "  ".join(parts)
+
+        try:
+            self.query_one("#query-layers", Static).update(_tab(self._mode))
+        except Exception:  # noqa: BLE001
+            pass
         order = "latest first" if self._newest_first else "oldest first"
         self.query_one("#query-obs-header", Label).update(
             f"{'Period':<14}{'Value':>14}{'Released':>16}     {order}"
         )
-        if chart:
-            group = self._selected_group()
-            kicker = "CHART"
-            if group is not None:
-                extra = plot_group_label(group)
-                n = len(self._visible_records())
-                hidden = len(group.records) - n
-                if n > 1:
-                    extra += f"  ·  {n} series"
-                if hidden > 0:
-                    extra += f"  ·  {hidden} hidden"
-                kicker = f"CHART     {extra}"
-        else:
-            kicker = {
-                "table": f"OBSERVATIONS     {order}",
-                "raw": "RAW JSON",
-            }[self._mode]
-        self.query_one("#query-pane-kicker", Label).update(kicker)
-        if table:
+        if edit:
+            pass  # focus set by show_editor
+        elif table:
             self.query_one("#query-obs", ListView).focus()
         elif chart and self.query_one("#query-series").display:
             self.query_one("#query-series", ListView).focus()
-        elif len(self._records) > 1:
+        elif len(self._records) > 1 and not sources:
             self.query_one("#query-series", ListView).focus()
+        try:
+            refresh = getattr(self.app, "refresh_shell_chrome", None)
+            if callable(refresh):
+                refresh(self)
+        except Exception:  # noqa: BLE001
+            pass
+        self.refresh_footer()
 
     def action_mode_table(self) -> None:
         self._mode = "table"
@@ -1280,15 +1558,133 @@ class QueryScreen(BaseScreen):
         self._fill_nav()
         self._show_selected()
 
-    def action_mode_raw(self) -> None:
-        self._mode = "raw"
+    def action_mode_sources(self) -> None:
+        self._mode = "sources"
         self._fill_nav()
         self._show_selected()
 
+    def action_mode_edit(self) -> None:
+        """Enter the in-pane query editor (fourth view)."""
+        if self.query_id is None:
+            self.notify("Save as a query first to edit it", severity="warning")
+            return
+        try:
+            query = self._resolve_query()
+        except Exception as exc:
+            self.notify(str(exc), severity="error")
+            return
+        inv = getattr(self.app, "investigation", None)
+        if inv is None:
+            self.notify("No investigation loaded", severity="error")
+            return
+        editor = self.query_one("#query-edit", QueryEditor)
+        active = getattr(self.app, "active", None)
+        editor.show_editor(
+            query,
+            investigation=inv,
+            app_dir=getattr(self.app, "app_dir", None),
+            project_id=getattr(self.app, "project_id", None),
+            investigation_id=getattr(active, "investigation", None) if active else None,
+            labels=getattr(self.app, "labels", None) or {},
+        )
+        self._mode = "edit"
+        self._apply_mode()
+
+    def action_mode_raw(self) -> None:
+        self.action_mode_sources()
+
     def action_mode_definition(self) -> None:
-        self._mode = "definition"
+        self.action_mode_sources()
+
+    @on(QueryEditor.Applied)
+    def _editor_applied(self, event: QueryEditor.Applied) -> None:
+        event.stop()
+        qid = event.query_id
+        mode = event.mode
+        self.query_one("#query-edit", QueryEditor).hide_editor()
+        open_fn = getattr(self.app, "open_query_view", None)
+        if mode == "new" and callable(open_fn):
+            open_fn(qid)
+        else:
+            self.query_id = qid
+            self._mode = "chart"
+            self._loaded = False
+            self._apply_mode()
+            self._render_idle()
+            self.call_later(self.action_load)
+        refresh = getattr(self.app, "refresh_shell_chrome", None)
+        if callable(refresh):
+            refresh()
+        self.notify("Query updated" if mode == "update" else f"Saved as Q{qid}")
+
+    @on(QueryEditor.Cancelled)
+    def _editor_cancelled(self, event: QueryEditor.Cancelled) -> None:
+        event.stop()
+        self.query_one("#query-edit", QueryEditor).hide_editor()
+        self._mode = "chart"
         self._fill_nav()
         self._show_selected()
+        self._apply_mode()
+
+    def action_add_compare(self) -> None:
+        """Append an entity to this draft query and re-run (exploratory compare)."""
+        if self.query_id is None:
+            self.notify("Open a draft query first", severity="warning")
+            return
+        try:
+            query = self._resolve_query()
+        except Exception as exc:
+            self.notify(str(exc), severity="error")
+            return
+        from ..investigation.resource_picker import ResourcePickerModal
+
+        def _done(result: object | None) -> None:
+            if not isinstance(result, dict):
+                return
+            rid = str(result.get("id") or "")
+            if not rid:
+                return
+            if rid in query.entity:
+                self.notify(f"{rid} already in query", severity="warning")
+                return
+            query.entity = list(query.entity) + [rid]
+            from ..investigation.api import persist_investigation
+            from ..investigation.naming import suggest_query_name
+
+            labels = getattr(self.app, "labels", {}) or {}
+            if result.get("label"):
+                labels[rid] = str(result["label"])
+                remember = getattr(self.app, "remember_label", None)
+                if callable(remember):
+                    remember(rid, str(result["label"]))
+            query.name = suggest_query_name(
+                query.metric, query.entity, labels=labels
+            )
+            persist_investigation(
+                getattr(self.app, "investigation"),
+                app_dir=getattr(self.app, "app_dir", None),
+            )
+            self.notify(f"Added {labels.get(rid, rid)} — re-running")
+            self.action_load()
+            refresh = getattr(self.app, "refresh_shell_chrome", None)
+            if callable(refresh):
+                refresh()
+
+        client = getattr(self.app, "client", None)
+        if client is None:
+            return
+        active = getattr(self.app, "active", None)
+        self.app.push_screen(
+            ResourcePickerModal(
+                client,
+                "entity",
+                app_dir=getattr(self.app, "app_dir", None),
+                project_id=getattr(self.app, "project_id", None),
+                investigation_id=getattr(active, "investigation", None) if active else None,
+                title="Compare entity",
+            ),
+            _done,
+        )
 
     def action_obs_left(self) -> None:
         dates = cursor_dates(self._visible_records())
@@ -1298,7 +1694,7 @@ class QueryScreen(BaseScreen):
             self._cursor_i = len(dates) - 1
         self._cursor_i = max(0, self._cursor_i - 1)
         self._render_chart()
-        self._render_cursor()
+        self._render_obs_strip()
 
     def action_obs_right(self) -> None:
         dates = cursor_dates(self._visible_records())
@@ -1308,7 +1704,7 @@ class QueryScreen(BaseScreen):
             self._cursor_i = len(dates) - 1
         self._cursor_i = min(len(dates) - 1, self._cursor_i + 1)
         self._render_chart()
-        self._render_cursor()
+        self._render_obs_strip()
 
     def action_toggle_series(self) -> None:
         if self._mode != "chart":
@@ -1441,7 +1837,9 @@ class QueryScreen(BaseScreen):
             "inspect",
             "mode_table",
             "mode_chart",
+            "mode_sources",
             "mode_raw",
+            "add_compare",
             "obs_left",
             "obs_right",
             "toggle_series",
@@ -1487,8 +1885,9 @@ QUERY_VIEW = register(
         id="query",
         name="Query",
         description=(
-            "Run a saved cartesian query and inspect observations as a table, "
-            "chart, or raw JSON. Idle until r; space collects."
+            "Chart-first observation workbench for a draft or saved query. "
+            "Auto-runs when opened; c/t/v/e switch Chart/Table/Sources/Edit; "
+            "+ adds a comparison entity."
         ),
         create_screen=create_query_screen,
         arguments=(
@@ -1499,14 +1898,15 @@ QUERY_VIEW = register(
             ),
         ),
         bindings=(
-            ActionBinding("r", "load", "Execute GET /query"),
+            ActionBinding("r", "load", "Re-run GET /query"),
             ActionBinding("a", "annotate", "Edit query annotations"),
-            ActionBinding("t / c / v", "mode", "Table, chart, or raw JSON"),
+            ActionBinding("c / t / v / e", "mode", "Chart, table, sources, or edit"),
+            ActionBinding("+", "add_compare", "Add comparison entity and re-run"),
             ActionBinding("h / l", "obs", "Move the observation cursor (chart)"),
             ActionBinding("x", "toggle_series", "Hide or show a series on the chart"),
             ActionBinding("[ / ]", "group", "Cycle incompatible-unit chart groups"),
             ActionBinding("o", "sort", "Toggle observation table sort"),
-            ActionBinding("e", "export_csv", "Write observations to CSV"),
+            ActionBinding("E", "export_csv", "Write observations to CSV"),
             ActionBinding("y", "copy_python", "Copy a Python query snippet"),
             ActionBinding("j / k", "cursor", "Move series or observations"),
             ActionBinding("enter", "inspect", "Inspect the highlighted observation"),

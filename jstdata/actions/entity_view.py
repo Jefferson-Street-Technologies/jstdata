@@ -53,6 +53,43 @@ RELATIONSHIP_TYPES = (
     "has_security",
 )
 
+# Client-side predicate → human group labels (no API / model change).
+_RELATION_LABELS: dict[tuple[str, RelationDirection], str] = {
+    ("part_of", "outgoing"): "Part of",
+    ("part_of", "incoming"): "Contains",
+    ("classified_as", "outgoing"): "Classified as",
+    ("classified_as", "incoming"): "Classified entities",
+    ("has_security", "outgoing"): "Securities",
+    ("has_security", "incoming"): "Issuer",
+    ("equivalent_to", "outgoing"): "Equivalent to",
+    ("equivalent_to", "incoming"): "Equivalent to",
+}
+
+_DEMOTE_METRIC_TOKENS = (
+    "confidence interval",
+    "upper bound",
+    "lower bound",
+    "standard error",
+    "margin of error",
+    "coefficient of variation",
+    "90 percent",
+    "95 percent",
+)
+
+
+def _relation_group_label(rel_name: str, direction: RelationDirection) -> str:
+    return _RELATION_LABELS.get(
+        (rel_name, direction),
+        f"{rel_name.replace('_', ' ').title()} ({direction})",
+    )
+
+
+def _metric_browse_key(metric: Metric) -> tuple[int, str]:
+    """Demote auxiliary statistical measures in the default ordering."""
+    name = (metric.name or metric.id or "").lower()
+    demote = any(tok in name for tok in _DEMOTE_METRIC_TOKENS)
+    return (1 if demote else 0, name)
+
 
 class MetricAssocRow(ListItem):
     def __init__(self, metric: Metric) -> None:
@@ -61,32 +98,29 @@ class MetricAssocRow(ListItem):
 
     def compose(self) -> ComposeResult:
         name = self.metric.name or self.metric.id
-        yield Label(f"{name}  [{self.metric.id}]")
+        freq = ""
+        if self.metric.variants:
+            freq = self.metric.variants[0].frequency or ""
+        # Columnar: name left, frequency right. Truncate long names.
+        short = name if len(name) <= 48 else name[:45] + "…"
+        yield Label(f"{short:<48}  {freq:>10}")
 
 
 class RelationRow(ListItem):
     def __init__(
-        self, rel: EntityRelationship, *, direction: RelationDirection = "outgoing"
+        self,
+        rel: EntityRelationship,
+        *,
+        direction: RelationDirection = "outgoing",
+        label: str | None = None,
     ) -> None:
         super().__init__()
         self.rel = rel
         self.direction = direction
+        self.display_label = label or rel.id
 
     def compose(self) -> ComposeResult:
-        tax = f"  [{self.rel.taxonomy}]" if self.rel.taxonomy else ""
-        rel_name = (
-            self.rel.relationship.value
-            if hasattr(self.rel.relationship, "value")
-            else str(self.rel.relationship)
-        )
-        # Outgoing: this → related. Incoming: related → this (arrow toward self).
-        arrow = "→" if self.direction == "outgoing" else "←"
-        crosswalk = (
-            "  (crosswalk)"
-            if rel_name == "equivalent_to"
-            else ""
-        )
-        yield Label(f"{rel_name:<16} {arrow} {self.rel.id}{tax}{crosswalk}")
+        yield Label(f"  {self.display_label}")
 
 
 class EntityScreen(BaseScreen):
@@ -96,7 +130,7 @@ class EntityScreen(BaseScreen):
         Binding("r", "load", "Load", key_display="r"),
         Binding("f", "focus_filter", "Search metrics", key_display="f"),
         Binding("escape", "leave_filter", "Leave search", show=False),
-        Binding("enter", "confirm", "Open metric / related entity", priority=True),
+        Binding("enter", "confirm", "Open chart / related entity", priority=True),
         Binding("j", "cursor_down", "Cursor Down", show=False),
         Binding("k", "cursor_up", "Cursor Up", show=False),
         Binding("tab", "cycle_pane", "Metrics / relations", priority=True),
@@ -107,6 +141,8 @@ class EntityScreen(BaseScreen):
             show=False,
             priority=True,
         ),
+        Binding("m", "focus_metrics", "Metrics tab", show=False),
+        Binding("R", "focus_relations", "Relations tab", show=False),
         Binding("space", "collect", "Collect highlighted metric", show=False),
         Binding("a", "collect_self", "Add this entity to workspace", show=False),
     ]
@@ -114,42 +150,30 @@ class EntityScreen(BaseScreen):
     DEFAULT_CSS = """
     #entity-body {
         height: 1fr;
-    }
-    .pane-container {
-        border: solid #222;
-        background: #0f0f0f;
-        height: 1fr;
-    }
-    .pane-header {
-        background: #1a1a1a;
-        color: #4ade80;
         padding: 0 1;
+    }
+    #entity-title {
+        color: #f5f5f5;
         text-style: bold;
         height: 1;
+        margin-top: 1;
     }
-    #entity-fields {
-        color: #e0e0e0;
-        padding: 1 1 0 1;
-        height: auto;
+    #entity-meta {
+        color: #888;
+        height: 1;
+    }
+    #entity-actions {
+        color: #a0a0a0;
+        height: 1;
+        margin-bottom: 1;
+    }
+    #entity-tabs {
+        height: 1;
+        margin-bottom: 0;
     }
     #entity-status {
-        color: #888;
-        padding: 0 1;
+        color: #666;
         height: 1;
-    }
-    #metrics-header,
-    #relations-header {
-        background: #111;
-        color: #888;
-        text-style: bold;
-        padding: 0 1;
-        height: 1;
-        border-top: solid #333;
-    }
-    #metrics-header.-active,
-    #relations-header.-active {
-        color: #4ade80;
-        background: #163324;
     }
     #assoc-filter {
         height: 3;
@@ -158,13 +182,9 @@ class EntityScreen(BaseScreen):
         border-bottom: solid #333;
         padding: 0 1;
     }
-    #metrics-list {
+    #metrics-list, #relations-list {
         height: 1fr;
-        background: #0f0f0f;
-    }
-    #relations-list {
-        height: 1fr;
-        background: #0f0f0f;
+        background: #0c0c0c;
     }
     ListView > ListItem,
     ListView > ListItem:hover {
@@ -236,25 +256,25 @@ class EntityScreen(BaseScreen):
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="entity-body"):
-            with Vertical(classes="pane-container"):
-                yield Label("ENTITY", classes="pane-header")
-                yield Static("", id="entity-fields", markup=True)
-                yield Static(
-                    "Idle — press [bold]r[/bold] to load",
-                    id="entity-status",
-                    markup=True,
-                )
-                yield Label("METRICS", id="metrics-header")
-                yield Input(
-                    placeholder="/ search metrics for this entity…",
-                    id="assoc-filter",
-                )
-                yield ListView(id="metrics-list")
-                yield Label(
-                    "RELATIONSHIPS (out + in)",
-                    id="relations-header",
-                )
-                yield ListView(id="relations-list")
+            yield Label("", id="entity-title")
+            yield Static("", id="entity-meta", markup=True)
+            yield Static(
+                "[dim]a[/] workspace · [dim]enter[/] chart",
+                id="entity-actions",
+                markup=True,
+            )
+            yield Static("", id="entity-tabs", markup=True)
+            yield Static(
+                "Press [bold]r[/bold] to load metrics & relationships",
+                id="entity-status",
+                markup=True,
+            )
+            yield Input(
+                placeholder="/ search metrics…",
+                id="assoc-filter",
+            )
+            yield ListView(id="metrics-list")
+            yield ListView(id="relations-list")
 
     def on_mount(self) -> None:
         super().on_mount()
@@ -267,9 +287,9 @@ class EntityScreen(BaseScreen):
                 self._parent_overrides = None
         ctx = self._resolved_input_context()
         if not ctx.entity:
-            self.query_one("#entity-fields", Static).update(
-                "No entity in Input Context.\n"
-                "Drill into an entity from a table, or stage one via :search."
+            self.query_one("#entity-title", Label).update("No entity selected")
+            self.query_one("#entity-meta", Static).update(
+                "Search [/] and open an entity, or stage one into the workspace."
             )
             self.query_one("#entity-status", Static).update("")
             return
@@ -277,55 +297,59 @@ class EntityScreen(BaseScreen):
         self._label = label_for(self._labels(), self._entity_id)
         note = ""
         if len(ctx.entity) > 1:
-            note = f"\n(+{len(ctx.entity) - 1} more entities in Input Context; showing first)"
+            note = f" (+{len(ctx.entity) - 1} more in context)"
         self._render_fields(note=note)
         self._focus_pane("metrics")
+        # Auto-load — discovery screen should not wait on r.
+        self.call_later(self.action_load)
 
     def _render_fields(self, *, note: str = "") -> None:
-        eid = self._entity_id or "—"
-        text = (
-            f"[bold]id[/bold]     {eid}\n"
-            f"[bold]label[/bold]  {self._label or '—'}"
-            f"{note}"
-        )
-        self.query_one("#entity-fields", Static).update(text)
+        self.query_one("#entity-title", Label).update(self._label or self._entity_id or "—")
+        meta = "Entity"
+        if note:
+            meta += note
+        self.query_one("#entity-meta", Static).update(meta)
+        self._refresh_tabs()
+
+    def shell_breadcrumb(self) -> str:
+        return self._label or self._entity_id or "Entity"
 
     def footer_action_keys(self) -> list[str]:
-        keys = ["[bold]r[/bold] load"]
+        keys: list[str] = []
         if self._loaded:
-            keys.append("[bold]/[/bold] search")
             keys.append("[bold]tab[/bold] metrics/rels")
-            keys.append("[bold]j[/bold]/[bold]k[/bold] move")
+            keys.append("[bold]/[/bold] filter")
             if self._pane == "metrics":
-                keys.append("[bold]enter[/bold] metric")
-                keys.append("[bold]space[/bold] collect metric")
+                keys.append("[bold]enter[/bold] chart")
+                keys.append("[bold]space[/bold] collect")
             else:
-                keys.append("[bold]enter[/bold] related entity")
-        keys.append("[bold]a[/bold] add entity")
+                keys.append("[bold]enter[/bold] open")
+        else:
+            keys.append("[bold]r[/bold] load")
+        keys.append("[bold]a[/bold] workspace")
         return keys
 
     def footer_status(self) -> list[str]:
-        parts = super().footer_status()
-        n_out = sum(1 for d, _ in self._relations if d == "outgoing")
-        n_in = sum(1 for d, _ in self._relations if d == "incoming")
-        parts.append(f"rels →{n_out} ←{n_in}")
-        if self.relationship:
-            parts.append(self.relationship)
-        if self.relation_taxonomy:
-            parts.append(f"edge-tax {self.relation_taxonomy}")
-        if self.related_membership_taxonomy:
-            parts.append(f"member-tax {self.related_membership_taxonomy}")
-        return parts
+        return []
 
-    def _relations_header_text(self) -> str:
-        bits = ["RELATIONSHIPS (out + in)"]
-        if self.relationship:
-            bits.append(self.relationship)
-        if self.relation_taxonomy:
-            bits.append(f"edge:{self.relation_taxonomy}")
-        if self.related_membership_taxonomy:
-            bits.append(f"members:{self.related_membership_taxonomy}")
-        return " · ".join(bits)
+    def _refresh_tabs(self) -> None:
+        n_m = len(self._metrics)
+        n_r = len(self._relations)
+        m_extra = "+" if self.has_more else ""
+        if self._pane == "metrics":
+            text = (
+                f"[bold #86efac on #163324] Metrics ({n_m}{m_extra}) [/]  "
+                f"[#888]Relationships ({n_r})[/]"
+            )
+        else:
+            text = (
+                f"[#888]Metrics ({n_m}{m_extra})[/]  "
+                f"[bold #86efac on #163324] Relationships ({n_r}) [/]"
+            )
+        try:
+            self.query_one("#entity-tabs", Static).update(text)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _active_list(self) -> ListView:
         if self._pane == "metrics":
@@ -334,12 +358,21 @@ class EntityScreen(BaseScreen):
 
     def _focus_pane(self, pane: Pane) -> None:
         self._pane = pane
-        self.query_one("#metrics-header", Label).set_class(pane == "metrics", "-active")
-        self.query_one("#relations-header", Label).set_class(
-            pane == "relations", "-active"
-        )
+        metrics = self.query_one("#metrics-list", ListView)
+        relations = self.query_one("#relations-list", ListView)
+        filt = self.query_one("#assoc-filter", Input)
+        metrics.display = pane == "metrics"
+        relations.display = pane == "relations"
+        filt.display = pane == "metrics"
+        self._refresh_tabs()
         self._active_list().focus()
         self.refresh_footer()
+
+    def action_focus_metrics(self) -> None:
+        self._focus_pane("metrics")
+
+    def action_focus_relations(self) -> None:
+        self._focus_pane("relations")
 
     def action_load(self) -> None:
         if not self._entity_id:
@@ -537,7 +570,8 @@ class EntityScreen(BaseScreen):
 
     def _append_metrics(self, metrics: list[Metric]) -> None:
         metrics_list = self.query_one("#metrics-list", ListView)
-        for metric in metrics:
+        ordered = sorted(metrics, key=_metric_browse_key)
+        for metric in ordered:
             if hasattr(self.app, "remember_label"):
                 self.app.remember_label(metric.id, metric.name or metric.id)
             metrics_list.append(MetricAssocRow(metric))
@@ -552,27 +586,58 @@ class EntityScreen(BaseScreen):
             *[("outgoing", rel) for rel in outgoing],
             *[("incoming", rel) for rel in incoming],
         ]
+        labels = self._labels()
         rel_list = self.query_one("#relations-list", ListView)
         rel_list.clear()
-        if outgoing:
-            rel_list.append(
-                ListItem(Label("[dim]— outgoing → —[/]", markup=True))
+
+        def _rel_key(rel: EntityRelationship) -> str:
+            return (
+                rel.relationship.value
+                if hasattr(rel.relationship, "value")
+                else str(rel.relationship)
             )
-            for rel in outgoing:
-                rel_list.append(RelationRow(rel, direction="outgoing"))
-        if incoming:
-            rel_list.append(
-                ListItem(Label("[dim]— ← incoming —[/]", markup=True))
-            )
-            for rel in incoming:
-                rel_list.append(RelationRow(rel, direction="incoming"))
-        if not outgoing and not incoming:
+
+        # Group by human predicate label, preserving direction semantics.
+        groups: list[tuple[str, RelationDirection, list[EntityRelationship]]] = []
+        for direction, bucket in (
+            ("outgoing", outgoing),
+            ("incoming", incoming),
+        ):
+            by_pred: dict[str, list[EntityRelationship]] = {}
+            for rel in bucket:
+                by_pred.setdefault(_rel_key(rel), []).append(rel)
+            for pred, rows in by_pred.items():
+                rows_sorted = sorted(
+                    rows,
+                    key=lambda r: (label_for(labels, r.id) or r.id).lower(),
+                )
+                groups.append(
+                    (_relation_group_label(pred, direction), direction, rows_sorted)
+                )
+
+        if not groups:
             rel_list.append(
                 ListItem(Label("[dim](no relationships)[/]", markup=True))
             )
-        self.query_one("#relations-header", Label).update(
-            self._relations_header_text()
-        )
+        else:
+            for heading, direction, rows in groups:
+                rel_list.append(
+                    ListItem(
+                        Label(
+                            f"[bold]{heading}[/]  [dim]({len(rows)})[/]",
+                            markup=True,
+                        )
+                    )
+                )
+                for rel in rows:
+                    display = label_for(labels, rel.id) or rel.id
+                    # Prefer remembered labels; slug fallback is last resort.
+                    if display == rel.id and "-" in rel.id:
+                        display = rel.id.replace("-", " ").title()
+                    rel_list.append(
+                        RelationRow(rel, direction=direction, label=display)
+                    )
+        self._refresh_tabs()
 
     def _relation_filter_kwargs(self) -> dict:
         """Shared filters for both direction fetches (no direction key)."""
@@ -600,6 +665,29 @@ class EntityScreen(BaseScreen):
         )
         return list(outgoing), list(incoming)
 
+    async def _resolve_relation_labels(
+        self, relations: list[EntityRelationship]
+    ) -> None:
+        """Fill display labels for related entities via existing get_entity."""
+        labels = self._labels()
+        missing = [
+            rel.id for rel in relations if rel.id and rel.id not in labels
+        ]
+        # Cap lookups so a large Contains group doesn't stall the screen.
+        missing = missing[:40]
+        if not missing:
+            return
+
+        async def _one(rid: str) -> None:
+            try:
+                ent = await asyncio.to_thread(self.client.get_entity, rid)
+            except Exception:  # noqa: BLE001
+                return
+            if hasattr(self.app, "remember_label"):
+                self.app.remember_label(rid, ent.label or rid)
+
+        await asyncio.gather(*[_one(rid) for rid in missing])
+
     def _update_status(self, query: str | None) -> None:
         status = self.query_one("#entity-status", Static)
         m_extra = "+" if self.has_more else ""
@@ -612,9 +700,14 @@ class EntityScreen(BaseScreen):
         )
         qbit = f" · “{query}”" if query else ""
         status.update(
-            f"{len(self._metrics)}{m_extra} metric(s){qbit} · "
-            f"{n_out + n_in}{r_extra} relationship(s) "
-            f"(→{n_out} out · ←{n_in} in; membership ≠ classification)"
+            f"{len(self._metrics)}{m_extra} metrics{qbit} · "
+            f"{n_out + n_in}{r_extra} relationships (→{n_out} · ←{n_in})"
+        )
+        self._refresh_tabs()
+        meta = self.query_one("#entity-meta", Static)
+        meta.update(
+            f"{len(self._metrics)}{m_extra} metrics · "
+            f"{n_out + n_in}{r_extra} relationships"
         )
 
     @work(exclusive=True, group="entity-view")
@@ -661,6 +754,7 @@ class EntityScreen(BaseScreen):
                     )
                 self._render_fields(note=note)
                 outgoing, incoming = relations_pair
+                await self._resolve_relation_labels(outgoing + incoming)
                 self._show_relations(outgoing=outgoing, incoming=incoming)
                 self._entity_meta_loaded = True
             else:
