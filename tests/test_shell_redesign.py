@@ -8,7 +8,7 @@ from jstdata.actions.base import get_action
 from jstdata.investigation.api import add_query, create_investigation, persist_investigation
 from jstdata.investigation.project_store import load_project_investigation
 from jstdata.investigation.research_root import ResearchRootScreen
-from jstdata.investigation.shell import ProjectHeader, ResearchSidebar, TabBar
+from jstdata.investigation.shell import PaneBar, ProjectHeader, ResearchSidebar, TabBar
 
 
 def test_home_action_uses_research_root():
@@ -59,5 +59,46 @@ def test_sidebar_refresh_splits_drafts_and_saved():
         active="peers",
         marks={"peers": "●"},
     )
+    assert tabs._order == ["fundamentals", "peers"]
+    assert tabs._active == "peers"
     rendered = str(tabs.render())
     assert "Peers" in rendered or "peers" in rendered.lower() or "●" in rendered
+
+    single = TabBar()
+    single.set_tabs(
+        ["only"],
+        labels={"only": "Only"},
+        active="only",
+    )
+    assert single.has_class("-empty") or len(single._order) == 1
+
+    pane = PaneBar()
+    pane._paint()
+    painted = str(pane.render())
+    assert "Home" in painted
+    assert "Search" in painted
+    assert "Commands" in painted
+    assert "+" in painted
+
+    pane.set_tabs(
+        ["only"],
+        labels={"only": "Only"},
+        active="only",
+    )
+    painted = str(pane.render())
+    assert "Only" in painted
+    assert "×" not in painted  # sole tab cannot close
+    assert "+" in painted
+
+    pane.set_tabs(
+        ["fundamentals", "peers"],
+        labels={"fundamentals": "Fundamentals", "peers": "Peers"},
+        active="peers",
+        marks={"peers": "●"},
+    )
+    painted = str(pane.render())
+    assert "Fundamentals" in painted
+    assert "Peers" in painted
+    assert "×" in painted
+    assert pane.start_jump() is True
+    assert pane._jumping is True

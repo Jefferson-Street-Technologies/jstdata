@@ -71,7 +71,6 @@ class ResearchRootScreen(BaseScreen):
     FOOTER_SHOW_HOME = False
     FOOTER_CHROME: tuple[str, ...] = (
         "[bold]a[/bold] notes",
-        "[bold]/[/bold] search",
     )
 
     DEFAULT_CSS = """

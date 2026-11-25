@@ -9,35 +9,34 @@ from textual.screen import Screen
 from textual.widgets import Input, Label
 
 from ..investigation.bug_report_modal import BugReportPanel
-from ..investigation.shell import ProjectHeader, ResearchSidebar, TabBar
+from ..investigation.shell import PaneBar, ProjectHeader, ResearchSidebar
 
 
 class BaseScreen(Screen):
     """Action screen with persistent research shell chrome.
 
-    Layout: project header → tab bar → (sidebar | body) → footer.
+    Layout: project header → (sidebar | pane bar + body) → footer.
     Subclasses implement :meth:`compose_body`. Drawers/modals stay standalone.
 
-    Sidebar: click to open. ``Q`` / ``w`` enter jump mode for queries /
-    workspace; then press the highlighted digit. Esc cancels jump.
-    (``Q`` is Shift+q — plain ``q`` still quits.)
+    Pane bar: Home (H) / Search (/) / Commands (:); tabs always on the
+    right with ``+`` (new) and ``×`` (close when 2+). ``T`` opens the tab
+    menu (digits switch, ``N`` new, ``X`` close). ``Q`` / ``w`` number
+    sidebar rows. Esc cancels jump.
     """
 
-    # Keep the footer minimal — other shortcuts live next to their controls.
-    # Screens that *are* home can set this False so ``H home`` is omitted.
-    FOOTER_SHOW_HOME: bool = True
+    # Keep the footer minimal — Home / Search live on the pane bar.
+    FOOTER_SHOW_HOME: bool = False
     FOOTER_CHROME: tuple[str, ...] = (
-        "[bold]/[/bold] search",
-        "[bold]n[/bold] query",
         "[bold]a[/bold] annotate",
     )
 
     # Shell-level bindings (host also owns some; these help when focus is here).
     BINDINGS = [
         Binding("slash", "shell_search", "Search", show=False),
-        Binding("H", "shell_history", "History", show=False),
+        Binding("H", "shell_home", "Home", show=False),
         Binding("F", "shell_feedback", "Feedback", show=False),
-        Binding("n", "shell_new_query", "New query", show=False),
+        Binding("N", "shell_new_tab", "New tab", show=False),
+        Binding("T", "shell_tab_jump", "Jump tabs", show=False),
         # Shift+X — lowercase x is chart series toggle on QueryScreen.
         Binding("X", "shell_remove", "Remove tile", show=False),
         # Shift+Q — plain q quits at the host. w opens workspace jump.
@@ -69,12 +68,16 @@ class BaseScreen(Screen):
 
     #shell-header {
         height: 1;
-        dock: top;
+        width: 100%;
     }
 
-    #shell-tabs {
+    /* Full-width strip between project header and sidebar|main.
+       Must stay in normal flow (not dock) — docked Horizontals collapse to height 0. */
+    #shell-pane-bar {
         height: 1;
-        dock: top;
+        min-height: 1;
+        max-height: 1;
+        width: 100%;
     }
 
     #shell-main {
@@ -85,14 +88,6 @@ class BaseScreen(Screen):
     #shell-body {
         width: 1fr;
         height: 1fr;
-    }
-
-    #shell-main-kicker {
-        height: 1;
-        color: #888;
-        padding: 0 1;
-        background: #0c0c0c;
-        border-bottom: solid #1a1a1a;
     }
 
     #shell-footer {
@@ -139,15 +134,10 @@ class BaseScreen(Screen):
     def compose(self) -> ComposeResult:
         if self.SHELL_ENABLED:
             yield ProjectHeader(id="shell-header")
-            yield TabBar(id="shell-tabs")
+            yield PaneBar(id="shell-pane-bar")
             with Horizontal(id="shell-main"):
                 yield ResearchSidebar(id="shell-sidebar")
                 with Vertical(id="shell-body"):
-                    yield Label(
-                        "",
-                        id="shell-main-kicker",
-                        markup=True,
-                    )
                     yield from self.compose_body()
         else:
             yield from self.compose_body()
@@ -175,15 +165,8 @@ class BaseScreen(Screen):
         return "Main"
 
     def refresh_breadcrumb(self) -> None:
-        if not self.SHELL_ENABLED:
-            return
-        try:
-            crumb = self.shell_breadcrumb()
-            self.query_one("#shell-main-kicker", Label).update(
-                f"[bold #86efac]3[/]  {crumb}"
-            )
-        except Exception:  # noqa: BLE001
-            pass
+        # Pane bar replaced the old main-pane kicker breadcrumb.
+        return
 
     def refresh_shell_chrome(self) -> None:
         """Pull project/tabs/sidebar state from the host."""
@@ -195,10 +178,9 @@ class BaseScreen(Screen):
                 refresh(self)
             except Exception:  # noqa: BLE001
                 pass
-        self.refresh_breadcrumb()
 
     def footer_status(self) -> list[str]:
-        """Leading status chips (action id, scope, …). Tabs live in TabBar."""
+        """Leading status chips (action id, scope, …). Tabs live in PaneBar."""
         parts: list[str] = []
         n = getattr(self.app, "action_count", 1)
         i = getattr(self.app, "action_index", 0) + 1
@@ -286,8 +268,14 @@ class BaseScreen(Screen):
         self.action_shell_escape()
 
     def action_shell_escape(self) -> None:
-        """Esc: close bug form → cancel Q/w jump → host back."""
+        """Esc: close bug form → cancel tab/Q/w jump → host back."""
         if self.cancel_bug_report():
+            return
+        try:
+            pane = self.query_one("#shell-pane-bar", PaneBar)
+        except Exception:  # noqa: BLE001
+            pane = None
+        if pane is not None and pane.cancel_jump():
             return
         try:
             sidebar = self.query_one("#shell-sidebar", ResearchSidebar)
@@ -329,8 +317,8 @@ class BaseScreen(Screen):
         if callable(fn):
             fn()
 
-    def action_shell_history(self) -> None:
-        fn = getattr(self.app, "action_show_activity", None)
+    def action_shell_home(self) -> None:
+        fn = getattr(self.app, "action_go_home", None)
         if callable(fn):
             fn()
 
@@ -339,10 +327,44 @@ class BaseScreen(Screen):
         if callable(fn):
             fn()
 
-    def action_shell_new_query(self) -> None:
-        fn = getattr(self.app, "action_new_draft_query", None)
+    def action_shell_new_tab(self) -> None:
+        try:
+            pane = self.query_one("#shell-pane-bar", PaneBar)
+            if pane._jumping:
+                pane.cancel_jump()
+        except Exception:  # noqa: BLE001
+            pass
+        fn = getattr(self.app, "action_new_investigation_tab", None)
         if callable(fn):
             fn()
+
+    def action_shell_commands(self) -> None:
+        fn = getattr(self.app, "action_command_palette", None)
+        if callable(fn):
+            fn()
+
+    def action_shell_tab_jump(self) -> None:
+        try:
+            sidebar = self.query_one("#shell-sidebar", ResearchSidebar)
+            sidebar.cancel_jump()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            pane = self.query_one("#shell-pane-bar", PaneBar)
+        except Exception:  # noqa: BLE001
+            pane = None
+        if pane is None:
+            return
+        pane.start_jump()
+        n = len(pane._jump_targets)
+        bits = []
+        if n:
+            bits.append(f"1–{min(n, 9)} switch")
+        bits.append("N new")
+        if n > 1:
+            bits.append("X close")
+        bits.append("Esc cancels")
+        self.notify("Tabs: " + " · ".join(bits), timeout=4)
 
     def focus_in_shell_sidebar(self) -> bool:
         """True when focus is inside the research sidebar (queries / workspace)."""
@@ -369,12 +391,26 @@ class BaseScreen(Screen):
             if action.startswith("sidebar_") or action in {
                 "focus_pane_main",
                 "shell_remove",
+                "shell_home",
+                "shell_search",
+                "shell_new_tab",
+                "shell_tab_jump",
             }:
                 return False
         return True
 
     def action_shell_remove(self) -> None:
-        """Shift+X — remove the active query or the open workspace resource."""
+        """Shift+X — in tab menu: close tab; else remove query/resource."""
+        try:
+            pane = self.query_one("#shell-pane-bar", PaneBar)
+        except Exception:  # noqa: BLE001
+            pane = None
+        if pane is not None and pane._jumping:
+            pane.cancel_jump()
+            close = getattr(self.app, "close_investigation_tab", None)
+            if callable(close):
+                close()
+            return
         fn = getattr(self.app, "remove_active_sidebar_target", None)
         if callable(fn):
             fn()
@@ -389,17 +425,33 @@ class BaseScreen(Screen):
         return sidebar
 
     def _sidebar_digit(self, digit: int) -> None:
+        try:
+            pane = self.query_one("#shell-pane-bar", PaneBar)
+        except Exception:  # noqa: BLE001
+            pane = None
+        if pane is not None and pane.handle_digit(digit):
+            return
         sidebar = self._ensure_sidebar_open()
         if sidebar is None:
             return
         sidebar.handle_digit(digit)
 
     def action_sidebar_jump_queries(self) -> None:
+        try:
+            pane = self.query_one("#shell-pane-bar", PaneBar)
+            pane.cancel_jump()
+        except Exception:  # noqa: BLE001
+            pass
         sidebar = self._ensure_sidebar_open()
         if sidebar is not None:
             sidebar.start_jump("queries")
 
     def action_sidebar_jump_workspace(self) -> None:
+        try:
+            pane = self.query_one("#shell-pane-bar", PaneBar)
+            pane.cancel_jump()
+        except Exception:  # noqa: BLE001
+            pass
         sidebar = self._ensure_sidebar_open()
         if sidebar is not None:
             sidebar.start_jump("workspace")
@@ -447,7 +499,7 @@ class BaseScreen(Screen):
         if not body:
             return
         for child in body[0].walk_children():
-            if child.id == "shell-main-kicker":
+            if child.id in {"shell-pane-bar", "shell-tabs", "pane-actions"}:
                 continue
             if getattr(child, "focusable", False):
                 child.focus()
@@ -495,9 +547,30 @@ class BaseScreen(Screen):
         if callable(fn):
             fn(event.resource_type, event.resource_id, confirmed=True)
 
-    def on_research_sidebar_new_query(
-        self, event: ResearchSidebar.NewQuery
-    ) -> None:
-        fn = getattr(self.app, "action_new_draft_query", None)
+    def on_pane_bar_home(self, event: PaneBar.Home) -> None:
+        event.stop()
+        self.action_shell_home()
+
+    def on_pane_bar_search(self, event: PaneBar.Search) -> None:
+        event.stop()
+        self.action_shell_search()
+
+    def on_pane_bar_commands(self, event: PaneBar.Commands) -> None:
+        event.stop()
+        self.action_shell_commands()
+
+    def on_pane_bar_new_tab(self, event: PaneBar.NewTab) -> None:
+        event.stop()
+        self.action_shell_new_tab()
+
+    def on_pane_bar_tab_selected(self, event: PaneBar.TabSelected) -> None:
+        event.stop()
+        fn = getattr(self.app, "switch_investigation_tab", None)
         if callable(fn):
-            fn()
+            fn(event.investigation_id)
+
+    def on_pane_bar_tab_close(self, event: PaneBar.TabClose) -> None:
+        event.stop()
+        fn = getattr(self.app, "close_investigation_tab", None)
+        if callable(fn):
+            fn(event.investigation_id)

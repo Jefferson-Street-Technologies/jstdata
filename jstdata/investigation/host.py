@@ -378,26 +378,24 @@ class InvestigationHost(App):
         Binding("question_mark", "show_shortcuts_hint", "Shortcuts", key_display="?"),
         Binding(":", "command_palette", "Command", key_display=":"),
         Binding("H", "go_home", "Home", key_display="H"),
-        # Tree depth via N/P (and arrows). Sibling nav moved to Ctrl+n/p
-        # so plain ``n`` can mean new draft query in the research shell.
+        # Tree depth via arrows. Sibling nav on Ctrl+n/p; ``N`` is new tab.
         Binding("ctrl+n", "next_sibling", "Next sibling", show=False),
         Binding("ctrl+p", "prev_sibling", "Prev sibling", show=False),
         Binding("down", "next_sibling", "Next sibling", show=False),
         Binding("up", "prev_sibling", "Prev sibling", show=False),
-        Binding("N", "child_action", "Into child", key_display="N"),
+        Binding("N", "new_investigation_tab", "New tab", key_display="N"),
         Binding("P", "parent_action", "To parent", key_display="P"),
         Binding("right", "child_action", "Into child", show=False),
         Binding("left", "parent_action", "To parent", show=False),
         Binding("t", "tutorials", "Tutorials", key_display="t"),
+        Binding("T", "tab_jump", "Jump tabs", key_display="T"),
         # Investigation tabs within the open project (`{` / `}`).
         Binding("{", "prev_investigation", "Prev investigation tab", show=False),
         Binding("}", "next_investigation", "Next investigation tab", show=False),
         Binding("A", "show_activity", "Activity", key_display="A"),
-        Binding("H", "show_activity", "History", key_display="H"),
         Binding("slash", "universal_search", "Search", show=False),
         Binding("F", "feedback_prompt", "Feedback", key_display="F"),
         Binding("exclamation_mark", "bug_report", "Bug report", key_display="!"),
-        Binding("n", "new_draft_query", "New query", show=False),
         Binding("s", "save_active_query", "Save query", show=False),
         # Shift+X removes the open query/resource (lowercase x = chart toggle).
         Binding("X", "remove_active_sidebar_target", "Remove tile", show=False),
@@ -1330,7 +1328,8 @@ class InvestigationHost(App):
         if action in {
             "go_home",
             "universal_search",
-            "new_draft_query",
+            "new_investigation_tab",
+            "tab_jump",
             "save_active_query",
             "edit_active_query",
             "feedback_prompt",
@@ -1374,23 +1373,102 @@ class InvestigationHost(App):
         return True
 
     def action_go_home(self) -> None:
-        """Reorient: dismiss overlays and activate the research root."""
+        """Dismiss overlays and open the active investigation's research home."""
         if self._invalid or not self.investigation or not self.active:
             return
         self._nav_dest = None
         self._nav_return = None
         while len(self.screen_stack) > 2:
             self.pop_screen()
-        # Prefer last saved/draft query when returning to research context.
-        preferred = self._preferred_query_id()
-        if preferred is not None and self.active.action == ROOT_ACTION_ID:
-            self.open_query_view(preferred)
-            return
         if self.active.action == ROOT_ACTION_ID:
             self._show_front(reset=True)
-            self.notify("Research", timeout=1)
+            self.notify("Home", timeout=1)
             return
         self._activate_action(ROOT_ACTION_ID)
+
+    def action_new_investigation_tab(self) -> None:
+        """Shift+N / pane ``+`` — create a blank investigation in this project."""
+        # Leave the Shift+T tab menu if it's open.
+        try:
+            from ..actions.screen import BaseScreen
+            from .shell import PaneBar
+
+            if isinstance(self.screen, BaseScreen):
+                pane = self.screen.query_one("#shell-pane-bar", PaneBar)
+                if pane._jumping:
+                    pane.cancel_jump()
+        except Exception:  # noqa: BLE001
+            pass
+        if self._invalid or not self.project_id:
+            self.notify("No project loaded", severity="error")
+            return
+        from .commands import ParsedCommand
+
+        self._cmd_tab_new(
+            ParsedCommand(name="tab", options={"op": "new"}, args=[])
+        )
+
+    def action_tab_jump(self) -> None:
+        """Shift+T — open the tab menu (digits / N new / X close)."""
+        start = getattr(self.screen, "action_shell_tab_jump", None)
+        if callable(start):
+            start()
+
+    def switch_investigation_tab(self, investigation_id: str) -> None:
+        """Activate another investigation tab (click or numbered jump)."""
+        if self._invalid or not self.active or not self.project:
+            return
+        if investigation_id == self.active.investigation:
+            return
+        if investigation_id not in self.project.investigations:
+            self.notify(f"Unknown tab {investigation_id!r}", severity="error")
+            return
+        self._inv_resume[self.active.investigation] = (
+            self.active.workspace,
+            self.active.action,
+        )
+        workspace, action = self._inv_resume.get(
+            investigation_id, (DEFAULT_WORKSPACE_ID, ROOT_ACTION_ID)
+        )
+        self._switch_investigation(
+            investigation_id, action, workspace=workspace
+        )
+        label = self._inv_titles.get(investigation_id, investigation_id)
+        self.notify(f"Investigation {label}", timeout=2)
+
+    def close_investigation_tab(
+        self, investigation_id: str | None = None, *, force: bool = True
+    ) -> None:
+        """Close a tab (active if omitted). Refuses the last remaining tab.
+
+        ``force`` is accepted for call-site compat and ignored — closes are
+        immediate (no confirm modal).
+        """
+        del force
+        if self._invalid or not self.project_id or not self.active or not self.project:
+            return
+        inv_id = investigation_id or self.active.investigation
+        if inv_id not in self.project.investigations:
+            self.notify(f"Unknown tab {inv_id!r}", severity="error")
+            return
+        if len(self.project.investigations) <= 1:
+            self.notify("Cannot close the only tab", severity="warning")
+            return
+        self._persist_workspace_if_dirty()
+        try:
+            remove_investigation_from_project(
+                self.project_id,
+                inv_id,
+                app_dir=self.app_dir,
+                activate_fallback=True,
+            )
+        except InvestigationError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        self._inv_resume.pop(inv_id, None)
+        self._nav_dest = None
+        self._reload_everything(force_screen=True)
+        self.notify(f"Removed tab {inv_id}")
 
     def _preferred_query_id(self) -> int | None:
         if not self.investigation or not self.investigation.queries:
@@ -1533,14 +1611,14 @@ class InvestigationHost(App):
     def refresh_shell_chrome(self, screen: Screen | None = None) -> None:
         """Push project/tabs/sidebar state into the front BaseScreen shell."""
         from ..actions.screen import BaseScreen
-        from .shell import ProjectHeader, ResearchSidebar, TabBar
+        from .shell import PaneBar, ProjectHeader, ResearchSidebar
 
         target = screen or self.screen
         if not isinstance(target, BaseScreen) or not target.SHELL_ENABLED:
             return
         try:
             header = target.query_one("#shell-header", ProjectHeader)
-            tabs = target.query_one("#shell-tabs", TabBar)
+            pane_bar = target.query_one("#shell-pane-bar", PaneBar)
             sidebar = target.query_one("#shell-sidebar", ResearchSidebar)
         except Exception:  # noqa: BLE001
             return
@@ -1558,7 +1636,7 @@ class InvestigationHost(App):
         marks: dict[str, str] = {}
         for inv_id, mark in getattr(self, "_tab_activity_marks", {}).items():
             marks[inv_id] = mark
-        tabs.set_tabs(
+        pane_bar.set_tabs(
             order,
             labels=self._inv_titles,
             active=self.active.investigation if self.active else None,
@@ -2575,36 +2653,9 @@ class InvestigationHost(App):
         self.notify(f"Duplicated → {inv.title or inv.id}")
 
     def _cmd_tab_rm(self, *, force: bool) -> None:
-        assert self.project_id is not None and self.active is not None
-        if not force:
-            label = self._inv_titles.get(
-                self.active.investigation, self.active.investigation
-            )
-            self.push_screen(
-                ConfirmForceModal(
-                    f"Remove investigation tab {label!r}? "
-                    "This deletes its workspace, queries, and actions. "
-                    "Press y to confirm (--force)."
-                ),
-                lambda ok: self._cmd_tab_rm(force=True) if ok else None,
-            )
-            return
-        inv_id = self.active.investigation
-        self._persist_workspace_if_dirty()
-        try:
-            remove_investigation_from_project(
-                self.project_id,
-                inv_id,
-                app_dir=self.app_dir,
-                activate_fallback=True,
-            )
-        except InvestigationError as exc:
-            self.notify(str(exc), severity="error")
-            return
-        self._inv_resume.pop(inv_id, None)
-        self._nav_dest = None
-        self._reload_everything(force_screen=True)
-        self.notify(f"Removed tab {inv_id}")
+        # Closes are immediate — ``force`` kept for command-parser compat.
+        del force
+        self.close_investigation_tab()
 
     def _apply_rename(
         self, *, title: Optional[str], notes: Optional[str]
@@ -3037,29 +3088,15 @@ class InvestigationHost(App):
         # Retained for older callers; prefer on-screen shortcut hints.
         self.action_show_shortcuts_hint()
 
-    def delete_query(self, query_id: int, *, confirmed: bool = False) -> None:
-        """Delete a query. Unconfirmed calls arm the sidebar ✕ (press again)."""
+    def delete_query(self, query_id: int, *, confirmed: bool = True) -> None:
+        """Delete a query immediately (no confirm / arm step)."""
+        del confirmed
         if not self.investigation:
             return
         try:
             self.investigation.get_query(query_id)
         except InvestigationError as exc:
             self.notify(str(exc), severity="error")
-            return
-        if not confirmed:
-            sidebar = self._shell_sidebar()
-            if sidebar is not None:
-                sidebar.remove_query(int(query_id))
-                return
-            # No shell chrome (legacy screens) — fall back to confirm modal.
-            self.push_screen(
-                ConfirmForceModal(
-                    f"Delete Q{query_id}? This cannot be undone."
-                ),
-                lambda ok, qid=query_id: (
-                    self._confirm_delete_query(qid) if ok else None
-                ),
-            )
             return
         self._confirm_delete_query(int(query_id))
 
@@ -3133,7 +3170,19 @@ class InvestigationHost(App):
             self.refresh_shell_chrome()
 
     def action_remove_active_sidebar_target(self) -> None:
-        """Shift+X — arm / confirm remove of the open query or resource."""
+        """Shift+X — close tab in Shift+T menu; else remove query/resource."""
+        try:
+            from ..actions.screen import BaseScreen
+            from .shell import PaneBar
+
+            if isinstance(self.screen, BaseScreen):
+                pane = self.screen.query_one("#shell-pane-bar", PaneBar)
+                if pane._jumping:
+                    pane.cancel_jump()
+                    self.close_investigation_tab()
+                    return
+        except Exception:  # noqa: BLE001
+            pass
         self.remove_active_sidebar_target()
 
     def remove_active_sidebar_target(self) -> None:

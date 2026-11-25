@@ -257,8 +257,8 @@ jst preview
 ```
 
 - **Humans** use the chart-first shell: sidebar queries/workspace, `/` search,
-  `n` new draft, `e` edit, `s` save, `a` annotate, `H` history, `F` feedback,
-  `{`/`}` tabs, `g` research root. Enter on a metric/entity opens a draft chart.
+  `e` edit, `s` save, `a` annotate, `F` feedback, `{`/`}` tabs, Shift+`H`
+  research root. Enter on a metric/entity opens a draft chart.
   Host `dd` is the delete chord.
 - **Agents** use `jst actions …` with explicit `--project` / `--investigation`.
   Do not steal the human viewport.

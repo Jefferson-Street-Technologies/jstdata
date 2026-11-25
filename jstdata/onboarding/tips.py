@@ -17,8 +17,8 @@ _TYPING = (
 
 _HOME = {
     None: (
-        'Press "/" to search, "Q"/"w" to jump Queries or Workspace, '
-        'or "n" for a new draft query. "t" opens tutorials.'
+        'Press "/" to search, "Q"/"w" to jump Queries or Workspace. '
+        '"t" opens tutorials.'
     ),
     "recent": (
         'These are the newest filings and data releases. Press "j"/"k" to move '
@@ -32,8 +32,8 @@ _HOME = {
         'Views in this investigation. Press "Enter" to reopen one.'
     ),
     "workspace": (
-        'Collected resources. Press "Enter" to open one, or "n" / workspace '
-        'query to chart them.'
+        'Collected resources. Press "Enter" to open one, or build a query '
+        'from the workspace.'
     ),
     "queries": (
         'One draft lives in the sidebar. Press "s" to save it into the report.'
@@ -43,7 +43,7 @@ _HOME = {
 _SCREENS = {
     "ResearchRootScreen": (
         'Click a sidebar query to open it, or press "Q" then a digit to jump. '
-        '"w" jumps workspace resources. "/" searches; "n" creates a query.'
+        '"w" jumps workspace resources. "/" searches.'
     ),
     "MetricScreen": (
         'Tab switches Entities / Definition. "Enter" on an entity opens a draft '
@@ -139,12 +139,9 @@ def next_step_nudge(snap: CoachSnapshot) -> str | None:
         if snap.home_dest == "search":
             return (
                 f'{have} Keep adding with "Space", or press "2" for Workspace '
-                'and build a query with "n".'
+                "and build a query from there."
             )
-        return (
-            f'{have} Press "2" to review the workspace, or "n" for a new draft '
-            "query."
-        )
+        return f'{have} Press "2" to review the workspace and build a query.'
     return None
 
 

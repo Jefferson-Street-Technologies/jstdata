@@ -1036,6 +1036,15 @@ class QueryScreen(BaseScreen):
         height: 1fr;
         background: #0a0a0a;
     }
+    /* Metric chart title — prominent, but under the query name. */
+    #query-chart-title {
+        height: 1;
+        width: 100%;
+        color: #f0f0f0;
+        text-style: bold;
+        margin: 0 0 1 0;
+    }
+    #query-chart-title.-empty { display: none; }
     #query-obs-header { color: #888; height: 1; }
     #query-obs { height: 1fr; background: #0a0a0a; }
     #query-chart {
@@ -1166,6 +1175,7 @@ class QueryScreen(BaseScreen):
             with Horizontal(id="query-main"):
                 yield ListView(id="query-series")
                 with Vertical(id="query-pane"):
+                    yield Label("", id="query-chart-title")
                     yield Label(
                         f"{'Period':<12}{'Value':>16}  {'Release':<22}",
                         id="query-obs-header",
@@ -1240,7 +1250,7 @@ class QueryScreen(BaseScreen):
         return f"[dim]Query[/] [bold]{escape(str(name))}[/] [dim]→ client.query(…)[/]"
 
     def footer_action_keys(self) -> list[str]:
-        return ["[bold]Shift+X[/bold] delete query (again to confirm)"]
+        return ["[bold]Shift+X[/bold] delete query"]
 
     def shell_breadcrumb(self) -> str:
         try:
@@ -1254,7 +1264,6 @@ class QueryScreen(BaseScreen):
 
     def refresh_footer(self) -> None:
         parts = [
-            "[bold]H[/bold] home",
             *self.footer_action_keys(),
             *self.FOOTER_CHROME,
         ]
@@ -1513,6 +1522,7 @@ class QueryScreen(BaseScreen):
             self.query_one("#query-obs-strip").display = False
             self.query_one("#query-obs", ListView).clear()
             self.query_one("#query-chart", HistoryPlot).plot_records(None)
+            self._paint_chart_title()
             self._apply_mode()
             return
         obs_list = self.query_one("#query-obs", ListView)
@@ -1529,6 +1539,35 @@ class QueryScreen(BaseScreen):
         self._render_obs_strip()
         self._apply_mode()
 
+    def _chart_title_text(self) -> str:
+        """Metric name for the chart headline (current plot group)."""
+        group = self._selected_group()
+        if group is not None:
+            return plot_group_title(group)
+        try:
+            query = self._resolve_query()
+        except Exception:
+            return ""
+        labels = getattr(self.app, "labels", {}) or {}
+        if query.metric:
+            mid = query.metric[0]
+            return label_for(labels, mid) or mid
+        if self._records:
+            rec = self._records[0]
+            label = str(rec.get("label") or "")
+            if " for " in label:
+                return label.split(" for ", 1)[0].strip()
+            if rec.get("metric_id"):
+                return str(rec["metric_id"]).replace("-", " ").title()
+            return label
+        return ""
+
+    def _paint_chart_title(self) -> None:
+        title = self._chart_title_text()
+        label = self.query_one("#query-chart-title", Label)
+        label.update(title)
+        label.set_class(not bool(title), "-empty")
+
     def _render_chart(self) -> None:
         visible = self._visible_records()
         group = self._selected_group()
@@ -1539,6 +1578,7 @@ class QueryScreen(BaseScreen):
                 for rec in visible
                 if rec in group.records
             ]
+        self._paint_chart_title()
         self.query_one("#query-chart", HistoryPlot).plot_records(
             visible, cursor_date=self._cursor_day(), colors=colors
         )
@@ -1597,6 +1637,7 @@ class QueryScreen(BaseScreen):
             f"{'Period':<12}{'Value':>16}  {'Release':<22}  {order}"
         )
         self._paint_view_tabs()
+        self._paint_chart_title()
         if table:
             self.query_one("#query-obs", ListView).focus()
         elif chart and self.query_one("#query-series").display:

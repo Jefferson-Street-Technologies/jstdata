@@ -65,16 +65,38 @@ class QueryComposeHeader(Vertical):
     DEFAULT_CSS = """
     QueryComposeHeader {
         height: auto;
-        max-height: 9;
+        max-height: 10;
         width: 100%;
         background: #0a0a0a;
         padding: 0 0 0 0;
         border-bottom: none;
         margin-bottom: 0;
     }
-    #qc-title-row { height: 1; margin-bottom: 1; }
-    #qc-title { width: 1fr; color: #f5f5f5; text-style: bold; }
-    #qc-badge { width: auto; color: #a3a3a3; }
+    /* Query name is the page's largest type (2-row presence + bold). */
+    #qc-title-row {
+        height: 2;
+        margin-bottom: 1;
+        align: left middle;
+    }
+    #qc-title {
+        width: 1fr;
+        height: 2;
+        color: #fafafa;
+        text-style: bold;
+        content-align: left middle;
+    }
+    #qc-badge {
+        width: auto;
+        height: 2;
+        color: #a3a3a3;
+        content-align: left middle;
+        margin-right: 1;
+    }
+    #qc-rename {
+        width: auto;
+        height: 2;
+        content-align: right middle;
+    }
     #qc-entities-label, #qc-metrics-label, #qc-series-label {
         color: #737373;
         width: 13;
@@ -150,6 +172,7 @@ class QueryComposeHeader(Vertical):
     def compose(self) -> ComposeResult:
         with Horizontal(id="qc-title-row"):
             yield Label("", id="qc-title")
+            yield Label("", id="qc-badge")
             yield ActionButton(
                 "Rename",
                 action_id="rename_query",
@@ -157,7 +180,6 @@ class QueryComposeHeader(Vertical):
                 variant="ghost",
                 id="qc-rename",
             )
-            yield Label("", id="qc-badge")
         with Horizontal(id="qc-entities-row"):
             yield Label("Entities", id="qc-entities-label")
             yield ChipRow(

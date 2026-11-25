@@ -11,6 +11,8 @@ from textual.reactive import reactive
 from textual.timer import Timer
 from textual.widgets import Label, Static
 
+from ..ui_primitives import ActionButton
+
 JumpKind = Literal["queries", "workspace"]
 # ("query", query_id) or ("resource", resource_type, resource_id)
 ArmedRemove = Union[tuple[str, int], tuple[str, str, str]]
@@ -33,13 +35,77 @@ class ProjectHeader(Static):
     def __init__(self, title: str = "JST", **kwargs: Any) -> None:
         super().__init__(title, **kwargs)
 
-    def set_project(self, title: str, *, commands_hint: bool = True) -> None:
+    def set_project(self, title: str, *, commands_hint: bool = False) -> None:
+        # Commands live on the pane bar chip; optional hint for non-shell UIs.
         hint = "   [: commands]" if commands_hint else ""
         self.update(f"JST / {title}{hint}")
 
 
-class TabBar(Static):
-    """Investigation tab strip (clickable labels via message on click regions)."""
+class _InvTabChip(Static):
+    """One investigation tab chip (neovim-style)."""
+
+    DEFAULT_CSS = """
+    _InvTabChip {
+        width: auto;
+        height: 1;
+        padding: 0 1;
+        margin-right: 1;
+        color: #a3a3a3;
+        background: #161616;
+    }
+    _InvTabChip.-active {
+        color: #0a0a0a;
+        background: #4ade80;
+        text-style: bold;
+    }
+    _InvTabChip.-jump {
+        text-style: bold;
+    }
+    """
+
+    def __init__(
+        self,
+        investigation_id: str,
+        label: str,
+        *,
+        active: bool = False,
+        mark: str = "",
+    ) -> None:
+        super().__init__(markup=True)
+        self.investigation_id = investigation_id
+        self._label = label
+        self._mark = mark
+        self.active = active
+        self.jump_index: Optional[int] = None
+
+    def on_mount(self) -> None:
+        self.set_class(self.active, "-active")
+        self._paint()
+
+    def set_jump(self, index: Optional[int]) -> None:
+        self.jump_index = index
+        self.set_class(index is not None, "-jump")
+        self._paint()
+
+    def _paint(self) -> None:
+        mark = self._mark or ""
+        name = f"{self._label}{mark}"
+        if self.jump_index is not None:
+            text = f"[bold #fbbf24]{self.jump_index}[/] {name}"
+        else:
+            text = name
+        self.update(text)
+
+    def on_click(self) -> None:
+        strip = self.parent
+        while strip is not None and not isinstance(strip, TabBar):
+            strip = strip.parent
+        if isinstance(strip, TabBar):
+            strip.post_message(TabBar.TabSelected(self.investigation_id))
+
+
+class TabBar(Horizontal):
+    """Investigation tabs for the pane chrome (hidden when only one tab)."""
 
     class TabSelected(Message):
         def __init__(self, investigation_id: str) -> None:
@@ -49,20 +115,31 @@ class TabBar(Static):
     DEFAULT_CSS = """
     TabBar {
         height: 1;
-        width: 100%;
-        background: #0a0a0a;
-        color: #888;
-        padding: 0 1;
-        border-bottom: solid #222;
+        width: 1fr;
+        layout: horizontal;
+        align: right middle;
+        background: #0c0c0c;
+        padding: 0 0 0 1;
+        overflow-x: auto;
+    }
+    TabBar.-empty {
+        display: none;
+    }
+    TabBar.-jump _InvTabChip {
+        color: #e5e5e5;
     }
     """
 
     def __init__(self, **kwargs: Any) -> None:
-        super().__init__("", markup=True, **kwargs)
+        super().__init__(**kwargs)
         self._order: list[str] = []
         self._labels: dict[str, str] = {}
         self._active: Optional[str] = None
         self._marks: dict[str, str] = {}
+        self._jumping = False
+        self._jump_targets: list[_InvTabChip] = []
+        self._rebuild_token = 0
+        self._rebuild_running = False
 
     def set_tabs(
         self,
@@ -76,17 +153,361 @@ class TabBar(Static):
         self._labels = dict(labels)
         self._active = active
         self._marks = dict(marks or {})
+        # Single tab → no strip (neovim-style multi-tab only).
+        show = len(self._order) > 1
+        self.set_class(not show, "-empty")
+        if self.is_mounted:
+            self._schedule_rebuild()
+
+    def on_mount(self) -> None:
+        self._schedule_rebuild()
+
+    def _schedule_rebuild(self) -> None:
+        self._rebuild_token += 1
+        self.call_later(self._launch_rebuild)
+
+    def _launch_rebuild(self) -> None:
+        if self.app is None or not self.is_mounted:
+            return
+        if self._rebuild_running:
+            return
+        self._rebuild_running = True
+        self.run_worker(
+            self._rebuild_tabs,
+            exclusive=False,
+            group=f"tab-bar-{id(self)}",
+            name="tab-bar-rebuild",
+            exit_on_error=False,
+        )
+
+    async def _rebuild_tabs(self) -> None:
+        try:
+            while self.is_mounted:
+                token = self._rebuild_token
+                was_jumping = self._jumping
+                self.cancel_jump()
+                await self.remove_children()
+                if not self.is_mounted:
+                    return
+                if token != self._rebuild_token:
+                    continue
+                if len(self._order) <= 1:
+                    self.set_class(True, "-empty")
+                    return
+                self.set_class(False, "-empty")
+                for inv_id in self._order:
+                    if not self.is_mounted or token != self._rebuild_token:
+                        break
+                    label = self._labels.get(inv_id, inv_id)
+                    await self.mount(
+                        _InvTabChip(
+                            inv_id,
+                            label,
+                            active=inv_id == self._active,
+                            mark=self._marks.get(inv_id, ""),
+                        )
+                    )
+                else:
+                    if was_jumping and self.is_mounted:
+                        self.start_jump()
+                    return
+                # Token changed mid-mount — rebuild again.
+        finally:
+            self._rebuild_running = False
+
+    def start_jump(self) -> bool:
+        """Number tabs for Shift+T jump. Return False if nothing to jump to."""
+        if len(self._order) <= 1:
+            return False
+        self._jumping = True
+        self.add_class("-jump")
+        self._jump_targets = []
+        chips = [c for c in self.children if isinstance(c, _InvTabChip)]
+        for i, chip in enumerate(chips[:9], start=1):
+            chip.set_jump(i)
+            self._jump_targets.append(chip)
+        for chip in chips[9:]:
+            chip.set_jump(None)
+        return bool(self._jump_targets)
+
+    def cancel_jump(self) -> bool:
+        if not self._jumping:
+            return False
+        self._jumping = False
+        self.remove_class("-jump")
+        for chip in self.query(_InvTabChip):
+            if isinstance(chip, _InvTabChip):
+                chip.set_jump(None)
+        self._jump_targets = []
+        return True
+
+    def handle_digit(self, digit: int) -> bool:
+        if not self._jumping:
+            return False
+        if digit < 0 or digit > 9:
+            return False
+        index = 10 if digit == 0 else digit
+        if index < 1 or index > len(self._jump_targets):
+            try:
+                self.app.notify(f"No tab {index}", severity="warning")
+            except Exception:  # noqa: BLE001
+                pass
+            return True
+        chip = self._jump_targets[index - 1]
+        self.cancel_jump()
+        self.post_message(self.TabSelected(chip.investigation_id))
+        return True
+
+    def render(self):  # noqa: ANN201
+        # Unit-test helper when unmounted: mimic the old Static text.
+        if self.is_mounted:
+            return super().render()
         parts: list[str] = []
         for i, inv_id in enumerate(self._order, start=1):
             label = self._labels.get(inv_id, inv_id)
             mark = self._marks.get(inv_id, "")
             text = f"{i} {label}{mark}"
-            if inv_id == active:
-                parts.append(f"[bold #4ade80]\\[{text}][/]")
+            if inv_id == self._active:
+                parts.append(f"[{text}]")
             else:
-                parts.append(f"\\[{text}]")
-        parts.append("[dim]\\[+][/]")
-        self.update("  ".join(parts) if parts else "[dim](no investigations)[/]")
+                parts.append(f"[{text}]")
+        return "  ".join(parts)
+
+
+class PaneBar(Static):
+    """Chrome strip: button chips left, always-on tabs + ``+`` right.
+
+    Left: Home / Search / Commands. Tabs always paint (even one). Each tab
+    gets a close ``×`` when there are 2+ tabs. Trailing ``+`` opens a new
+    tab. Shift+T enters a tab menu (numbers / N / X).
+
+    Painted as a Static — docked/top Horizontals clip to height 0.
+    """
+
+    class Home(Message):
+        pass
+
+    class Search(Message):
+        pass
+
+    class Commands(Message):
+        pass
+
+    class NewTab(Message):
+        pass
+
+    class TabSelected(Message):
+        def __init__(self, investigation_id: str) -> None:
+            self.investigation_id = investigation_id
+            super().__init__()
+
+    class TabClose(Message):
+        def __init__(self, investigation_id: str) -> None:
+            self.investigation_id = investigation_id
+            super().__init__()
+
+    _HIT_HOME = "home"
+    _HIT_SEARCH = "search"
+    _HIT_COMMANDS = "commands"
+    _HIT_TAB = "tab"
+    _HIT_CLOSE = "close"
+    _HIT_NEW = "new_tab"
+
+    DEFAULT_CSS = """
+    PaneBar {
+        height: 1;
+        width: 100%;
+        background: #0c0c0c;
+        color: #e5e5e5;
+        padding: 0 1;
+    }
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__("", markup=True, **kwargs)
+        self._order: list[str] = []
+        self._labels: dict[str, str] = {}
+        self._active: Optional[str] = None
+        self._marks: dict[str, str] = {}
+        self._jumping = False
+        # (start, end, kind, investigation_id|None)
+        self._hits: list[tuple[int, int, str, Optional[str]]] = []
+        self._jump_targets: list[str] = []
+
+    def on_mount(self) -> None:
+        self._paint()
+
+    def set_tabs(
+        self,
+        order: list[str],
+        *,
+        labels: dict[str, str],
+        active: Optional[str],
+        marks: Optional[dict[str, str]] = None,
+    ) -> None:
+        self._order = list(order)
+        self._labels = dict(labels)
+        self._active = active
+        self._marks = dict(marks or {})
+        if self._jumping:
+            self._jump_targets = list(self._order[:9])
+        self._paint()
+
+    def start_jump(self) -> bool:
+        """Open the tab menu. Always ok — even one tab (N adds, X blocked)."""
+        self._jumping = True
+        self._jump_targets = list(self._order[:9])
+        self._paint()
+        return True
+
+    def cancel_jump(self) -> bool:
+        if not self._jumping:
+            return False
+        self._jumping = False
+        self._jump_targets = []
+        self._paint()
+        return True
+
+    def handle_digit(self, digit: int) -> bool:
+        if not self._jumping:
+            return False
+        if digit < 0 or digit > 9:
+            return False
+        index = 10 if digit == 0 else digit
+        if index < 1 or index > len(self._jump_targets):
+            try:
+                self.app.notify(f"No tab {index}", severity="warning")
+            except Exception:  # noqa: BLE001
+                pass
+            return True
+        inv_id = self._jump_targets[index - 1]
+        self.cancel_jump()
+        self.post_message(self.TabSelected(inv_id))
+        return True
+
+    @staticmethod
+    def _chip(plain: str, *, key: str) -> tuple[str, str]:
+        """Return (plain_with_padding, markup) for a left action chip."""
+        body = f" {plain} "
+        # Key hint stays dim inside the chip.
+        if plain.endswith(f" {key}"):
+            label = plain[: -len(f" {key}")]
+            shown = (
+                f"[on #2a2a2a] {label} [dim]{key}[/] [/]"
+            )
+        else:
+            shown = f"[on #2a2a2a]{body}[/]"
+        return body, shown
+
+    def _paint(self) -> None:
+        hits: list[tuple[int, int, str, Optional[str]]] = []
+        parts: list[str] = []
+        col = 0
+
+        def emit(plain: str, shown: str, kind: str, inv: Optional[str] = None) -> None:
+            nonlocal col
+            start = col
+            col += len(plain)
+            hits.append((start, col, kind, inv))
+            parts.append(shown)
+
+        def gap(n: int = 1) -> None:
+            nonlocal col
+            col += n
+            parts.append(" " * n)
+
+        # Left action chips — look like buttons, not header text.
+        for plain_label, key, kind in (
+            ("Home", "H", self._HIT_HOME),
+            ("Search", "/", self._HIT_SEARCH),
+            ("Commands", ":", self._HIT_COMMANDS),
+        ):
+            if parts:
+                gap(1)
+            body, shown = self._chip(f"{plain_label} {key}", key=key)
+            emit(body, shown, kind)
+
+        gap(3)
+
+        can_close = len(self._order) > 1
+        for i, inv_id in enumerate(self._order, start=1):
+            if i > 1:
+                gap(1)
+            label = self._labels.get(inv_id, inv_id)
+            mark = self._marks.get(inv_id, "")
+            active = inv_id == self._active
+            if self._jumping and i <= 9:
+                core_plain = f"{i} {label}{mark}"
+                core_shown = f"[bold #fbbf24]{i}[/] {label}{mark}"
+            else:
+                core_plain = f"{label}{mark}"
+                core_shown = label + mark
+
+            if active:
+                tab_plain = f" {core_plain} "
+                tab_shown = f"[bold #0a0a0a on #4ade80]{tab_plain}[/]"
+            else:
+                tab_plain = f" {core_plain} "
+                tab_shown = f"[on #1a1a1a]{tab_plain}[/]"
+
+            emit(tab_plain, tab_shown, self._HIT_TAB, inv_id)
+
+            if can_close:
+                close_plain = "×"
+                close_shown = "[dim #a3a3a3]×[/]" if not active else "[#0a0a0a on #4ade80]×[/]"
+                # Keep close visually attached to the tab chip.
+                if active:
+                    # Active chip already closed; paint × as its own hit after.
+                    close_shown = "[bold #0a0a0a on #4ade80] ×[/]"
+                    close_plain = " ×"
+                else:
+                    close_shown = "[on #1a1a1a dim] ×[/]"
+                    close_plain = " ×"
+                emit(close_plain, close_shown, self._HIT_CLOSE, inv_id)
+
+        # Trailing + always available for a new tab.
+        gap(1)
+        plus_plain = " + "
+        plus_shown = (
+            "[bold #fbbf24 on #2a2a2a] + [/]"
+            if self._jumping
+            else "[on #2a2a2a] + [/]"
+        )
+        emit(plus_plain, plus_shown, self._HIT_NEW)
+
+        self._hits = hits
+        self.update("".join(parts))
+
+    def on_click(self, event) -> None:  # noqa: ANN001
+        try:
+            local_x = event.screen_x - self.region.x - 1  # padding 0 1
+        except Exception:  # noqa: BLE001
+            return
+        if local_x < 0:
+            return
+        for start, end, action, inv in self._hits:
+            if not (start <= local_x < end):
+                continue
+            if action == self._HIT_HOME:
+                self.post_message(self.Home())
+            elif action == self._HIT_SEARCH:
+                self.post_message(self.Search())
+            elif action == self._HIT_COMMANDS:
+                self.post_message(self.Commands())
+            elif action == self._HIT_NEW:
+                if self._jumping:
+                    self.cancel_jump()
+                self.post_message(self.NewTab())
+            elif action == self._HIT_TAB and inv:
+                if self._jumping:
+                    self.cancel_jump()
+                self.post_message(self.TabSelected(inv))
+            elif action == self._HIT_CLOSE and inv:
+                if self._jumping:
+                    self.cancel_jump()
+                self.post_message(self.TabClose(inv))
+            event.stop()
+            return
 
 
 def _sidebar_owner(node: Any) -> Optional["ResearchSidebar"]:
@@ -267,9 +688,6 @@ class ResearchSidebar(Static):
             self.resource_id = resource_id
             super().__init__()
 
-    class NewQuery(Message):
-        pass
-
     sidebar_collapsed: reactive[bool] = reactive(False)
 
     DEFAULT_CSS = """
@@ -297,12 +715,6 @@ class ResearchSidebar(Static):
         height: 1;
         padding: 0 1;
         margin-top: 1;
-    }
-    #sidebar-new-query {
-        color: #86efac;
-        height: 1;
-        padding: 0 1;
-        margin-bottom: 1;
     }
     #sidebar-query-list {
         height: 1fr;
@@ -462,7 +874,6 @@ class ResearchSidebar(Static):
 
     def compose(self) -> ComposeResult:
         yield Label("Queries", id="sidebar-queries-kicker")
-        yield Label("+ Reset draft", id="sidebar-new-query")
         yield VerticalScroll(id="sidebar-query-list")
         yield Label("Workspace", id="sidebar-ws-kicker")
         yield VerticalScroll(id="sidebar-ws-list")
@@ -481,14 +892,10 @@ class ResearchSidebar(Static):
         self.post_message(self.ResourceSelected(resource_type, resource_id))
 
     def remove_query(self, query_id: int) -> None:
-        """First ✕ arms the tile; second confirms delete (no modal)."""
+        """Delete immediately — no arm / confirm step."""
         self.cancel_jump()
-        key: ArmedRemove = ("query", int(query_id))
-        if self._armed_remove == key:
-            self.clear_armed_remove()
-            self.post_message(self.QueryRemoved(int(query_id)))
-            return
-        self._arm_remove(key)
+        self.clear_armed_remove()
+        self.post_message(self.QueryRemoved(int(query_id)))
 
     def remove_resource(self, resource_type: str, resource_id: str) -> None:
         """First ✕ arms the tile; second confirms remove (no modal)."""
@@ -852,8 +1259,3 @@ class ResearchSidebar(Static):
                     return
         finally:
             self._workspace_running = False
-
-    def on_click(self, event) -> None:  # noqa: ANN001
-        if event.widget and event.widget.id == "sidebar-new-query":
-            self.cancel_jump()
-            self.post_message(self.NewQuery())
