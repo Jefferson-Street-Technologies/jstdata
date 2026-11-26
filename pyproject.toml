@@ -9,6 +9,7 @@ include = [
     "jstdata/investigation/bundled/*.yaml",
     "jstdata/onboarding/tutorials/*.yaml",
     "jstdata/agent/skills/jst/SKILL.md",
+    "jstdata/preview/assets/*",
 ]
 homepage = "https://github.com/Jefferson-Street-Technologies/jstdata"
 repository = "https://github.com/Jefferson-Street-Technologies/jstdata"

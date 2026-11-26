@@ -6,10 +6,12 @@ client-side remark cite filters (series + date span), matching the TUI.
 
 from __future__ import annotations
 
+import base64
 import html
 import json
 import math
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional, Sequence, Union
 
@@ -21,6 +23,14 @@ from .data import (
     RemarkView,
     SeriesLine,
 )
+
+
+@lru_cache(maxsize=1)
+def _favicon_data_uri() -> str:
+    """Letterform mark as a data URI so preview HTML stays self-contained."""
+    path = Path(__file__).resolve().parent / "assets" / "favicon.svg"
+    raw = path.read_bytes()
+    return "data:image/svg+xml;base64," + base64.b64encode(raw).decode("ascii")
 
 # Bright lines for night backgrounds; deeper tones for light backgrounds.
 LINE_COLORS_NIGHT = (
@@ -1138,12 +1148,14 @@ def render_html(model: PreviewModel) -> str:
         quote=True,
     )
 
+    favicon_href = _favicon_data_uri()
     return f"""<!DOCTYPE html>
 <html lang="en" data-theme="night">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{_esc(model.title)}</title>
+  <link rel="icon" href="{favicon_href}" type="image/svg+xml" />
   <style>
     :root {{
       --bg: #0a0a0a;
