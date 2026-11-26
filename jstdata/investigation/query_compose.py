@@ -59,6 +59,14 @@ def frequency_options_for(available: set[str]) -> list[Optional[str]]:
     return options
 
 
+def default_frequency(options: Sequence[Optional[str]]) -> Optional[str]:
+    """First concrete frequency after ``Any`` (``None``), if any."""
+    for opt in options:
+        if opt is not None:
+            return opt
+    return None
+
+
 class QueryComposeHeader(Vertical):
     """Title / scope strip above the results pane (composition lives in sidebar)."""
 

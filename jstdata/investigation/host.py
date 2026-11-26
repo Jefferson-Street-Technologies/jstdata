@@ -1582,8 +1582,11 @@ class InvestigationHost(App):
         event.stop()
 
     def action_delete_action(self) -> None:
-        """``dd`` — cascade-delete the active action (and children). No confirm."""
+        """``dd`` — delete selected remark if any, else cascade-delete the action."""
         if not self._delete_action_allowed():
+            return
+        delete_remark = getattr(self.screen, "delete_selected_remark", None)
+        if callable(delete_remark) and delete_remark():
             return
         assert self.active is not None
         assert self.investigation is not None
@@ -3075,12 +3078,18 @@ class InvestigationHost(App):
                 result = update_publication(
                     inv, previous_id, api_key=api_key, site_url=site_url
                 )
+                url = result["url"]
+                record_publication(
+                    inv.id, result, text=text_of(inv), app_dir=self.app_dir
+                )
             else:
-                result = publish_investigation(inv, api_key=api_key, site_url=site_url)
-            url = result["url"]
-            record_publication(
-                inv.id, result, text=text_of(inv), app_dir=self.app_dir
-            )
+                result = publish_investigation(
+                    inv, api_key=api_key, site_url=site_url
+                )
+                url = result["url"]
+                record_publication(
+                    inv.id, result, text=text_of(inv), app_dir=self.app_dir
+                )
         except QueriesChangedError as exc:
             error = f"{exc} Run :publish again and press p for a new link."
         except PublishError as exc:
@@ -3106,7 +3115,11 @@ class InvestigationHost(App):
         if outcome is None or self._quitting:
             return
         self.publish_outcome = None
-        self._on_publish_done(outcome.url, outcome.error, outcome.updated)
+        self._on_publish_done(
+            outcome.url,
+            outcome.error,
+            outcome.updated,
+        )
 
     async def action_quit(self) -> None:
         """Quit; while publishing, only on a second `q` (JEF-170)."""
@@ -3126,7 +3139,10 @@ class InvestigationHost(App):
         self.exit()
 
     def _on_publish_done(
-        self, url: Optional[str], error: Optional[str], updated: bool = False
+        self,
+        url: Optional[str],
+        error: Optional[str],
+        updated: bool = False,
     ) -> None:
         self._publishing = False
         if error is not None:
@@ -3134,7 +3150,14 @@ class InvestigationHost(App):
             self.notify(escape(error), severity="error", timeout=10)
             return
         assert url is not None
-        self.push_screen(PublishedModal(url, updated=updated))
+        title = None
+        if self.project and (self.project.title or self.project_id):
+            title = self.project.title or self.project_id
+        elif self.investigation:
+            title = self.investigation.title or self.investigation.id
+        self.push_screen(
+            PublishedModal(url, updated=updated, title=title)
+        )
 
     def _cmd_annotate(self, parsed: ParsedCommand) -> None:
         qid = parsed.options.get("query_id")

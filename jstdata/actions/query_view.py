@@ -19,7 +19,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, Optional
 
-from textual import on, work
+from textual import events, on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -34,6 +34,7 @@ from ..investigation.naming import label_for
 from ..investigation.query_compose import (
     OBS_MODES,
     QueryComposeHeader,
+    default_frequency,
     frequency_options_for,
     normalize_variant_frequency,
 )
@@ -588,6 +589,82 @@ def cursor_dates(records: Sequence[dict[str, Any]]) -> list[datetime]:
     return out
 
 
+# Chart bound drag: map terminal columns onto observation indices.
+BOUND_HIT_RADIUS = 3
+_DEFAULT_CANVAS_GUTTER = 10
+
+
+def canvas_region_for_width(width: int, *, gutter: Optional[int] = None) -> tuple[int, int]:
+    """Inclusive left/right columns for the plot canvas inside a widget."""
+    w = max(1, int(width))
+    g = _DEFAULT_CANVAS_GUTTER if gutter is None else max(0, int(gutter))
+    left = min(g, max(0, w // 5))
+    right = max(left, w - 1)
+    return left, right
+
+
+def date_index_to_x(
+    index: int,
+    n_dates: int,
+    canvas_left: int,
+    canvas_right: int,
+) -> int:
+    """Map a 0-based date index onto a canvas column."""
+    if n_dates <= 1:
+        return int(canvas_left)
+    span = max(1, int(canvas_right) - int(canvas_left))
+    t = max(0, min(n_dates - 1, int(index))) / (n_dates - 1)
+    return int(round(canvas_left + t * span))
+
+
+def x_to_date_index(
+    x: int,
+    n_dates: int,
+    canvas_left: int,
+    canvas_right: int,
+) -> int:
+    """Snap a widget X column to the nearest observation index."""
+    if n_dates <= 0:
+        return 0
+    if n_dates == 1:
+        return 0
+    left = int(canvas_left)
+    right = int(canvas_right)
+    span = max(1, right - left)
+    x_clamped = max(left, min(right, int(x)))
+    t = (x_clamped - left) / span
+    return int(round(t * (n_dates - 1)))
+
+
+def nearest_bound_to_drag(
+    click_x: int,
+    lo_x: int,
+    hi_x: int,
+    *,
+    focused: str = "hi",
+    hit_radius: int = BOUND_HIT_RADIUS,
+) -> str:
+    """Choose ``lo`` or ``hi`` from a click.
+
+    Grab a bound if the click is within ``hit_radius`` of its marker.
+    Otherwise place the Tab-focused bound (so Tab then click moves that one).
+    """
+    focus = "lo" if focused == "lo" else "hi"
+    d_lo = abs(int(click_x) - int(lo_x))
+    d_hi = abs(int(click_x) - int(hi_x))
+    radius = max(0, int(hit_radius))
+    in_lo = d_lo <= radius
+    in_hi = d_hi <= radius
+    if in_lo and in_hi:
+        return "lo" if d_lo <= d_hi else "hi"
+    if in_lo:
+        return "lo"
+    if in_hi:
+        return "hi"
+    return focus
+
+
+
 def observation_on_date(
     record: dict[str, Any], day: datetime
 ) -> Optional[dict[str, Any]]:
@@ -1131,9 +1208,70 @@ class ObservationDetail(ModalScreen[None]):
 
 
 class HistoryPlot(PlotextPlot):
-    """Plotext line chart for one comparable query group."""
+    """Plotext line chart for one comparable query group.
+
+    Supports click-drag on the start/end time bounds (vertical markers).
+    """
 
     can_focus = False
+
+    class BoundDrag(Message):
+        """Posted while the user drags a time bound on the chart."""
+
+        def __init__(self, which: str, date_index: int) -> None:
+            self.which = which  # "lo" | "hi"
+            self.date_index = int(date_index)
+            super().__init__()
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._drag_which: Optional[str] = None
+        self._drag_dates_n: int = 0
+        self._bound_lo_i: int = 0
+        self._bound_hi_i: int = 0
+        self._bound_focus: str = "hi"
+        self._canvas_left: int = 0
+        self._canvas_right: int = 0
+
+    def set_drag_context(
+        self,
+        *,
+        n_dates: int,
+        bound_lo_i: int,
+        bound_hi_i: int,
+        bound_focus: str = "hi",
+    ) -> None:
+        """Observation count and bound indices for hit-testing / snapping."""
+        self._drag_dates_n = max(0, int(n_dates))
+        self._bound_lo_i = int(bound_lo_i)
+        self._bound_hi_i = int(bound_hi_i)
+        self._bound_focus = "lo" if bound_focus == "lo" else "hi"
+        self._refresh_canvas_region()
+
+    def _refresh_canvas_region(self) -> None:
+        width = max(1, int(self.size.width or 1))
+        left, right = self._probe_canvas_cols(width)
+        if left is None or right is None:
+            left, right = canvas_region_for_width(width)
+        self._canvas_left = left
+        self._canvas_right = right
+
+    def _probe_canvas_cols(
+        self, width: int
+    ) -> tuple[Optional[int], Optional[int]]:
+        """Read plotext canvas columns when a prior render left them behind."""
+        _ = width
+        matrix = getattr(self.plt, "matrix", None)
+        cols = getattr(matrix, "Cols_canvas", None) if matrix is not None else None
+        if cols is None:
+            return None, None
+        try:
+            seq = list(cols)
+        except TypeError:
+            return None, None
+        if not seq:
+            return None, None
+        return int(seq[0]), int(seq[-1])
 
     def plot_records(
         self,
@@ -1153,9 +1291,61 @@ class HistoryPlot(PlotextPlot):
             colors=colors,
         )
         self.refresh()
+        self._refresh_canvas_region()
 
     def plot_record(self, record: Optional[dict[str, Any]]) -> None:
         self.plot_records(None if record is None else [record])
+
+    def _date_index_at_x(self, x: int) -> int:
+        return x_to_date_index(
+            x,
+            self._drag_dates_n,
+            self._canvas_left,
+            self._canvas_right,
+        )
+
+    def _bound_x(self, which: str) -> int:
+        index = self._bound_lo_i if which == "lo" else self._bound_hi_i
+        return date_index_to_x(
+            index,
+            self._drag_dates_n,
+            self._canvas_left,
+            self._canvas_right,
+        )
+
+    def _emit_drag(self, x: int) -> None:
+        if self._drag_which is None or self._drag_dates_n <= 0:
+            return
+        self.post_message(
+            self.BoundDrag(self._drag_which, self._date_index_at_x(x))
+        )
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if event.button != 1 or self._drag_dates_n <= 0:
+            return
+        self._refresh_canvas_region()
+        lo_x = self._bound_x("lo")
+        hi_x = self._bound_x("hi")
+        self._drag_which = nearest_bound_to_drag(
+            event.x, lo_x, hi_x, focused=self._bound_focus
+        )
+        self.capture_mouse()
+        event.stop()
+        self._emit_drag(event.x)
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if self._drag_which is None:
+            return
+        event.stop()
+        self._emit_drag(event.x)
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        if self._drag_which is None:
+            return
+        event.stop()
+        self._emit_drag(event.x)
+        self._drag_which = None
+        self.release_mouse()
 
 
 class QueryScreen(BaseScreen):
@@ -1468,6 +1658,9 @@ class QueryScreen(BaseScreen):
         # Frequency selector options derived from metric variants / series.
         self._freq_options: list[Optional[str]] = [None]
         self._freq_source_key: tuple[str, ...] = ()
+        # Composition key we already auto-picked a default frequency for
+        # (so choosing "Any frequency" later is not overridden).
+        self._freq_auto_key: Optional[tuple[str, ...]] = None
         self._legend_expanded = False
         self._remarks_collapsed = False
 
@@ -1788,6 +1981,10 @@ class QueryScreen(BaseScreen):
             )
         elif picking and selected is None:
             lines.append("[dim]Press 1–9 to highlight a remark · Esc to exit[/]")
+        elif picking and selected is not None:
+            lines.append(
+                f"[dim]Remark {selected} selected · dd delete · Esc exit[/]"
+            )
         panel.update("\n".join(lines))
 
     def refresh_annotations(self) -> None:
@@ -2211,6 +2408,14 @@ class QueryScreen(BaseScreen):
             pass
         self.notify("Remark saved")
 
+    def delete_selected_remark(self) -> bool:
+        """Delete the highlighted remark (``dd``). Returns True if handled."""
+        index = self._selected_remark_i
+        if index is None:
+            return False
+        self.action_delete_remark(int(index))
+        return True
+
     def action_delete_remark(self, index: int) -> None:
         """Delete remark at 1-based index."""
         if self.query_id is None:
@@ -2227,6 +2432,9 @@ class QueryScreen(BaseScreen):
         except Exception as exc:  # noqa: BLE001
             self.notify(str(exc), severity="error")
             return
+        # Selection / pick mode pointed at a now-stale index — clear cite highlight.
+        if self._remark_pick_mode or self._selected_remark_i is not None:
+            self._exit_remark_pick(restore=True)
         try:
             self._render_annotations(self._resolve_query())
         except Exception:  # noqa: BLE001
@@ -2563,7 +2771,15 @@ class QueryScreen(BaseScreen):
             ]
         self._paint_chart_title()
         self._clamp_bounds()
-        self.query_one("#query-chart", HistoryPlot).plot_records(
+        dates = self._all_cursor_dates()
+        chart = self.query_one("#query-chart", HistoryPlot)
+        chart.set_drag_context(
+            n_dates=len(dates),
+            bound_lo_i=self._bound_lo_i,
+            bound_hi_i=self._bound_hi_i,
+            bound_focus=self._bound_focus,
+        )
+        chart.plot_records(
             visible,
             cursor_date=self._cursor_day(),
             bound_lo=self._bound_lo_day(),
@@ -2723,6 +2939,7 @@ class QueryScreen(BaseScreen):
         self._freq_source_key = key
         if not key:
             self._freq_options = [None]
+            self._freq_auto_key = None
             return
         self.refresh_frequency_options(list(query.metric), list(query.series))
 
@@ -2735,16 +2952,24 @@ class QueryScreen(BaseScreen):
             for mid in metric_ids:
                 try:
                     metric = self.client.get_metric(mid)
+                    for variant in getattr(metric, "variants", None) or []:
+                        found.add(
+                            normalize_variant_frequency(
+                                getattr(variant, "frequency", None)
+                            )
+                        )
                 except Exception:  # noqa: BLE001
                     continue
-                for variant in metric.variants or []:
-                    found.add(normalize_variant_frequency(variant.frequency))
             for sid in series_ids:
                 try:
                     series = self.client.get_series(sid)
+                    found.add(
+                        normalize_variant_frequency(
+                            getattr(series, "frequency", None)
+                        )
+                    )
                 except Exception:  # noqa: BLE001
                     continue
-                found.add(normalize_variant_frequency(series.frequency))
             return found
 
         available = await asyncio.to_thread(_collect)
@@ -2756,7 +2981,42 @@ class QueryScreen(BaseScreen):
         if self._freq_source_key_for(query) != self._freq_source_key:
             return
         self._freq_options = frequency_options_for(available)
+        # Prefer the first real frequency over "Any" when unset for this composition.
+        preferred = default_frequency(self._freq_options)
+        if (
+            preferred is not None
+            and query.frequency is None
+            and self._freq_auto_key != self._freq_source_key
+        ):
+            self._freq_auto_key = self._freq_source_key
+            self._apply_default_frequency(preferred)
+            return
         # Re-paint so the EnumSelect picks up the new option list.
+        self._paint_compose()
+
+    def _apply_default_frequency(self, frequency: str) -> None:
+        """Persist the first concrete frequency as the query default."""
+        if self.query_id is None:
+            try:
+                self._resolve_query().frequency = frequency
+            except Exception:  # noqa: BLE001
+                pass
+            self._paint_compose()
+            return
+        from ..ops.query_ops import patch_query_op
+
+        try:
+            patch_query_op(
+                int(self.query_id),
+                frequency=frequency,
+                **self._op_target(),
+            )
+            self._resync_after_op()
+        except Exception as exc:  # noqa: BLE001
+            self.notify(str(exc), severity="error")
+            self._paint_compose()
+            return
+        self._mark_composition_changed()
         self._paint_compose()
 
     def _sync_query_name(self, query: Query) -> None:
@@ -3036,6 +3296,35 @@ class QueryScreen(BaseScreen):
     def _compose_rename(self, event: QueryComposeHeader.Rename) -> None:
         event.stop()
         self.action_rename_query()
+
+    @on(HistoryPlot.BoundDrag)
+    def _on_bound_drag(self, event: HistoryPlot.BoundDrag) -> None:
+        """Mouse-drag of a chart time bound (start/end)."""
+        event.stop()
+        dates = self._all_cursor_dates()
+        if not dates:
+            return
+        self._clamp_bounds()
+        index = max(0, min(int(event.date_index), len(dates) - 1))
+        if event.which == "lo":
+            self._bound_lo_i = min(index, self._bound_hi_i)
+            self._bound_focus = "lo"
+        else:
+            self._bound_hi_i = max(index, self._bound_lo_i)
+            self._bound_focus = "hi"
+        self._cursor_i = (
+            self._bound_lo_i if self._bound_focus == "lo" else self._bound_hi_i
+        )
+        # Keep HistoryPlot hit-testing in sync mid-drag.
+        try:
+            chart = self.query_one("#query-chart", HistoryPlot)
+            chart._bound_lo_i = self._bound_lo_i
+            chart._bound_hi_i = self._bound_hi_i
+            chart._bound_focus = self._bound_focus
+        except Exception:  # noqa: BLE001
+            pass
+        self._render_chart()
+        self._render_obs_strip()
 
     @on(ActionButton.Pressed)
     def _action_button(self, event: ActionButton.Pressed) -> None:
@@ -3502,7 +3791,7 @@ QUERY_VIEW = register(
         description=(
             "Interactive query composition and chart workbench. "
             "First executable plot runs automatically; further edits need r. "
-            "Remarks: R to add, Shift+A to pick/apply a source; Tab switches start/end date."
+            "Remarks: R to add, Shift+A to pick/apply a source, dd to delete the selected remark; Tab switches start/end date."
         ),
         create_screen=create_query_screen,
         arguments=(
@@ -3522,8 +3811,10 @@ QUERY_VIEW = register(
             ActionBinding("S", "add_series", "Add direct series"),
             ActionBinding("Tab", "bound", "Toggle start/end date"),
             ActionBinding("h / l", "obs", "Adjust the focused date"),
+            ActionBinding("drag", "bound", "Drag start/end markers on the chart"),
             ActionBinding("enter", "inspect", "Chart: show/hide series; table: open release"),
             ActionBinding("x", "toggle_series", "Show or hide a series on the chart"),
+            ActionBinding("dd", "delete_remark", "Delete the selected remark"),
             ActionBinding("D + digit", "delete_remark", "Delete remark 1–9"),
             ActionBinding("[ / ]", "group", "Cycle incompatible-unit chart groups"),
             ActionBinding("o", "sort", "Toggle observation table sort"),
