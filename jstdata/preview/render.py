@@ -1171,6 +1171,8 @@ def render_html(model: PreviewModel) -> str:
         else ""
     )
     scope_label = "Project" if model.is_project else "Investigation"
+    clone_slug = (model.project_id or model.investigation_id or "").strip()
+    clone_cmd = f"jst clone {clone_slug}" if clone_slug else "jst clone"
 
     details_payload = {
         (p.key or str(p.query_id)): {
@@ -1771,7 +1773,9 @@ def render_html(model: PreviewModel) -> str:
         <button type="button" class="btn refresh" disabled title="Re-run jst preview to refresh">
           Refresh data
         </button>
-        <button type="button" class="btn" disabled title="Coming soon">Clone</button>
+        <button type="button" class="btn" id="clone-btn"
+          data-clone-cmd="{_esc(clone_cmd)}"
+          title="Copy: {_esc(clone_cmd)}">Clone</button>
       </div>
       <section class="details">
         <h3>Details</h3>
@@ -1811,6 +1815,25 @@ def render_html(model: PreviewModel) -> str:
       if (themeBtn) {{
         themeBtn.addEventListener("click", function () {{
           applyTheme(root.getAttribute("data-theme") === "night" ? "light" : "night");
+        }});
+      }}
+
+      var cloneBtn = document.getElementById("clone-btn");
+      if (cloneBtn) {{
+        cloneBtn.addEventListener("click", function () {{
+          var cmd = cloneBtn.getAttribute("data-clone-cmd") || "jst clone";
+          var prev = cloneBtn.textContent;
+          function done(ok) {{
+            cloneBtn.textContent = ok ? "Copied" : cmd;
+            cloneBtn.title = cmd;
+            setTimeout(function () {{ cloneBtn.textContent = prev; }}, 1600);
+          }}
+          if (navigator.clipboard && navigator.clipboard.writeText) {{
+            navigator.clipboard.writeText(cmd).then(function () {{ done(true); }})
+              .catch(function () {{ done(false); }});
+          }} else {{
+            done(false);
+          }}
         }});
       }}
 

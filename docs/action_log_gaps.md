@@ -41,11 +41,16 @@ Hand edits under `~/.jstdata/projects/<id>/` bypass the log entirely.
 Prefer shallow `jst actions query run --tail/--head` for research; document
 deep pulls as out-of-band when needed.
 
-### 4. Historical TUI reopen is MVP
+### 4. Historical TUI reopen is a research trail (still partial hydration)
 
-Activity drawer (Shift+L) + artifact JSON modal reopen history without API calls.
+Research activity drawer (Shift+L) shows human-readable titles, resource
+summaries, You/CLI/Agent attribution, and inline sample observations for
+`query.run` artifacts (Space expands; Enter opens structured details with
+Request details JSON). No Data API calls on reopen.
+
 Full interactive view hydration from artifacts (charts/tables matching live
-screens) is still partial — JSON inspect is the guaranteed path.
+screens) is still partial — the structured summary + JSON inspect path is the
+guaranteed recovery mechanism.
 
 ### 5. Imperfect fold-forward, not undo
 

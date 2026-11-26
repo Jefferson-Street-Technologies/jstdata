@@ -210,6 +210,9 @@ def test_build_preview_model_and_render(inv_root: Path):
     assert "#056704" in html
     assert "Refresh data" in html
     assert "Clone" in html
+    assert 'id="clone-btn"' in html
+    assert "jst clone foreign-banks" in html
+    assert 'disabled title="Coming soon"' not in html
     assert "Details" in html
     assert "Provenance" not in html
     assert 'data-detail="period"' not in html

@@ -256,8 +256,8 @@ jst actions feedback submit "Chart clipped on peers tab" \\
 jst actions feedback ls
 ```
 
-Humans review the same log in the TUI Activity drawer (**Shift+L**); **`a`** cycles
-actor filters (`all` → `tui` → `cli` → `agent`).
+Humans review the same log in the TUI **Research activity** drawer (**Shift+L**);
+**`a`** cycles actor filters (`All` → `You` → `CLI` → `Agent`).
 
 ### Local multi-tab preview
 
@@ -302,8 +302,9 @@ jst preview
 
 - **Humans** use the chart-first shell: sidebar queries/workspace, `/` search,
   `e` edit, `s` save, remarks on the query workbench, `F` feedback, `{`/`}` tabs,
-  Shift+`H` research root, **Shift+L** activity (action log). Enter on a
-  metric/entity opens a draft chart. Host `dd` is the delete chord.
+  Shift+`H` research root, **Shift+L** Research activity trail (action log;
+  Space expands retrievals, Enter opens details). Enter on a metric/entity opens
+  a draft chart. Host `dd` is the delete chord.
 - **Agents** use `jst actions --actor agent …` with explicit `--project` /
   `--investigation`. Do not steal the human viewport.
 - **Curation:** exploratory by default; `in_report` only after promote. Copy with

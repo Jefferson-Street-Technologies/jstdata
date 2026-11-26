@@ -93,7 +93,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     ),
     CommandSpec(
         "activity",
-        "Open the action-log activity drawer for this project/investigation",
+        "Open the Research activity trail for this project/investigation",
         usage="activity",
     ),
 )

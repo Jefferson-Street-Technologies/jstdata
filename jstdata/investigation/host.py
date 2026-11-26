@@ -784,7 +784,7 @@ class InvestigationHost(App):
         # Investigation tabs within the open project (`{` / `}`).
         Binding("{", "prev_investigation", "Prev investigation tab", show=False),
         Binding("}", "next_investigation", "Next investigation tab", show=False),
-        Binding("L", "show_activity", "Activity", key_display="L"),
+        Binding("L", "show_activity", "Research activity", key_display="L"),
         Binding("slash", "universal_search", "Search", show=False),
         Binding("F", "feedback_prompt", "Feedback", key_display="F"),
         Binding("exclamation_mark", "bug_report", "Bug report", key_display="!"),
@@ -3511,7 +3511,7 @@ class InvestigationHost(App):
                     pass
 
     def action_show_activity(self) -> None:
-        """Open the action-log history drawer (Shift+L)."""
+        """Open the Research activity trail drawer (Shift+L)."""
         from .artifact_modal import ArtifactModal
 
         def _opened(result: object | None) -> None:
