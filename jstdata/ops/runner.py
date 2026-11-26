@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import time
+from contextvars import ContextVar, Token
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -11,7 +13,8 @@ from .logstore import ActionLogStore
 from .result import OperationError, OperationResult
 from .targeting import ResearchTarget
 
-# Operations whose successful payloads are cached as immutable artifacts.
+# Operations whose successful payloads are cached as immutable artifacts
+# (shared across equivalent requests).
 _CACHEABLE_OPS = {
     "search.entities",
     "search.metrics",
@@ -26,8 +29,50 @@ _CACHEABLE_OPS = {
     "query.inspect",
     "coverage.preview",
 }
-# Pagination lives in each op's inputs (limit/offset), so page N is a distinct
-# artifact key — never strip offset when looking up cached results.
+
+# Mutations always write an after-state artifact (even when not cache-keyed).
+_STATE_EFFECT_OPS = {
+    "workspace.add",
+    "workspace.rm",
+    "annotate",
+    "remark.add",
+    "remark.remove",
+    "query.add",
+    "query.remove",
+    "query.patch",
+    "query.run",  # includes --save after-state
+    "curation.promote",
+    "curation.promote_query",
+    "curation.copy",
+    "investigation.create",
+    "investigation.duplicate",
+    "investigation.remove",
+    "investigation.rename",
+}
+
+# Default actor for this thread/task (TUI sets "tui"; CLI sets "cli" / "agent").
+_default_actor: ContextVar[Optional[str]] = ContextVar(
+    "jst_default_actor", default=None
+)
+
+
+def set_default_actor(actor: Optional[str]) -> Token:
+    """Set the ambient actor label for subsequent ``run_operation`` calls."""
+    return _default_actor.set(actor)
+
+
+def reset_default_actor(token: Token) -> None:
+    _default_actor.reset(token)
+
+
+def resolve_actor(explicit: Optional[str] = None) -> Optional[str]:
+    if explicit:
+        return explicit
+    ambient = _default_actor.get()
+    if ambient:
+        return ambient
+    env = (os.environ.get("JST_ACTOR") or "").strip()
+    return env or None
 
 
 def _utc_now() -> str:
@@ -53,12 +98,16 @@ def run_operation(
 
     Cache hits still mint a new event that references the prior immutable
     artifact. Failed ops are logged without overwriting prior artifacts.
+
+    State-effect ops always write an after-state artifact from ``fn``'s return
+    value so audits can reconstruct research state at time T.
     """
     log = store or get_store(app_dir=app_dir)
     event_id = log.new_event_id()
     inputs_dict = dict(inputs or {})
     started = time.monotonic()
     started_at = _utc_now()
+    resolved_actor = resolve_actor(actor)
 
     project_id = target.project_id if target else None
     investigation_id = target.investigation_id if target else None
@@ -87,12 +136,13 @@ def run_operation(
             status = "error"
             error = str(exc)
         else:
-            if operation in _CACHEABLE_OPS:
-                artifact_id = log.write_artifact(
-                    operation=operation,
-                    inputs=inputs_dict,
-                    data=data,
-                )
+            if operation in _CACHEABLE_OPS or operation in _STATE_EFFECT_OPS:
+                if data is not None:
+                    artifact_id = log.write_artifact(
+                        operation=operation,
+                        inputs=inputs_dict,
+                        data=data,
+                    )
 
     completed_at = _utc_now()
     duration_ms = int((time.monotonic() - started) * 1000)
@@ -106,7 +156,7 @@ def run_operation(
         duration_ms=duration_ms,
         project_id=project_id,
         investigation_id=investigation_id,
-        actor=actor,
+        actor=resolved_actor,
         error=error,
         artifact_id=artifact_id,
         cache_hit=cache_hit,
@@ -123,4 +173,5 @@ def run_operation(
         investigation_id=investigation_id,
         artifact_id=artifact_id,
         cache_hit=cache_hit,
+        actor=resolved_actor,
     )

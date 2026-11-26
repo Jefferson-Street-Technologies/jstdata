@@ -13,8 +13,9 @@ from ..investigation.api import (
     persist_investigation,
     remove_query,
     run_query,
+    update_query,
 )
-from ..investigation.model import Query
+from ..investigation.model import Query, QueryRemark
 from .result import OperationError
 from .runner import run_operation
 from .serialize import jsonable, serialize_timeseries
@@ -441,6 +442,247 @@ def remove_query_op(
         "query.remove",
         _run,
         inputs={"query_id": query_id},
+        target=target,
+        app_dir=app_dir,
+        use_cache=False,
+    )
+
+
+def patch_query_op(
+    query_id: int,
+    *,
+    add_metric: Optional[Sequence[str]] = None,
+    add_entity: Optional[Sequence[str]] = None,
+    add_series: Optional[Sequence[str]] = None,
+    remove_metric: Optional[Sequence[str]] = None,
+    remove_entity: Optional[Sequence[str]] = None,
+    remove_series: Optional[Sequence[str]] = None,
+    frequency: Optional[str] = None,
+    clear_frequency: bool = False,
+    head: Optional[int] = None,
+    tail: Optional[int] = None,
+    clear_window: bool = False,
+    name: Optional[str] = None,
+    project: Optional[str] = None,
+    investigation: Optional[str] = None,
+    app_dir: Optional[Path] = None,
+):
+    """Add/remove composition ids or tweak scope on an existing query."""
+    target = resolve_target(
+        project=project,
+        investigation=investigation,
+        app_dir=app_dir,
+        require=True,
+    )
+    assert target is not None
+    add_m = _as_list(add_metric)
+    add_e = _as_list(add_entity)
+    add_s = _as_list(add_series)
+    rm_m = set(_as_list(remove_metric))
+    rm_e = set(_as_list(remove_entity))
+    rm_s = set(_as_list(remove_series))
+    inputs = {
+        "query_id": int(query_id),
+        "add_metric": add_m or None,
+        "add_entity": add_e or None,
+        "add_series": add_s or None,
+        "remove_metric": sorted(rm_m) or None,
+        "remove_entity": sorted(rm_e) or None,
+        "remove_series": sorted(rm_s) or None,
+        "frequency": frequency,
+        "clear_frequency": clear_frequency or None,
+        "head": head,
+        "tail": tail,
+        "clear_window": clear_window or None,
+        "name": name,
+    }
+    if not any(
+        [
+            add_m,
+            add_e,
+            add_s,
+            rm_m,
+            rm_e,
+            rm_s,
+            frequency is not None,
+            clear_frequency,
+            head is not None,
+            tail is not None,
+            clear_window,
+            name is not None,
+        ]
+    ):
+        raise OperationError(
+            "query patch needs --add-* / --remove-* / scope flags / --name."
+        )
+
+    def _run():
+        q = target.investigation.get_query(int(query_id))
+        before = q.to_dict()
+        for mid in add_m:
+            if mid not in q.metric:
+                q.metric = list(q.metric) + [mid]
+        for eid in add_e:
+            if eid not in q.entity:
+                q.entity = list(q.entity) + [eid]
+        for sid in add_s:
+            if sid not in q.series:
+                q.series = list(q.series) + [sid]
+        if rm_m:
+            q.metric = [x for x in q.metric if x not in rm_m]
+        if rm_e:
+            q.entity = [x for x in q.entity if x not in rm_e]
+        if rm_s:
+            q.series = [x for x in q.series if x not in rm_s]
+        if clear_frequency:
+            q.frequency = None
+        elif frequency is not None:
+            q.frequency = frequency
+        if clear_window:
+            q.head = None
+            q.tail = None
+        elif head is not None:
+            q.head = head
+            if head:
+                q.tail = None
+        elif tail is not None:
+            q.tail = tail
+            if tail:
+                q.head = None
+        if name is not None:
+            stripped = name.strip()
+            q.name = stripped or None
+        persist_investigation(target.investigation, app_dir=app_dir)
+        return {
+            "query_id": q.id,
+            "before": before,
+            "query": q.to_dict(),
+        }
+
+    return run_operation(
+        "query.patch",
+        _run,
+        inputs={k: v for k, v in inputs.items() if v is not None},
+        target=target,
+        app_dir=app_dir,
+        use_cache=False,
+    )
+
+
+def remark_add_op(
+    query_id: int,
+    text: str,
+    *,
+    name: Optional[str] = None,
+    series: Optional[Sequence[str]] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    project: Optional[str] = None,
+    investigation: Optional[str] = None,
+    app_dir: Optional[Path] = None,
+):
+    """Append a :class:`QueryRemark` to a saved query."""
+    body = (text or "").strip()
+    if not body:
+        raise OperationError("remark add requires non-empty --text.")
+    target = resolve_target(
+        project=project,
+        investigation=investigation,
+        app_dir=app_dir,
+        require=True,
+    )
+    assert target is not None
+    series_ids = _as_list(series)
+    inputs = {
+        "query_id": int(query_id),
+        "text": body,
+        "name": (name or "").strip() or None,
+        "series": series_ids or None,
+        "from": date_from,
+        "to": date_to,
+    }
+
+    def _run():
+        q = target.investigation.get_query(int(query_id))
+        remark = QueryRemark(
+            text=body,
+            name=(name or "").strip() or None,
+            series=list(series_ids),
+            from_=date_from,
+            to=date_to,
+        )
+        remarks = list(q.remarks or []) + [remark]
+        update_query(
+            target.investigation,
+            int(query_id),
+            remarks=remarks,
+            app_dir=app_dir,
+            persist=True,
+        )
+        q = target.investigation.get_query(int(query_id))
+        return {
+            "query_id": q.id,
+            "index": len(q.remarks),
+            "remark": remark.to_dict(),
+            "remarks": [r.to_dict() for r in q.remarks],
+        }
+
+    return run_operation(
+        "remark.add",
+        _run,
+        inputs={k: v for k, v in inputs.items() if v is not None},
+        target=target,
+        app_dir=app_dir,
+        use_cache=False,
+    )
+
+
+def remark_remove_op(
+    query_id: int,
+    index: int,
+    *,
+    project: Optional[str] = None,
+    investigation: Optional[str] = None,
+    app_dir: Optional[Path] = None,
+):
+    """Delete a remark by 1-based index."""
+    if index < 1:
+        raise OperationError("remark index must be 1-based (>= 1).")
+    target = resolve_target(
+        project=project,
+        investigation=investigation,
+        app_dir=app_dir,
+        require=True,
+    )
+    assert target is not None
+    inputs = {"query_id": int(query_id), "index": int(index)}
+
+    def _run():
+        q = target.investigation.get_query(int(query_id))
+        remarks = list(q.remarks or [])
+        if index > len(remarks):
+            raise OperationError(
+                f"No remark {index} on query {query_id} ({len(remarks)} exist)."
+            )
+        removed = remarks.pop(index - 1)
+        update_query(
+            target.investigation,
+            int(query_id),
+            remarks=remarks,
+            app_dir=app_dir,
+            persist=True,
+        )
+        return {
+            "query_id": int(query_id),
+            "index": int(index),
+            "removed": removed.to_dict(),
+            "remarks": [r.to_dict() for r in remarks],
+        }
+
+    return run_operation(
+        "remark.remove",
+        _run,
+        inputs=inputs,
         target=target,
         app_dir=app_dir,
         use_cache=False,

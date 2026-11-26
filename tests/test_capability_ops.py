@@ -113,6 +113,7 @@ def test_workspace_add_rm_and_annotate(tmp_path: Path):
     )
     assert added.status == "success"
     assert "revenue" in added.data["workspace"]["metric"]
+    assert added.artifact_id  # state-effect after-state
 
     note = workspace_ops.annotate_op(
         "Watch margins",
@@ -134,6 +135,73 @@ def test_workspace_add_rm_and_annotate(tmp_path: Path):
     )
     assert removed.status == "success"
     assert "revenue" not in removed.data["workspace"]["metric"]
+
+
+def test_query_patch_and_remarks(tmp_path: Path, monkeypatch):
+    project_id, inv_id = _project(tmp_path)
+    client = MagicMock()
+    client.query.return_value = [_ts()]
+
+    created = query_ops.run_query_op(
+        client,
+        metric=["revenue"],
+        entity=["cik:1"],
+        save=True,
+        name="Revenue",
+        project=project_id,
+        investigation=inv_id,
+        app_dir=tmp_path,
+        use_cache=False,
+    )
+    qid = created.data["saved_query_id"]
+    assert qid
+
+    patched = query_ops.patch_query_op(
+        int(qid),
+        add_metric=["ebitda"],
+        add_series=["s1"],
+        frequency="quarterly",
+        project=project_id,
+        investigation=inv_id,
+        app_dir=tmp_path,
+    )
+    assert patched.status == "success"
+    assert patched.artifact_id
+    assert "ebitda" in patched.data["query"]["metric"]
+    assert patched.data["before"]["metric"] == ["revenue"]
+
+    remarked = query_ops.remark_add_op(
+        int(qid),
+        "Spike in Q1",
+        name="note",
+        series=["s1"],
+        date_from="2024-01-01",
+        date_to="2024-03-31",
+        project=project_id,
+        investigation=inv_id,
+        app_dir=tmp_path,
+    )
+    assert remarked.status == "success"
+    assert remarked.data["index"] == 1
+    assert remarked.data["remark"]["text"] == "Spike in Q1"
+
+    inv = load_project_investigation(
+        project_id, inv_id, app_dir=tmp_path
+    )
+    assert len(inv.queries[int(qid)].remarks) == 1
+
+    removed = query_ops.remark_remove_op(
+        int(qid),
+        1,
+        project=project_id,
+        investigation=inv_id,
+        app_dir=tmp_path,
+    )
+    assert removed.status == "success"
+    inv2 = load_project_investigation(
+        project_id, inv_id, app_dir=tmp_path
+    )
+    assert inv2.queries[int(qid)].remarks == []
 
 
 def test_rerun_search(tmp_path: Path):

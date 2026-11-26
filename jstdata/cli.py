@@ -612,7 +612,14 @@ def query(
 
 @cli.command("agent-guide")
 def agent_guide_cmd() -> None:
-    """Print a markdown bootstrap guide for agents (version-tied)."""
+    """Deprecated — use ``jst agent guide``.
+
+    Still prints the guide so older skills keep working; prefer the nested form.
+    """
+    click.echo(
+        "Deprecated: `jst agent-guide` → use `jst agent guide`.",
+        err=True,
+    )
     from .agent_guide import render_agent_guide
 
     click.echo(render_agent_guide(cli), nl=False)
@@ -654,7 +661,7 @@ def agent_install_cmd(target: str) -> None:
         click.echo(f"  {path}")
     click.echo()
     click.echo("If the agent does not pick it up automatically, say:")
-    click.echo("  Use the jst skill. Then run `jst agent-guide` and follow it.")
+    click.echo("  Use the jst skill. Then run `jst agent guide` and follow it.")
 
 
 @cli.group(

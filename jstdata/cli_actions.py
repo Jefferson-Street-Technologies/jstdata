@@ -72,13 +72,31 @@ def _refresh_option(fn):
 
 
 @click.group(invoke_without_command=True)
+@click.option(
+    "--actor",
+    default="cli",
+    show_default=True,
+    envvar="JST_ACTOR",
+    help=(
+        "Actor label written on every event. Use ``cli`` (default), "
+        "``agent``, or ``agent:<name>``. Place before the subcommand: "
+        "``jst actions --actor agent search entities …``."
+    ),
+)
 @click.pass_context
-def actions_group(ctx) -> None:
+def actions_group(ctx, actor: str) -> None:
     """Logged research operations (shared by humans and agents).
 
     Prefer this over ``jst api`` / ``jst action`` / ``jst query``.
     Pass ``--project`` and ``--investigation`` explicitly when mutating state.
+    Agents should set ``--actor agent`` (or ``JST_ACTOR``).
     """
+    from .ops import set_default_actor
+
+    ctx.ensure_object(dict)
+    label = (actor or "cli").strip() or "cli"
+    ctx.obj["actor"] = label
+    set_default_actor(label)
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
 
@@ -703,6 +721,139 @@ def query_rm_cmd(
     _echo_result(result, format=fmt)
 
 
+@actions_query_group.command("patch")
+@click.argument("query_id", type=int)
+@click.option("--add-metric", multiple=True)
+@click.option("--add-entity", multiple=True)
+@click.option("--add-series", multiple=True)
+@click.option("--remove-metric", multiple=True)
+@click.option("--remove-entity", multiple=True)
+@click.option("--remove-series", multiple=True)
+@click.option("--frequency", default=None)
+@click.option("--clear-frequency", is_flag=True, default=False)
+@click.option("--head", type=int, default=None)
+@click.option("--tail", type=int, default=None)
+@click.option("--name", default=None)
+@_target_options
+@_format_option
+def query_patch_cmd(
+    query_id: int,
+    add_metric: tuple[str, ...],
+    add_entity: tuple[str, ...],
+    add_series: tuple[str, ...],
+    remove_metric: tuple[str, ...],
+    remove_entity: tuple[str, ...],
+    remove_series: tuple[str, ...],
+    frequency: Optional[str],
+    clear_frequency: bool,
+    head: Optional[int],
+    tail: Optional[int],
+    name: Optional[str],
+    project: Optional[str],
+    investigation: Optional[str],
+    fmt: str,
+) -> None:
+    """Add/remove composition resources or tweak scope on a saved query."""
+    from .ops import query_ops
+    from .ops.result import OperationError
+
+    try:
+        result = query_ops.patch_query_op(
+            query_id,
+            add_metric=add_metric or None,
+            add_entity=add_entity or None,
+            add_series=add_series or None,
+            remove_metric=remove_metric or None,
+            remove_entity=remove_entity or None,
+            remove_series=remove_series or None,
+            frequency=frequency,
+            clear_frequency=clear_frequency,
+            head=head,
+            tail=tail,
+            name=name,
+            project=project,
+            investigation=investigation,
+        )
+    except OperationError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    _echo_result(result, format=fmt)
+
+
+@actions_group.group("remark")
+def remark_group() -> None:
+    """Add or remove query remarks (logged)."""
+
+
+@remark_group.command("add")
+@click.argument("query_id", type=int)
+@click.option("--text", required=True)
+@click.option("--name", default=None, help="Optional short heading")
+@click.option("--series", multiple=True, help="Cited series ids")
+@click.option("--from", "date_from", default=None)
+@click.option("--to", "date_to", default=None)
+@_target_options
+@_format_option
+def remark_add_cmd(
+    query_id: int,
+    text: str,
+    name: Optional[str],
+    series: tuple[str, ...],
+    date_from: Optional[str],
+    date_to: Optional[str],
+    project: Optional[str],
+    investigation: Optional[str],
+    fmt: str,
+) -> None:
+    from .ops import query_ops
+    from .ops.result import OperationError
+
+    try:
+        result = query_ops.remark_add_op(
+            query_id,
+            text,
+            name=name,
+            series=series or None,
+            date_from=date_from,
+            date_to=date_to,
+            project=project,
+            investigation=investigation,
+        )
+    except OperationError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    _echo_result(result, format=fmt)
+
+
+@remark_group.command("rm")
+@click.argument("query_id", type=int)
+@click.argument("index", type=int)
+@_target_options
+@_format_option
+def remark_rm_cmd(
+    query_id: int,
+    index: int,
+    project: Optional[str],
+    investigation: Optional[str],
+    fmt: str,
+) -> None:
+    """Remove remark by 1-based index."""
+    from .ops import query_ops
+    from .ops.result import OperationError
+
+    try:
+        result = query_ops.remark_remove_op(
+            query_id,
+            index,
+            project=project,
+            investigation=investigation,
+        )
+    except OperationError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    _echo_result(result, format=fmt)
+
+
 @actions_group.command("promote")
 @click.argument("event_id", required=False, default=None)
 @click.option(
@@ -837,6 +988,12 @@ def feedback_inspect_cmd(feedback_id: str, fmt: str) -> None:
 @actions_group.command("log")
 @click.option("--operation", default=None, help="Filter by operation id")
 @click.option("--status", default=None, help="Filter by status")
+@click.option(
+    "--actor-filter",
+    "actor_filter",
+    default=None,
+    help="Filter by actor prefix (e.g. agent, tui, cli)",
+)
 @click.option("--limit", default=50, show_default=True)
 @click.option("--offset", default=0, show_default=True)
 @_target_options
@@ -844,6 +1001,7 @@ def feedback_inspect_cmd(feedback_id: str, fmt: str) -> None:
 def log_cmd(
     operation: Optional[str],
     status: Optional[str],
+    actor_filter: Optional[str],
     limit: int,
     offset: int,
     project: Optional[str],
@@ -856,6 +1014,7 @@ def log_cmd(
         investigation=investigation,
         operation=operation,
         status=status,
+        actor=actor_filter,
         limit=limit,
         offset=offset,
     )

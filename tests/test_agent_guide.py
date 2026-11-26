@@ -1,4 +1,4 @@
-"""Tests for ``jst agent-guide``."""
+"""Tests for ``jst agent guide``."""
 
 from click.testing import CliRunner
 
@@ -15,7 +15,7 @@ from jstdata.actions import list_actions
 
 def test_agent_guide_cli():
     runner = CliRunner()
-    result = runner.invoke(cli, ["agent-guide"])
+    result = runner.invoke(cli, ["agent", "guide"])
     assert result.exit_code == 0
     out = result.output
     assert out.startswith("# jstdata agent guide (v")
@@ -46,7 +46,6 @@ def test_agent_guide_cli():
     assert "plain-bagel" in out
     assert "## CLI commands" in out
     assert "## TUI views (action catalog)" in out
-    assert "`jst agent-guide`" in out
     assert "`jst actions search metrics`" in out
     assert "`jst actions promote`" in out
     assert "`jst new`" in out
@@ -56,12 +55,29 @@ def test_agent_guide_cli():
     assert "Never invent" in out
     assert "--format json" in out
     assert "Do not launch interactive TUIs" in out
+    assert "Tag your actor" in out
+    assert "--actor agent" in out
+    assert "--actor-filter agent" in out
+    assert "`jst actions query patch`" in out
+    assert "`jst actions remark add`" in out
+    assert "`jst actions workspace add`" in out
+    assert "Shift+L" in out
     assert "Host chrome" not in out
     assert "Step keybindings" not in out
     # Retired groups must not be recommended as the agent workflow.
     assert "`jst action add`" not in out
     assert "`jst query add`" not in out
     assert "`jst query ls`" not in out
+
+
+def test_agent_guide_hyphenated_is_deprecated():
+    runner = CliRunner()
+    result = runner.invoke(cli, ["agent-guide"])
+    assert result.exit_code == 0
+    assert "Deprecated" in result.output
+    assert "jst agent guide" in result.output
+    # Guide body still printed (soft deprecation).
+    assert "# jstdata agent guide (v" in result.output
 
 
 def test_agent_guide_omits_legacy_workspace_fields():

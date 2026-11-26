@@ -1,4 +1,4 @@
-"""Generate the markdown agent bootstrap guide (`jst agent-guide`).
+"""Generate the markdown agent bootstrap guide (`jst agent guide`).
 
 CLI commands and action catalog entries are derived from the live Click tree
 and action registry. Conceptual glue (policy, modes, recipes) is static prose.
@@ -30,12 +30,17 @@ _HARD_RULES = """\
 - **Prefer `jst actions`.** Shared research ops for humans and agents. Soft-deprecated
   `jst api` remains for low-level / exploratory value pulls; retired `jst action` /
   `jst query` groups print pointers and must not be used.
+- **Tag your actor.** Place `--actor agent` (or `agent:<name>`) before the subcommand,
+  or set `JST_ACTOR`. Humans default to `cli`; the TUI tags `tui`. Without this, the
+  human cannot filter your trail in `jst actions log --actor-filter agent`.
 - **Resolve → act → inspect → promote → hand off.** Resolve ids, run logged actions,
   reopen artifacts with `jst actions inspect`, promote into the report, then hand the
   human a project (`jst open` / `jst ls`).
 - **Target explicitly.** Pass `--project` and `--investigation` on mutating
   `jst actions` commands. Do not rely on ambient `.active` when multiple agents share
   a project.
+- **Mutate through logged ops.** Prefer `workspace add|rm`, `query run|patch`,
+  `remark add|rm`, `promote`, `copy`, `annotate` over any other write path.
 - **Default JSON.** `jst actions` defaults to `--format json`. Prefer JSON for anything
   you parse.
 - **Do not launch interactive TUIs** (`jst` / `jst new` / `jst open`) unless the user
@@ -43,8 +48,8 @@ _HARD_RULES = """\
   only when requested, or tell the human to open the project.
 - **Do not edit project / investigation YAML.** SoT lives under
   `~/.jstdata/projects/<id>/`. Read files only to inspect. Mutate via `jst actions`
-  (promote, copy, search, metadata, …) or the TUI. Never invent query ids or rewrite
-  `workspace:` / `queries:` / `actions:` by hand.
+  (workspace, query patch, remark, promote, copy, …) or the TUI. Never invent query
+  ids or rewrite `workspace:` / `queries:` / `actions:` by hand.
 - **Exploratory by default.** Logged search/metadata does not enter the published
   report. Report membership is explicit via `jst actions promote`.
 - **Do not paginate exhaustively.** During discovery, use `--limit` 20–50. Do not walk
@@ -59,20 +64,23 @@ _OPERATING_POLICY = """\
 
 When solving a JST research task:
 
-1. **Resolve ids first** with `jst actions search entities|metrics` (and taxonomy /
+1. **Set actor** with `jst actions --actor agent …` (or `JST_ACTOR=agent`) so humans
+   can filter your events.
+2. **Resolve ids first** with `jst actions search entities|metrics` (and taxonomy /
    relation filters when the user names a population).
-2. **Fetch metadata / relationships** with `jst actions metadata …` and
+3. **Fetch metadata / relationships** with `jst actions metadata …` and
    `jst actions relationships` before pulling values.
-3. **Keep calls bounded.** Small `--limit` during discovery; shallow value pulls only
+4. **Keep calls bounded.** Small `--limit` during discovery; shallow value pulls only
    to triage.
-4. **Log is the audit trail.** Every `jst actions` op returns an `event_id`. Reopen
-   with `jst actions inspect <event-id>` (no Data API re-fetch). List with
-   `jst actions log`.
-5. **Promote deliberately.** `jst actions promote <event-id>` or
+5. **Log is the audit trail.** Every `jst actions` op returns an `event_id` and an
+   `actor`. Reopen with `jst actions inspect <event-id>` (no Data API re-fetch). List
+   with `jst actions log` / `--actor-filter agent`. Mutators persist after-state
+   artifacts (workspace / query shape at that step).
+6. **Promote deliberately.** `jst actions promote <event-id>` or
    `jst actions promote --query <id>` marks report membership (`in_report`).
-6. **Hand off the project**, not raw API dumps. Print `jst open` / `jst ls` for the
+7. **Hand off the project**, not raw API dumps. Print `jst open` / `jst ls` for the
    human. Do not drive their TUI viewport.
-7. **Prefer JSON** for anything you will parse or reason over.
+8. **Prefer JSON** for anything you will parse or reason over.
 """
 
 _OPERATING_MODES = """\
@@ -115,13 +123,16 @@ _DATA_MODEL = """\
 - **Investigation** — one tab: title, notes, annotations, one workspace, saved queries,
   and an action / view tree. Independent of sibling tabs.
 - **Workspace** — the **global** bag of staged resource ids inside an investigation
-  (no observations). Mutated by TUI staging; never mutated by view drills.
+  (no observations). Mutated via logged `workspace.add|rm` (TUI or CLI); never by
+  view drills.
 - **Query** — a `GET /query` spec (cartesian metric × entity, optional series).
   Ladder: **Draft** (`in_report=false`) → **Saved** (`in_report=true`, publication-
   eligible). Direct/incremental exploration creates drafts; `s` / `jst actions
-  promote` saves. Local preview stays saved-only.
-- **Action log / artifact** — every `jst actions` op appends an event; cacheable ops
-  store an immutable artifact. Inspect historical payloads without another API call.
+  promote` saves. Compose with `jst actions query patch`; remarks with
+  `jst actions remark add|rm`. Local preview stays saved-only.
+- **Action log / artifact** — every `jst actions` (and TUI-routed) op appends an event
+  with an `actor` (`cli` / `tui` / `agent…`). Cacheable ops and state mutators store
+  immutable artifacts (results or after-state). Inspect without another API call.
 - **Action / View** — reusable TUI screens in the investigation tree (`table`,
   `metric`, `entity`, …). Agents prefer `jst actions` over seeding views via CLI.
 - **Input Context** — what a view is *about*: workspace resources with optional
@@ -147,19 +158,21 @@ _RECIPES = """\
 ## Common recipes
 
 Assume a project id `PROJ` and investigation id `INV` (pass them on every mutating
-call). Replace placeholders with resolved slug ids.
+call). Prefix agent sessions with `--actor agent` (or `agent:<name>` / `JST_ACTOR`).
+Replace placeholders with resolved slug ids.
 
 ### Find relevant metrics
 
 ```bash
-jst actions search metrics "defense spending" --taxonomy country --limit 20 \\
-  --project PROJ --investigation INV
+jst actions --actor agent search metrics "defense spending" --taxonomy country \\
+  --limit 20 --project PROJ --investigation INV
 ```
 
 If insufficient, try one or two synonyms. Inspect only promising ids:
 
 ```bash
-jst actions metadata metric <resolved-id> --project PROJ --investigation INV
+jst actions --actor agent metadata metric <resolved-id> \\
+  --project PROJ --investigation INV
 ```
 
 Stop once a useful candidate set exists. Do not page the full catalog.
@@ -167,57 +180,78 @@ Stop once a useful candidate set exists. Do not page the full catalog.
 ### Resolve a company and its peers
 
 ```bash
-jst actions search entities "FTAI Aviation" --limit 10 \\
+jst actions --actor agent search entities "FTAI Aviation" --limit 10 \\
   --project PROJ --investigation INV
-jst actions metadata entity <company-id> --project PROJ --investigation INV
-jst actions relationships <company-id> --relationship classified_as \\
+jst actions --actor agent metadata entity <company-id> \\
   --project PROJ --investigation INV
-jst actions search entities --relation classified_as:<industry-id> \\
+jst actions --actor agent relationships <company-id> --relationship classified_as \\
+  --project PROJ --investigation INV
+jst actions --actor agent search entities --relation classified_as:<industry-id> \\
   --taxonomy sec-central-index-key --limit 50 \\
+  --project PROJ --investigation INV
+```
+
+### Stage workspace / patch a query / add a remark
+
+```bash
+jst actions --actor agent workspace add --metric <metric-id> --entity <e1> \\
+  --project PROJ --investigation INV
+jst actions --actor agent query run --metric <metric-id> --entity <e1> --tail 1 \\
+  --save --name "Peer revenue" --project PROJ --investigation INV
+jst actions --actor agent query patch 1 --add-metric <other-metric> \\
+  --project PROJ --investigation INV
+jst actions --actor agent remark add 1 --text "Margins widened in Q1" \\
+  --series <series-id> --from 2024-01-01 --to 2024-03-31 \\
   --project PROJ --investigation INV
 ```
 
 ### Exploratory latest values (triage)
 
 ```bash
-jst actions query run \\
+jst actions --actor agent query run \\
   --metric <metric-id> --entity <e1> --entity <e2> --tail 1 \\
   --project PROJ --investigation INV
 # Persist exploratory (in_report=false), then promote later:
-jst actions query run --metric <metric-id> --entity <e1> --tail 1 --save \\
-  --name "Peer revenue" --project PROJ --investigation INV
-jst actions promote <event-id> --project PROJ --investigation INV
+jst actions --actor agent query run --metric <metric-id> --entity <e1> --tail 1 \\
+  --save --name "Peer revenue" --project PROJ --investigation INV
+jst actions --actor agent promote <event-id> --project PROJ --investigation INV
 # Or promote a saved exploratory query:
-jst actions promote --query 1 --project PROJ --investigation INV
+jst actions --actor agent promote --query 1 --project PROJ --investigation INV
 ```
 
 ### Copy research across tabs
 
 ```bash
-jst actions copy --project PROJ --from fundamentals --to peers \\
+jst actions --actor agent copy --project PROJ --from fundamentals --to peers \\
   --entity <company-id> --query 1
 ```
 
 ### Rank / membership via search (no invented country ids)
 
 ```bash
-jst actions search entities "european union" --limit 10 \\
+jst actions --actor agent search entities "european union" --limit 10 \\
   --project PROJ --investigation INV
-jst actions search entities --relation part_of:<eu-entity-id> --taxonomy country \\
-  --limit 50 --project PROJ --investigation INV
-jst actions search metrics gdp --taxonomy country --limit 20 \\
+jst actions --actor agent search entities --relation part_of:<eu-entity-id> \\
+  --taxonomy country --limit 50 --project PROJ --investigation INV
+jst actions --actor agent search metrics gdp --taxonomy country --limit 20 \\
   --project PROJ --investigation INV
 ```
 
 ### Observability and feedback
 
 ```bash
+# Your trail only (prefix match: agent catches agent:peers)
+jst actions log --project PROJ --investigation INV --actor-filter agent
 jst actions log --project PROJ --investigation INV --status error
-jst actions inspect <event-id>
+jst actions inspect <event-id>          # inputs + artifact / after-state, no API call
+jst actions rerun <event-id>            # rediscover / re-query against current data
 jst actions feedback submit "Chart clipped on peers tab" \\
   --project PROJ --investigation INV --screen entity
 jst actions feedback ls
 ```
+
+Humans review the same log in the TUI Activity drawer (**Shift+L**); **`a`** cycles
+actor filters (`all` → `tui` → `cli` → `agent`).
 
 ### Local multi-tab preview
 
@@ -230,10 +264,11 @@ notifies and refuses to silently flatten.
 
 ### Prepare a human project
 
-1. Resolve ids via `jst actions search …`.
+1. Resolve ids via `jst actions --actor agent search …`.
 2. Work against the assigned `--project` / `--investigation` (or ask the human to
    add a tab with `jst new --project <id> --title …`).
-3. Promote report queries; leave exploratory artifacts in the log.
+3. Promote report queries; leave exploratory artifacts in the log (filterable with
+   `--actor-filter agent`).
 4. Hand them: `jst open` / `jst ls` (interactive project picker).
 
 Do not substitute extra research for completing the requested handoff.
@@ -257,11 +292,11 @@ jst preview
 ```
 
 - **Humans** use the chart-first shell: sidebar queries/workspace, `/` search,
-  `e` edit, `s` save, `a` annotate, `F` feedback, `{`/`}` tabs, Shift+`H`
-  research root. Enter on a metric/entity opens a draft chart.
-  Host `dd` is the delete chord.
-- **Agents** use `jst actions …` with explicit `--project` / `--investigation`.
-  Do not steal the human viewport.
+  `e` edit, `s` save, remarks on the query workbench, `F` feedback, `{`/`}` tabs,
+  Shift+`H` research root, **Shift+L** activity (action log). Enter on a
+  metric/entity opens a draft chart. Host `dd` is the delete chord.
+- **Agents** use `jst actions --actor agent …` with explicit `--project` /
+  `--investigation`. Do not steal the human viewport.
 - **Curation:** exploratory by default; `in_report` only after promote. Copy with
   `jst actions copy` (no API re-fetch). Duplicate a tab with `:tab dup`.
 - **Legacy** single-investigation YAML still loads / publishes / clones. Multi-tab
@@ -281,30 +316,44 @@ optional `label` / `description`, and resource id lists. Query filters
 Legacy files with `workspaces:` (a list) load id `0` / the first entry and ignore
 the rest.
 
-Stage resources into the workspace bag from the TUI (`:search` / space collect).
-Agents inspect with `jst actions workspace show` and promote report queries rather
-than editing YAML. Prefer resolved slug ids only.
+Stage resources with logged ops:
+
+```bash
+jst actions --actor agent workspace add --metric <id> --entity <id> \\
+  --project PROJ --investigation INV
+jst actions workspace show --project PROJ --investigation INV
+jst actions --actor agent workspace rm <id> --project PROJ --investigation INV
+```
+
+The TUI collect path (`:search` / space) also writes `workspace.add` events tagged
+`actor=tui`. Prefer resolved slug ids only; never hand-edit YAML.
 """
 
 _AUDITED_WORKFLOW = """\
 ## Audited research workflow
 
 ```
-resolve ids  →  jst actions …  →  inspect event/artifact  →  promote  →  hand off
+--actor agent  →  resolve ids  →  jst actions …  →  inspect / log  →  promote  →  hand off
 ```
 
-1. **Resolve** — `jst actions search entities|metrics` (+ relation / taxonomy filters).
-2. **Act** — metadata, relationships, taxonomy membership; every call returns
-   `event_id` and may mint an immutable artifact.
-3. **Inspect** — `jst actions log` / `jst actions inspect <event-id>` reopens the
-   historical payload without another Data API request.
-4. **Promote** — `jst actions promote` sets `Query.in_report` for local preview /
+1. **Tag** — `jst actions --actor agent …` (or `JST_ACTOR`) so humans can filter your
+   trail separately from `cli` / `tui`.
+2. **Resolve** — `jst actions search entities|metrics` (+ relation / taxonomy filters).
+3. **Act** — metadata, relationships, taxonomy; stage with `workspace add`; pull
+   values with `query run` (`--save` for drafts); refine with `query patch` /
+   `remark add`. Every call returns `event_id` + `actor` and may mint an immutable
+   artifact (results or mutator after-state).
+4. **Inspect** — `jst actions log --actor-filter agent` / `jst actions inspect
+   <event-id>` reopens the historical payload without another Data API request.
+   Humans use Shift+L in the TUI for the same store.
+5. **Promote** — `jst actions promote` sets `Query.in_report` for local preview /
    legacy publish.
-5. **Hand off** — tell the human the project id; they continue in the TUI while
+6. **Hand off** — tell the human the project id; they continue in the TUI while
    agents keep targeting other tabs.
 
-Raw `jst api` and the Python client remain for general-purpose data consumption
-outside this audited path. Do not treat them as the research workflow.
+The log is an imperfect fold-forward audit (not undo / full YAML replay). Hand-edited
+investigation files still bypass it. Raw `jst api` and the Python client remain for
+general-purpose data consumption outside this audited path.
 """
 
 

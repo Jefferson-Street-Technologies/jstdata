@@ -810,6 +810,13 @@ class InvestigationHost(App):
         start_tutorial: Optional[str] = None,
     ) -> None:
         super().__init__()
+        # Ambient action-log actor for TUI mutations (CLI uses --actor / JST_ACTOR).
+        try:
+            from ..ops import set_default_actor
+
+            set_default_actor("tui")
+        except Exception:  # noqa: BLE001
+            pass
         self.client = client
         self.app_dir = app_dir
         self.project_id: str | None = None
@@ -910,6 +917,29 @@ class InvestigationHost(App):
     def persist_active_workspace(self) -> None:
         """Flush workspace mutations into the investigation YAML if dirty."""
         self._persist_workspace_if_dirty()
+
+    def resync_from_disk(self) -> None:
+        """Reload investigation after a logged op mutated YAML out-of-process.
+
+        Keeps the current screen; refreshes the live workspace handle and
+        fingerprint so subsequent TUI reads see the op's after-state.
+        """
+        if self.project_id is None or self.active is None:
+            return
+        try:
+            self.investigation = load_project_investigation(
+                self.project_id,
+                self.active.investigation,
+                app_dir=self.app_dir,
+            )
+            self.investigation.validate()
+            ws = self.investigation.get_workspace(self.active.workspace)
+            self.workspace = ws
+            self._ws_fingerprint = ws.resource_fingerprint()
+            self._snapshot_mtimes()
+        except (InvestigationError, OSError, KeyError):
+            return
+        self.refresh_workspace_drawer()
 
     def refresh_workspace_drawer(self) -> None:
         for screen in self.screen_stack:
@@ -2185,20 +2215,33 @@ class InvestigationHost(App):
         )
 
     def _collect_resource(self, resource_type: str, resource_id: str) -> None:
-        ws = self.workspace
-        added = False
-        if resource_type == "metric":
-            added = ws.add_metric(resource_id)
-        elif resource_type == "entity":
-            added = ws.add_entity(resource_id)
-        elif resource_type == "series":
-            added = ws.add_series(resource_id)
-        if added:
+        """Stage into workspace via logged ``workspace.add`` (actor=tui)."""
+        if resource_type not in {"metric", "entity", "series"}:
+            self.notify(f"Cannot collect {resource_type}", severity="warning")
+            return
+        try:
+            from ..ops import workspace_ops as ws_ops
+
+            # Flush any in-memory dirty workspace before the op reloads YAML.
             self.persist_active_workspace()
-            self.refresh_shell_chrome()
-            self.notify(f"Collected {resource_id}")
-        else:
-            self.notify(f"{resource_id} already in workspace")
+            kwargs = {
+                resource_type: [resource_id],
+                "project": self.project_id,
+                "investigation": (
+                    self.active.investigation if self.active else None
+                ),
+                "app_dir": self.app_dir,
+            }
+            result = ws_ops.workspace_add(**kwargs)
+            self.resync_from_disk()
+            added = (result.data or {}).get("added") or {}
+            if any(added.values()):
+                self.refresh_shell_chrome()
+                self.notify(f"Collected {resource_id}")
+            else:
+                self.notify(f"{resource_id} already in workspace")
+        except Exception as exc:  # noqa: BLE001
+            self.notify(str(exc), severity="error")
 
     def query_compose_add_resource(self, kind: str, query_id: int) -> None:
         """Sidebar ``+ Add`` under the active query — open scoped picker."""
@@ -2337,26 +2380,34 @@ class InvestigationHost(App):
         if query.is_empty():
             self.notify("Nothing to save — draft is empty", severity="warning")
             return
-        if not query.name:
-            from .naming import suggest_query_name
-
-            query.name = suggest_query_name(
-                query.metric, query.entity, labels=self.labels
-            )
-        query.in_report = True
-        persist_investigation(self.investigation, app_dir=self.app_dir)
-        # Log via promote_query for audit trail.
         try:
             from ..ops.curation import promote_query
+            from ..ops.query_ops import patch_query_op
 
+            if not query.name:
+                from .naming import suggest_query_name
+
+                suggested = suggest_query_name(
+                    query.metric, query.entity, labels=self.labels
+                )
+                if suggested:
+                    patch_query_op(
+                        int(qid),
+                        name=suggested,
+                        project=self.project_id,
+                        investigation=self.active.investigation,
+                        app_dir=self.app_dir,
+                    )
             promote_query(
                 int(qid),
                 project=self.project_id,
                 investigation=self.active.investigation,
                 app_dir=self.app_dir,
             )
-        except Exception:  # noqa: BLE001
-            pass
+            self.resync_from_disk()
+        except Exception as exc:  # noqa: BLE001
+            self.notify(str(exc), severity="error")
+            return
         # Always keep one empty draft slot after save.
         try:
             self.ensure_draft_query(reset=True)
@@ -3259,18 +3310,22 @@ class InvestigationHost(App):
     def _on_query_rename_submitted(
         self, query_id: int, result: str | None
     ) -> None:
-        if result is None or not self.investigation:
+        if result is None or not self.investigation or not self.active:
             return
         self._suppress_poll = True
         try:
             try:
-                update_query(
-                    self.investigation,
-                    query_id,
+                from ..ops.query_ops import patch_query_op
+
+                patch_query_op(
+                    int(query_id),
                     name=result,
+                    project=self.project_id,
+                    investigation=self.active.investigation,
                     app_dir=self.app_dir,
                 )
-            except InvestigationError as exc:
+                self.resync_from_disk()
+            except Exception as exc:  # noqa: BLE001
                 self.notify(str(exc), severity="error")
                 return
             try:
@@ -3610,12 +3665,30 @@ class InvestigationHost(App):
             if sidebar is not None:
                 sidebar.remove_resource(resource_type, resource_id)
                 return
-        removed = self.workspace.remove_id(resource_id)
-        if not removed:
-            self.notify(f"{resource_id} not in workspace", severity="warning")
+        try:
+            from ..ops import workspace_ops as ws_ops
+
+            self.persist_active_workspace()
+            result = ws_ops.workspace_rm(
+                [resource_id],
+                project=self.project_id,
+                investigation=(
+                    self.active.investigation if self.active else None
+                ),
+                app_dir=self.app_dir,
+            )
+            self.resync_from_disk()
+            removed_ids = (result.data or {}).get("removed") or []
+            if not removed_ids:
+                self.notify(
+                    f"{resource_id} not in workspace", severity="warning"
+                )
+                return
+        except Exception as exc:  # noqa: BLE001
+            self.notify(str(exc), severity="error")
             return
         self.labels.pop(resource_id, None)
-        self.persist_active_workspace()
+        self.refresh_shell_chrome()
         self.notify(f"Removed {resource_id}")
         # If we're looking at that resource, step back to a safe screen.
         try:

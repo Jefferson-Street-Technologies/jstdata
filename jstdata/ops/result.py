@@ -24,6 +24,7 @@ class OperationResult:
     inputs: dict[str, Any] = field(default_factory=dict)
     artifact_id: Optional[str] = None
     cache_hit: bool = False
+    actor: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

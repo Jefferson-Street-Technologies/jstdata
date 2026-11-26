@@ -2111,28 +2111,21 @@ class QueryScreen(BaseScreen):
         # Esc still backs out of the shell when not drafting a remark.
         self.action_shell_escape()
 
-    def _persist_remarks(self, remarks: list[QueryRemark]) -> None:
-        if self.query_id is None:
-            return
-        inv = getattr(self.app, "investigation", None)
-        if inv is None:
-            return
-        from ..investigation.api import update_query
+    def _op_target(self) -> dict:
+        """Project / investigation / app_dir kwargs for logged query ops."""
+        active = getattr(self.app, "active", None)
+        return {
+            "project": getattr(self.app, "project_id", None),
+            "investigation": (
+                getattr(active, "investigation", None) if active else None
+            ),
+            "app_dir": getattr(self.app, "app_dir", None),
+        }
 
-        try:
-            update_query(
-                inv,
-                int(self.query_id),
-                remarks=remarks,
-                app_dir=getattr(self.app, "app_dir", None),
-            )
-        except Exception as exc:  # noqa: BLE001
-            self.notify(str(exc), severity="error")
-            return
-        self._render_annotations(inv.get_query(int(self.query_id)))
-        refresh = getattr(self.app, "refresh_shell_chrome", None)
-        if callable(refresh):
-            refresh()
+    def _resync_after_op(self) -> None:
+        resync = getattr(self.app, "resync_from_disk", None)
+        if callable(resync):
+            resync()
 
     def action_save_remark(self) -> None:
         if not self._remark_drafting or self.query_id is None:
@@ -2160,21 +2153,29 @@ class QueryScreen(BaseScreen):
             date_from = lo.strftime("%Y-%m-%d") if lo else None
             date_to = hi.strftime("%Y-%m-%d") if hi else None
         try:
-            query = self._resolve_query()
+            from ..ops.query_ops import remark_add_op
+
+            remark_add_op(
+                int(self.query_id),
+                text,
+                name=name,
+                series=series or None,
+                date_from=date_from,
+                date_to=date_to,
+                **self._op_target(),
+            )
+            self._resync_after_op()
         except Exception as exc:  # noqa: BLE001
             self.notify(str(exc), severity="error")
             return
-        remarks = list(query.remarks or [])
-        remarks.append(
-            QueryRemark(
-                text=text,
-                name=name,
-                series=series,
-                from_=date_from,
-                to=date_to,
-            )
-        )
-        self._persist_remarks(remarks)
+        try:
+            query = self._resolve_query()
+            self._render_annotations(query)
+        except Exception:  # noqa: BLE001
+            pass
+        refresh = getattr(self.app, "refresh_shell_chrome", None)
+        if callable(refresh):
+            refresh()
         self._remark_drafting = False
         self.query_one("#query-remark-draft").remove_class("-open")
         try:
@@ -2185,16 +2186,27 @@ class QueryScreen(BaseScreen):
 
     def action_delete_remark(self, index: int) -> None:
         """Delete remark at 1-based index."""
+        if self.query_id is None:
+            return
         try:
-            query = self._resolve_query()
-        except Exception:
+            from ..ops.query_ops import remark_remove_op
+
+            remark_remove_op(
+                int(self.query_id),
+                int(index),
+                **self._op_target(),
+            )
+            self._resync_after_op()
+        except Exception as exc:  # noqa: BLE001
+            self.notify(str(exc), severity="error")
             return
-        remarks = list(query.remarks or [])
-        if index < 1 or index > len(remarks):
-            self.notify(f"No remark {index}", severity="warning")
-            return
-        del remarks[index - 1]
-        self._persist_remarks(remarks)
+        try:
+            self._render_annotations(self._resolve_query())
+        except Exception:  # noqa: BLE001
+            pass
+        refresh = getattr(self.app, "refresh_shell_chrome", None)
+        if callable(refresh):
+            refresh()
         self.notify(f"Deleted remark {index}")
 
     def action_rename_query(self) -> None:
@@ -2275,21 +2287,31 @@ class QueryScreen(BaseScreen):
         self._reset_bounds()
         self._mode = "chart"
         # First successful plot auto-promotes into the report set.
-        if not query.in_report:
-            query.in_report = True
+        if not query.in_report and self.query_id is not None:
+            from ..ops.curation import promote_query
+            from ..ops.query_ops import patch_query_op
+
             if not query.name:
                 from ..investigation.naming import suggest_query_name
 
                 labels = getattr(self.app, "labels", {}) or {}
-                query.name = suggest_query_name(
+                suggested = suggest_query_name(
                     query.metric, query.entity, labels=labels
                 )
-            from ..investigation.api import persist_investigation
-
-            persist_investigation(
-                getattr(self.app, "investigation"),
-                app_dir=getattr(self.app, "app_dir", None),
-            )
+                if suggested:
+                    try:
+                        patch_query_op(
+                            int(self.query_id),
+                            name=suggested,
+                            **self._op_target(),
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+            try:
+                promote_query(int(self.query_id), **self._op_target())
+                self._resync_after_op()
+            except Exception as exc:  # noqa: BLE001
+                self.notify(str(exc), severity="error")
             # Mint a fresh empty draft slot after auto-promote.
             ensure = getattr(self.app, "ensure_draft_query", None)
             if callable(ensure):
@@ -2756,19 +2778,37 @@ class QueryScreen(BaseScreen):
             available_frequencies=self._freq_options,
         )
 
-    def _mark_composition_changed(self) -> None:
-        """After the first plot, further edits require an explicit refresh."""
-        from ..investigation.api import persist_investigation
-
+    def _sync_auto_name_via_op(self) -> None:
+        """If auto-title should change, log a ``query.patch`` for the new name."""
+        if self.query_id is None:
+            return
         try:
             query = self._resolve_query()
-            self._sync_query_name(query)
         except Exception:
+            return
+        before = query.name
+        self._sync_query_name(query)
+        if query.name == before:
+            return
+        from ..ops.query_ops import patch_query_op
+
+        try:
+            patch_query_op(
+                int(self.query_id),
+                name=query.name,
+                **self._op_target(),
+            )
+            self._resync_after_op()
+        except Exception:  # noqa: BLE001
             pass
-        persist_investigation(
-            getattr(self.app, "investigation"),
-            app_dir=getattr(self.app, "app_dir", None),
-        )
+
+    def _mark_composition_changed(self) -> None:
+        """After the first plot, further edits require an explicit refresh.
+
+        Composition mutations should already be logged via ``query.patch``;
+        this only refreshes chrome / chart state (and auto-title if needed).
+        """
+        self._sync_auto_name_via_op()
         refresh = getattr(self.app, "refresh_shell_chrome", None)
         if callable(refresh):
             refresh()
@@ -2787,7 +2827,10 @@ class QueryScreen(BaseScreen):
         self._paint_compose()
 
     def _append_query_resource(self, kind: str, result: dict) -> None:
-        """Persist a picked resource onto the active query."""
+        """Persist a picked resource onto the active query via ``query.patch``."""
+        if self.query_id is None:
+            self.notify("Open a query first", severity="warning")
+            return
         try:
             query = self._resolve_query()
         except Exception as exc:
@@ -2806,36 +2849,51 @@ class QueryScreen(BaseScreen):
         if rid in bag:
             self.notify(f"{rid} already in query", severity="warning")
             return
-        if kind == "entity":
-            query.entity = list(query.entity) + [rid]
-        elif kind == "metric":
-            query.metric = list(query.metric) + [rid]
-        else:
-            query.series = list(query.series) + [rid]
-        labels = getattr(self.app, "labels", {}) or {}
+        from ..ops.query_ops import patch_query_op
+
+        try:
+            patch_query_op(
+                int(self.query_id),
+                **{f"add_{kind}": [rid], **self._op_target()},
+            )
+            self._resync_after_op()
+        except Exception as exc:  # noqa: BLE001
+            self.notify(str(exc), severity="error")
+            return
         if result.get("label"):
-            labels[rid] = str(result["label"])
             remember = getattr(self.app, "remember_label", None)
             if callable(remember):
                 remember(rid, str(result["label"]))
-        self._sync_query_name(query)
         self._mark_composition_changed()
 
     def _remove_query_resource(self, kind: str, resource_id: str) -> None:
+        if self.query_id is None:
+            return
         try:
             query = self._resolve_query()
         except Exception as exc:
             self.notify(str(exc), severity="error")
             return
-        if kind == "entity" and resource_id in query.entity:
-            query.entity = [x for x in query.entity if x != resource_id]
-        elif kind == "metric" and resource_id in query.metric:
-            query.metric = [x for x in query.metric if x != resource_id]
-        elif kind == "series" and resource_id in query.series:
-            query.series = [x for x in query.series if x != resource_id]
-        else:
+        bag = (
+            query.entity
+            if kind == "entity"
+            else query.metric
+            if kind == "metric"
+            else query.series
+        )
+        if resource_id not in bag:
             return
-        self._sync_query_name(query)
+        from ..ops.query_ops import patch_query_op
+
+        try:
+            patch_query_op(
+                int(self.query_id),
+                **{f"remove_{kind}": [resource_id], **self._op_target()},
+            )
+            self._resync_after_op()
+        except Exception as exc:  # noqa: BLE001
+            self.notify(str(exc), severity="error")
+            return
         self._mark_composition_changed()
 
     def _open_scoped_picker(self, kind: str) -> None:
@@ -2919,20 +2977,27 @@ class QueryScreen(BaseScreen):
     @on(QueryComposeHeader.ScopeChanged)
     def _compose_scope(self, event: QueryComposeHeader.ScopeChanged) -> None:
         event.stop()
-        try:
-            query = self._resolve_query()
-        except Exception:
+        if self.query_id is None:
             return
-        query.frequency = event.frequency
-        if event.obs_mode == "all":
-            query.head = None
-            query.tail = None
-        elif event.obs_mode == "earliest":
-            query.head = 20
-            query.tail = None
+        from ..ops.query_ops import patch_query_op
+
+        kwargs: dict = {**self._op_target()}
+        if event.frequency:
+            kwargs["frequency"] = event.frequency
         else:
-            query.head = None
-            query.tail = 20
+            kwargs["clear_frequency"] = True
+        if event.obs_mode == "all":
+            kwargs["clear_window"] = True
+        elif event.obs_mode == "earliest":
+            kwargs["head"] = 20
+        else:
+            kwargs["tail"] = 20
+        try:
+            patch_query_op(int(self.query_id), **kwargs)
+            self._resync_after_op()
+        except Exception as exc:  # noqa: BLE001
+            self.notify(str(exc), severity="error")
+            return
         self._mark_composition_changed()
 
     @on(QueryComposeHeader.Refresh)

@@ -119,6 +119,8 @@ class ActionLogStore:
                     ON events(investigation_id, completed_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_artifacts_hash
                     ON artifacts(operation, content_hash);
+                CREATE INDEX IF NOT EXISTS idx_events_actor
+                    ON events(actor, completed_at DESC);
                 """
             )
             row = conn.execute(
@@ -283,6 +285,7 @@ class ActionLogStore:
         investigation_id: Optional[str] = None,
         operation: Optional[str] = None,
         status: Optional[str] = None,
+        actor: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
@@ -300,6 +303,10 @@ class ActionLogStore:
         if status:
             clauses.append("status = ?")
             params.append(status)
+        if actor:
+            # Prefix match so ``--actor agent`` catches ``agent:peers``.
+            clauses.append("actor LIKE ?")
+            params.append(f"{actor}%")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.extend([limit, offset])
         with self._connect() as conn:

@@ -12,7 +12,11 @@ from jstdata.cli import cli
 from jstdata.models import Entity
 from jstdata.ops.discovery import search_entities
 from jstdata.ops.logstore import ActionLogStore
-from jstdata.ops.runner import run_operation
+from jstdata.ops.runner import (
+    reset_default_actor,
+    run_operation,
+    set_default_actor,
+)
 
 
 def test_store_round_trip(tmp_path: Path):
@@ -186,3 +190,84 @@ def test_cli_log_and_inspect(tmp_path: Path, monkeypatch):
     inspected = json.loads(inspect.output)
     assert inspected["data"]["event_id"] == event_id
     assert inspected["data"]["artifact"]["data"][0]["id"] == "united-states"
+
+
+def test_actor_on_events_and_cli_filter(tmp_path: Path, monkeypatch):
+    import jstdata.client as client_mod
+    import jstdata.cli_actions as cli_actions
+    import jstdata.investigation.active as active_mod
+
+    monkeypatch.setattr(client_mod, "APP_DIR", tmp_path)
+    monkeypatch.setattr(active_mod, "APP_DIR", tmp_path)
+
+    fake = MagicMock()
+    fake.search_entities.return_value = [
+        Entity.from_dict({"id": "united-states", "label": "United States"})
+    ]
+    monkeypatch.setattr(cli_actions, "_client", lambda: fake)
+
+    store = ActionLogStore(app_dir=tmp_path)
+    token = set_default_actor("tui")
+    try:
+        run_operation(
+            "search.entities",
+            lambda: [{"id": "a"}],
+            inputs={"query": "tui-q"},
+            store=store,
+            use_cache=False,
+        )
+    finally:
+        reset_default_actor(token)
+
+    run_operation(
+        "search.entities",
+        lambda: [{"id": "b"}],
+        inputs={"query": "agent-q"},
+        store=store,
+        actor="agent:peers",
+        use_cache=False,
+    )
+
+    tui_events = store.list_events(actor="tui")
+    assert len(tui_events) == 1
+    assert tui_events[0]["actor"] == "tui"
+
+    agent_events = store.list_events(actor="agent")
+    assert len(agent_events) == 1
+    assert agent_events[0]["actor"] == "agent:peers"
+
+    runner = CliRunner()
+    # Default CLI actor is cli.
+    result = runner.invoke(
+        cli, ["actions", "search", "entities", "cli-q", "--limit", "1"]
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload.get("actor") == "cli"
+
+    result_agent = runner.invoke(
+        cli,
+        [
+            "actions",
+            "--actor",
+            "agent",
+            "search",
+            "entities",
+            "agent-cli-q",
+            "--limit",
+            "1",
+        ],
+    )
+    assert result_agent.exit_code == 0, result_agent.output
+    assert json.loads(result_agent.output).get("actor") == "agent"
+
+    filtered = runner.invoke(
+        cli, ["actions", "log", "--actor-filter", "agent", "--limit", "20"]
+    )
+    assert filtered.exit_code == 0, filtered.output
+    rows = json.loads(filtered.output)["data"]["events"]
+    assert rows
+    assert all(str(r.get("actor") or "").startswith("agent") for r in rows)
+
+    # Avoid leaking ContextVar actor into later tests.
+    set_default_actor(None)

@@ -581,12 +581,12 @@ def actions_log(
     investigation: Optional[str] = None,
     operation: Optional[str] = None,
     status: Optional[str] = None,
+    actor: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
     app_dir=None,
 ):
     """List recent action-log events (does not itself write a nested event)."""
-    from .logstore import ActionLogStore
     from .result import OperationResult
     from .runner import get_store
 
@@ -602,6 +602,7 @@ def actions_log(
         investigation_id=target.investigation_id if target else investigation,
         operation=operation,
         status=status,
+        actor=actor,
         limit=limit,
         offset=offset,
     )
@@ -615,6 +616,7 @@ def actions_log(
             "investigation": investigation,
             "operation": operation,
             "status": status,
+            "actor": actor,
             "limit": limit,
             "offset": offset,
         },

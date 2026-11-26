@@ -137,29 +137,69 @@ def stage_ids(
 ) -> list[str]:
     """Collect resource ids into the investigation workspace.
 
-    Returns newly added ids (already-present ids are skipped). Persists via
-    the host when anything changed.
+    Returns newly added ids (already-present ids are skipped). Prefers the
+    logged ``workspace.add`` op when the host has project context.
     """
-    added: list[str] = []
     names = labels or {}
-    if metric and workspace.add_metric(metric):
-        added.append(metric)
-    if entity and workspace.add_entity(entity):
-        added.append(entity)
-    if series and workspace.add_series(series):
-        added.append(series)
+    project_id = getattr(app, "project_id", None)
+    active = getattr(app, "active", None)
+    inv_id = getattr(active, "investigation", None) if active else None
+    app_dir = getattr(app, "app_dir", None)
+    if project_id and inv_id:
+        try:
+            from ..ops import workspace_ops as ws_ops
+
+            result = ws_ops.workspace_add(
+                metric=[metric] if metric else None,
+                entity=[entity] if entity else None,
+                series=[series] if series else None,
+                project=project_id,
+                investigation=inv_id,
+                app_dir=app_dir,
+            )
+            bag = (result.data or {}).get("added") or {}
+            added = list(bag.get("metric") or [])
+            added.extend(bag.get("entity") or [])
+            added.extend(bag.get("series") or [])
+            resync = getattr(app, "resync_from_disk", None)
+            if callable(resync):
+                resync()
+        except Exception:  # noqa: BLE001 — fall back to direct mutate
+            added = []
+            if metric and workspace.add_metric(metric):
+                added.append(metric)
+            if entity and workspace.add_entity(entity):
+                added.append(entity)
+            if series and workspace.add_series(series):
+                added.append(series)
+            if added:
+                persist = getattr(app, "persist_active_workspace", None)
+                if callable(persist):
+                    persist()
+    else:
+        added = []
+        if metric and workspace.add_metric(metric):
+            added.append(metric)
+        if entity and workspace.add_entity(entity):
+            added.append(entity)
+        if series and workspace.add_series(series):
+            added.append(series)
+        if added:
+            persist = getattr(app, "persist_active_workspace", None)
+            if callable(persist):
+                persist()
     if not added:
         return []
     remember = getattr(app, "remember_label", None)
     if callable(remember):
         for rid in added:
             remember(rid, names.get(rid) or rid)
-    persist = getattr(app, "persist_active_workspace", None)
-    if callable(persist):
-        persist()
     refresh = getattr(app, "refresh_workspace_drawer", None)
     if callable(refresh):
         refresh()
+    chrome = getattr(app, "refresh_shell_chrome", None)
+    if callable(chrome):
+        chrome()
     return added
 
 
