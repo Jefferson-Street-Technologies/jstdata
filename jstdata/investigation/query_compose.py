@@ -160,7 +160,6 @@ class QueryComposeHeader(Vertical):
             yield ActionButton(
                 "Rename",
                 action_id="rename_query",
-                shortcut="R",
                 variant="ghost",
                 id="qc-rename",
             )

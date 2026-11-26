@@ -1007,8 +1007,8 @@ class QueryScreen(BaseScreen):
 
     BINDINGS = [
         Binding("r", "load", "Refresh", key_display="r"),
-        Binding("a", "annotate", "Add remark", show=False),
-        Binding("R", "rename_query", "Rename query", show=False),
+        Binding("R", "annotate", "Add remark", show=False),
+        Binding("A", "pick_remark", "Pick remark", show=False, priority=True),
         Binding("t", "mode_table", "Table", show=False),
         Binding("c", "mode_chart", "Chart", show=False),
         Binding("E", "add_entity", "Add entity", show=False),
@@ -1027,7 +1027,7 @@ class QueryScreen(BaseScreen):
         Binding("]", "next_group", "Next chart group", show=False),
         Binding("tab", "toggle_bound_focus", "Toggle lo/hi bound", show=False, priority=True),
         Binding("enter", "inspect", "Toggle series / inspect", priority=True),
-        Binding("escape", "cancel_remark", "Cancel remark", show=False),
+        Binding("escape", "cancel_remark", "Cancel remark / pick", show=False),
     ]
 
     FOOTER_CHROME: tuple[str, ...] = BaseScreen.FOOTER_CHROME
@@ -1114,12 +1114,22 @@ class QueryScreen(BaseScreen):
         padding-top: 1;
         overflow-y: auto;
     }
-    #query-notes-header { height: 1; margin-bottom: 0; }
+    #query-notes-header { height: 1; margin-bottom: 0; align: left middle; }
     #query-notes-kicker {
         width: 1fr;
         color: #f5f5f5;
         text-style: bold;
         height: 1;
+    }
+    #query-annotate {
+        width: auto;
+        height: 1;
+        color: #86efac;
+        background: #0a0a0a;
+    }
+    #query-annotate:hover {
+        color: #bbf7d0;
+        text-style: bold;
     }
     #query-remarks-scroll {
         height: auto;
@@ -1256,6 +1266,18 @@ class QueryScreen(BaseScreen):
         self._run_token = 0
         self._remark_drafting = False
         self._pending_remark_delete = False
+        self._remark_pick_mode = False
+        self._selected_remark_i: Optional[int] = None  # 1-based when set
+        self._pre_pick_hidden: set[str] = set()
+        self._pre_pick_lo_i: int = 0
+        self._pre_pick_hi_i: int = 0
+        self._pre_pick_focus: str = "hi"
+        self._pre_pick_records: list[dict[str, Any]] = []
+        self._pre_pick_entity: list[str] = []
+        self._pre_pick_metric: list[str] = []
+        self._pre_pick_series: list[str] = []
+        # Series records seen this session — survive composition drops for remark cite.
+        self._obs_cache: dict[str, dict[str, Any]] = {}
         # Frequency selector options derived from metric variants / series.
         self._freq_options: list[Optional[str]] = [None]
         self._freq_source_key: tuple[str, ...] = ()
@@ -1317,9 +1339,9 @@ class QueryScreen(BaseScreen):
                 with Horizontal(id="query-notes-header"):
                     yield Label("Remarks", id="query-notes-kicker")
                     yield ActionButton(
-                        "+ Remark",
+                        "+ Add",
                         action_id="annotate",
-                        shortcut="a",
+                        shortcut="R",
                         variant="ghost",
                         id="query-annotate",
                     )
@@ -1403,7 +1425,7 @@ class QueryScreen(BaseScreen):
         return f"[dim]Query[/] [bold]{escape(str(name))}[/] [dim]→ client.query(…)[/]"
 
     def footer_action_keys(self) -> list[str]:
-        # BaseScreen.FOOTER_CHROME already has ``a remark``.
+        # BaseScreen.FOOTER_CHROME already has ``a remark`` alias; R adds here.
         return [
             "[bold]Tab[/bold] lo/hi bound",
             "[bold]h/l[/bold] nudge",
@@ -1452,31 +1474,49 @@ class QueryScreen(BaseScreen):
         panel = self.query_one("#query-remarks-list", Static)
         lines: list[str] = []
         remarks = list(query.remarks or [])
+        picking = self._remark_pick_mode
+        selected = self._selected_remark_i
         for i, remark in enumerate(remarks, start=1):
-            head = f"[bold #86efac]{i:02d}[/]"
+            selected_here = picking and selected == i
+            num = f"[bold #fbbf24]{i}[/] " if picking else ""
             if remark.name:
-                head += f" [bold]{escape(remark.name)}[/]"
+                title = escape(remark.name)
+            elif picking:
+                title = f"Remark {i}"
+            else:
+                title = "Remark"
+            if selected_here:
+                head = f"{num}[bold #0a0a0a on #86efac] {title} [/]"
+            else:
+                head = f"{num}[bold]{title}[/]"
             lines.append(head)
-            lines.append(f"   {escape(remark.text)}")
+            body = escape(remark.text)
+            if selected_here:
+                lines.append(f"  [#bbf7d0]{body}[/]")
+            else:
+                lines.append(f"  {body}")
             cite_bits: list[str] = []
             if remark.series:
-                cite_bits.append(", ".join(remark.series[:3]) + (
-                    "…" if len(remark.series) > 3 else ""
-                ))
+                cite_bits.append(
+                    ", ".join(remark.series[:3])
+                    + ("…" if len(remark.series) > 3 else "")
+                )
             if remark.from_ or remark.to:
                 cite_bits.append(
                     f"{remark.from_ or '…'} – {remark.to or '…'}"
                 )
             if cite_bits:
-                lines.append(f"   [dim]cite · {' · '.join(escape(b) for b in cite_bits)}[/]")
-            lines.append(
-                f"   [dim]d{i}[/] [bold #f87171]delete[/]"
-            )
+                lines.append(
+                    f"  [dim]cite · {' · '.join(escape(b) for b in cite_bits)}[/]"
+                )
         if not lines:
             lines.append(
-                "[dim]No remarks yet. Press a to add one — optional name, "
-                "required text, optional cite of the chart cross section.[/]"
+                "[dim]No remarks yet. Press R to add one — optional name, "
+                "required text, optional cite of the chart cross section. "
+                "Shift+A to pick.[/]"
             )
+        elif picking and selected is None:
+            lines.append("[dim]Press 1–9 to highlight a remark · Esc to exit[/]")
         panel.update("\n".join(lines))
 
     def refresh_annotations(self) -> None:
@@ -1488,13 +1528,15 @@ class QueryScreen(BaseScreen):
         self._render_annotations(query)
 
     def begin_add_remark(self) -> None:
-        """Open the inline remark draft (``a`` / host)."""
+        """Open the inline remark draft (``R`` / header button)."""
         if self.query_id is None:
             self.notify(
                 "Save as a query first to attach remarks",
                 severity="warning",
             )
             return
+        if self._remark_pick_mode:
+            self._exit_remark_pick(restore=True)
         self._remark_drafting = True
         draft = self.query_one("#query-remark-draft")
         draft.add_class("-open")
@@ -1514,7 +1556,284 @@ class QueryScreen(BaseScreen):
     def action_annotate(self) -> None:
         self.begin_add_remark()
 
+    def action_pick_remark(self) -> None:
+        """Shift+A — number the remarks and apply a picked cite to the chart."""
+        if self._remark_drafting:
+            return
+        try:
+            query = self._resolve_query()
+        except Exception:
+            return
+        remarks = list(query.remarks or [])
+        if not remarks:
+            self.notify("No remarks to pick — press R to add one", severity="warning")
+            return
+        if not self._remark_pick_mode:
+            self._snapshot_remark_pick(query)
+            self._remark_pick_mode = True
+            self._selected_remark_i = None
+        self._render_annotations(query)
+        self.notify("Pick remark 1–9 · Esc to exit", timeout=3)
+
+    def _snapshot_remark_pick(self, query: Query) -> None:
+        self._pre_pick_hidden = set(self._hidden)
+        self._pre_pick_lo_i = self._bound_lo_i
+        self._pre_pick_hi_i = self._bound_hi_i
+        self._pre_pick_focus = self._bound_focus
+        self._pre_pick_records = list(self._records)
+        self._pre_pick_entity = list(query.entity)
+        self._pre_pick_metric = list(query.metric)
+        self._pre_pick_series = list(query.series)
+
+    def _restore_remark_pick_baseline(self) -> None:
+        """Undo temporary cite restores without leaving pick mode."""
+        try:
+            query = self._resolve_query()
+        except Exception:
+            query = None
+        if query is not None:
+            query.entity = list(self._pre_pick_entity)
+            query.metric = list(self._pre_pick_metric)
+            query.series = list(self._pre_pick_series)
+        self._records = list(self._pre_pick_records)
+        self._groups = group_plot_records(self._records)
+        self._hidden = set(self._pre_pick_hidden)
+        self._bound_lo_i = self._pre_pick_lo_i
+        self._bound_hi_i = self._pre_pick_hi_i
+        self._bound_focus = self._pre_pick_focus
+
+    def _exit_remark_pick(self, *, restore: bool = True) -> None:
+        if not self._remark_pick_mode:
+            return
+        self._remark_pick_mode = False
+        self._selected_remark_i = None
+        if restore:
+            self._restore_remark_pick_baseline()
+            self._fill_nav()
+            self._show_selected()
+            refresh = getattr(self.app, "refresh_shell_chrome", None)
+            if callable(refresh):
+                refresh()
+        try:
+            query = self._resolve_query()
+        except Exception:
+            return
+        self._render_annotations(query)
+
+    def _select_remark(self, index: int) -> None:
+        try:
+            query = self._resolve_query()
+        except Exception:
+            return
+        remarks = list(query.remarks or [])
+        if index < 1 or index > len(remarks):
+            self.notify(f"No remark {index}", severity="warning")
+            return
+        # Each pick starts from the pre-mode composition / records.
+        self._restore_remark_pick_baseline()
+        self._selected_remark_i = index
+        self._apply_remark_cite(remarks[index - 1])
+        try:
+            query = self._resolve_query()
+        except Exception:
+            return
+        self._render_annotations(query)
+
+    def _entity_ids_from_record(self, rec: dict[str, Any]) -> list[str]:
+        out: list[str] = []
+        for ent in rec.get("entities") or []:
+            if isinstance(ent, dict):
+                eid = str(ent.get("id") or "").strip()
+            else:
+                eid = str(getattr(ent, "id", "") or "").strip()
+            if eid and eid not in out:
+                out.append(eid)
+        return out
+
+    def _fetch_cited_series_record(self, series_id: str) -> Optional[dict[str, Any]]:
+        """Load one series record, preferring session / disk cache."""
+        cached = self._obs_cache.get(series_id)
+        if cached is not None:
+            return cached
+        client = getattr(self.app, "client", None) or self.client
+        if client is None:
+            return None
+        try:
+            query = self._resolve_query()
+        except Exception:
+            query = None
+        # Prefer /query (disk-cached) when the open query has a window size.
+        try:
+            kwargs: dict[str, Any] = {"series": [series_id]}
+            if query is not None:
+                if query.head is not None:
+                    kwargs["head"] = query.head
+                elif query.tail is not None:
+                    kwargs["tail"] = query.tail
+                else:
+                    # Full cite windows need history; use a wide tail.
+                    kwargs["tail"] = 500
+                if query.frequency and query.frequency != "?":
+                    kwargs["frequency"] = query.frequency
+            results = client.query(**kwargs)
+            if results:
+                rec = series_to_record(results[0])
+                self._obs_cache[series_id] = rec
+                return rec
+        except Exception:  # noqa: BLE001
+            pass
+        # Fall back to series metadata + observations endpoints (also cached).
+        try:
+            meta = client.get_series(series_id)
+            start = None
+            end = None
+            obs = client.get_series_observations(
+                series_id, start_date=start, end_date=end
+            )
+            ts = TimeSeries(series=meta, observations=list(obs))
+            rec = series_to_record(ts)
+            self._obs_cache[series_id] = rec
+            return rec
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _ensure_cited_series(
+        self, keep: set[str]
+    ) -> tuple[set[str], list[str]]:
+        """Restore missing cited series into ``_records`` and query entities.
+
+        Returns ``(present_ids, restored_entity_ids)``. Temporary — undone on
+        pick exit / next pick baseline restore.
+        """
+        present = {
+            str(rec.get("id") or "").strip()
+            for rec in self._records
+            if rec.get("id")
+        }
+        restored_entities: list[str] = []
+        missing = [sid for sid in keep if sid not in present]
+        if not missing:
+            return present, restored_entities
+        try:
+            query = self._resolve_query()
+        except Exception:
+            query = None
+        added = False
+        for sid in missing:
+            rec = self._fetch_cited_series_record(sid)
+            if rec is None:
+                continue
+            self._records.append(rec)
+            present.add(sid)
+            added = True
+            if query is None:
+                continue
+            for eid in self._entity_ids_from_record(rec):
+                if eid not in query.entity:
+                    query.entity = list(query.entity) + [eid]
+                    restored_entities.append(eid)
+                    remember = getattr(self.app, "remember_label", None)
+                    if callable(remember):
+                        for ent in rec.get("entities") or []:
+                            if isinstance(ent, dict) and str(ent.get("id")) == eid:
+                                lab = ent.get("label")
+                                if lab:
+                                    remember(eid, str(lab))
+                    labels = getattr(self.app, "labels", None)
+                    if isinstance(labels, dict) and eid not in labels:
+                        for ent in rec.get("entities") or []:
+                            if isinstance(ent, dict) and str(ent.get("id")) == eid:
+                                lab = ent.get("label")
+                                if lab:
+                                    labels[eid] = str(lab)
+            mid = str(rec.get("metric_id") or "").strip()
+            if mid and mid not in query.metric:
+                query.metric = list(query.metric) + [mid]
+        if added:
+            self._groups = group_plot_records(self._records)
+            refresh = getattr(self.app, "refresh_shell_chrome", None)
+            if callable(refresh):
+                refresh()
+        return present, restored_entities
+
+    def _apply_remark_cite(self, remark: QueryRemark) -> None:
+        """Filter chart series / date bounds from a remark's cross-section cite.
+
+        Temporarily rehydrates cited series (and their entities) that were
+        dropped from the active composition, preferring session/disk cache.
+        """
+        restored: list[str] = []
+        if remark.series:
+            keep = {str(s).strip() for s in remark.series if str(s).strip()}
+            present, restored = self._ensure_cited_series(keep)
+            if keep & present:
+                self._hidden = {
+                    sid
+                    for sid in {
+                        str(rec.get("id") or "").strip()
+                        for rec in self._records
+                        if rec.get("id")
+                    }
+                    if sid not in keep
+                }
+            else:
+                self.notify(
+                    "Cited series unavailable — could not restore",
+                    severity="warning",
+                    timeout=3,
+                )
+                self._hidden = set()
+        else:
+            self._hidden = set()
+        self._fill_nav()
+        self._reset_bounds()
+        dates = self._all_cursor_dates()
+        if dates and (remark.from_ or remark.to):
+            lo_day = _parse_stamp(remark.from_)
+            hi_day = _parse_stamp(remark.to)
+
+            def _as_date(value: Optional[datetime]):
+                if value is None:
+                    return None
+                return value.date() if hasattr(value, "date") else value
+
+            lo_target = _as_date(lo_day)
+            hi_target = _as_date(hi_day)
+            if lo_target is not None:
+                self._bound_lo_i = 0
+                for i, day in enumerate(dates):
+                    if _as_date(day) >= lo_target:
+                        self._bound_lo_i = i
+                        break
+                else:
+                    self._bound_lo_i = len(dates) - 1
+            if hi_target is not None:
+                self._bound_hi_i = len(dates) - 1
+                for i, day in enumerate(dates):
+                    if _as_date(day) <= hi_target:
+                        self._bound_hi_i = i
+            self._clamp_bounds()
+            self._cursor_i = (
+                self._bound_lo_i if self._bound_focus == "lo" else self._bound_hi_i
+            )
+        self._show_selected()
+        bits: list[str] = []
+        if remark.series:
+            bits.append(f"{len(remark.series)} series")
+        if restored:
+            bits.append(f"restored {len(restored)} entit{'y' if len(restored) == 1 else 'ies'}")
+        if remark.from_ or remark.to:
+            bits.append(f"{remark.from_ or '…'}–{remark.to or '…'}")
+        if bits:
+            self.notify("Applied cite · " + " · ".join(bits), timeout=3)
+        else:
+            self.notify("Remark has no cite — chart unchanged", timeout=2)
+
     def action_cancel_remark(self) -> None:
+        if self._remark_pick_mode:
+            self._exit_remark_pick(restore=True)
+            self.notify("Remark pick cancelled", timeout=1)
+            return
         if self._remark_drafting:
             self._remark_drafting = False
             self.query_one("#query-remark-draft").remove_class("-open")
@@ -1676,6 +1995,10 @@ class QueryScreen(BaseScreen):
             return
         self._busy = False
         self._records = [series_to_record(ts) for ts in results]
+        for rec in self._records:
+            sid = str(rec.get("id") or "").strip()
+            if sid:
+                self._obs_cache[sid] = rec
         self._groups = group_plot_records(self._records)
         self._loaded = True
         self._has_run_once = True
@@ -2546,6 +2869,13 @@ class QueryScreen(BaseScreen):
                 event.stop()
                 event.prevent_default()
                 return
+        # Shift+A pick mode: digit selects a remark.
+        if self._remark_pick_mode and event.key in "123456789":
+            if not isinstance(self.focused, (Input, TextArea)):
+                self._select_remark(int(event.key))
+                event.stop()
+                event.prevent_default()
+                return
         # D then digit deletes a remark (D1…D9).
         if getattr(self, "_pending_remark_delete", False):
             self._pending_remark_delete = False
@@ -2561,6 +2891,19 @@ class QueryScreen(BaseScreen):
             event.prevent_default()
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if self._remark_pick_mode:
+            if action in {"cancel_remark", "pick_remark"}:
+                return True
+            if action in {
+                "add_entity",
+                "add_metric",
+                "add_series",
+                "annotate",
+                "obs_left",
+                "obs_right",
+                "toggle_bound_focus",
+            }:
+                return False
         if self._remark_drafting:
             # Tab cycles the draft; Enter submits; Esc cancels.
             if action == "toggle_bound_focus":
@@ -2576,6 +2919,7 @@ class QueryScreen(BaseScreen):
                 "obs_left",
                 "obs_right",
                 "annotate",
+                "pick_remark",
                 "cursor_down",
                 "cursor_up",
             }:
@@ -2588,6 +2932,7 @@ class QueryScreen(BaseScreen):
                 "obs_left",
                 "obs_right",
                 "annotate",
+                "pick_remark",
             }:
                 return False
             if action == "cancel_remark":
@@ -2645,7 +2990,7 @@ QUERY_VIEW = register(
         description=(
             "Interactive query composition and chart workbench. "
             "First executable plot runs automatically; further edits need r. "
-            "Remarks are inline (a); chart Tab switches lo/hi time bounds."
+            "Remarks: R to add, Shift+A to pick/apply cite; Tab switches lo/hi bounds."
         ),
         create_screen=create_query_screen,
         arguments=(
@@ -2657,7 +3002,8 @@ QUERY_VIEW = register(
         ),
         bindings=(
             ActionBinding("r", "load", "Refresh / run GET /query"),
-            ActionBinding("a", "annotate", "Add an inline remark"),
+            ActionBinding("R", "annotate", "Add an inline remark"),
+            ActionBinding("A", "pick_remark", "Number remarks and apply a cite"),
             ActionBinding("c / t", "mode", "Chart or table"),
             ActionBinding("E", "add_entity", "Add entity (scoped when possible)"),
             ActionBinding("M", "add_metric", "Add metric (scoped when possible)"),

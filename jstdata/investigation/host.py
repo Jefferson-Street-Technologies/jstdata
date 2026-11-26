@@ -58,6 +58,7 @@ from .publish_screens import (
     PublishDraftScreen,
     PublishedModal,
 )
+from .activity_drawer import ActivityDrawer
 from .search_drawer import SearchDrawer
 from .project_store import (
     duplicate_investigation,
@@ -700,7 +701,7 @@ class InvestigationHost(App):
         # Investigation tabs within the open project (`{` / `}`).
         Binding("{", "prev_investigation", "Prev investigation tab", show=False),
         Binding("}", "next_investigation", "Next investigation tab", show=False),
-        Binding("A", "show_activity", "Activity", key_display="A"),
+        Binding("L", "show_activity", "Activity", key_display="L"),
         Binding("slash", "universal_search", "Search", show=False),
         Binding("F", "feedback_prompt", "Feedback", key_display="F"),
         Binding("exclamation_mark", "bug_report", "Bug report", key_display="!"),
@@ -1436,6 +1437,7 @@ class InvestigationHost(App):
             (
                 WorkspaceDrawer,
                 SearchDrawer,
+                ActivityDrawer,
                 CommandPalette,
                 DrillDownModal,
                 DestinationScreen,
@@ -1670,6 +1672,7 @@ class InvestigationHost(App):
                 (
                     WorkspaceDrawer,
                     SearchDrawer,
+                    ActivityDrawer,
                     CommandPalette,
                     DrillDownModal,
                     DestinationScreen,
@@ -3239,8 +3242,7 @@ class InvestigationHost(App):
                     pass
 
     def action_show_activity(self) -> None:
-        """Open the action-log history drawer (H / A)."""
-        from .activity_drawer import ActivityDrawer
+        """Open the action-log history drawer (Shift+L)."""
         from .artifact_modal import ArtifactModal
 
         def _opened(result: object | None) -> None:
@@ -3734,7 +3736,8 @@ class InvestigationHost(App):
         palette on top of it; other modals keep it on the screen beneath."""
         screen = self.screen
         if isinstance(screen, ModalScreen) and not isinstance(
-            screen, (WorkspaceDrawer, SearchDrawer, CommandPalette)
+            screen,
+            (WorkspaceDrawer, SearchDrawer, ActivityDrawer, CommandPalette),
         ):
             return docked
         return screen

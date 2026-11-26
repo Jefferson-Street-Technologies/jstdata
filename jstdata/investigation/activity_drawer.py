@@ -1,4 +1,4 @@
-"""Bottom drawer listing recent action-log events for the open project."""
+"""Right drawer listing recent action-log events for the open project."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ class _EventItem(ListItem):
 
 
 class ActivityDrawer(ModalScreen[Optional[str]]):
-    """Show recent action-log rows; Enter returns the selected event id."""
+    """Right-side action-log drawer; Enter returns the selected event id."""
 
     BINDINGS = [
         Binding("escape", "dismiss_drawer", "Close", show=True),
@@ -40,21 +40,26 @@ class ActivityDrawer(ModalScreen[Optional[str]]):
 
     CSS = """
     ActivityDrawer {
-        align: center bottom;
+        align: right middle;
+        background: transparent;
     }
     #activity-panel {
-        width: 100%;
-        height: 16;
-        border-top: solid $accent;
-        background: $surface;
-        padding: 0 1;
+        width: 48;
+        height: 100%;
+        border-left: solid #2a2a2a;
+        background: #0e0e0e;
+        padding: 1 1;
     }
     #activity-title {
         text-style: bold;
-        padding: 0 0 1 0;
+        color: #a8a8a8;
+        height: 1;
+        margin-bottom: 1;
     }
     #activity-list {
         height: 1fr;
+        background: transparent;
+        border: none;
     }
     """
 

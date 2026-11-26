@@ -27,7 +27,7 @@ class BaseScreen(Screen):
     # Keep the footer minimal — Home / Search live on the pane bar.
     FOOTER_SHOW_HOME: bool = False
     FOOTER_CHROME: tuple[str, ...] = (
-        "[bold]a[/bold] remark",
+        "[bold]R[/bold] remark",
     )
 
     # Shell-level bindings (host also owns some; these help when focus is here).
