@@ -1549,10 +1549,16 @@ class QueryScreen(BaseScreen):
                     yield Static("", id="query-remarks-list", markup=True)
                 with Vertical(id="query-remark-draft"):
                     with Horizontal(id="remark-name-row"):
-                        yield Input(placeholder="Name (optional)", id="remark-name")
+                        remark_name = Input(
+                            placeholder="Name (optional)", id="remark-name"
+                        )
+                        remark_name.can_focus = False
+                        yield remark_name
                         yield Checkbox("Source", id="remark-cite", value=False)
                     yield Label("Remark", classes="remark-field-label")
-                    yield TextArea("", id="remark-text")
+                    remark_text = TextArea("", id="remark-text")
+                    remark_text.can_focus = False
+                    yield remark_text
                     yield Label(
                         "Enter to add remark",
                         id="remark-submit-hint",
@@ -1792,6 +1798,21 @@ class QueryScreen(BaseScreen):
             return
         self._render_annotations(query)
 
+    def _disarm_remark_draft_focus(self) -> None:
+        """Hide remark fields from the focus chain so they don't swallow jump keys."""
+        try:
+            name_in = self.query_one("#remark-name", Input)
+            body = self.query_one("#remark-text", TextArea)
+        except Exception:  # noqa: BLE001
+            return
+        name_in.can_focus = False
+        body.can_focus = False
+        if self.focused in (name_in, body):
+            try:
+                self.query_one("#query-obs", ListView).focus()
+            except Exception:  # noqa: BLE001
+                self.set_focus(None)
+
     def begin_add_remark(self) -> None:
         """Open the inline remark draft (``R`` / header button)."""
         if self.query_id is None:
@@ -1810,13 +1831,17 @@ class QueryScreen(BaseScreen):
             self.query_one("#query-remarks-scroll").styles.max_height = 5
         except Exception:  # noqa: BLE001
             pass
-        self.query_one("#remark-name", Input).value = ""
-        self.query_one("#remark-text", TextArea).load_text("")
+        name_in = self.query_one("#remark-name", Input)
+        body = self.query_one("#remark-text", TextArea)
+        name_in.value = ""
+        body.load_text("")
+        name_in.can_focus = True
+        body.can_focus = True
         try:
             self.query_one("#remark-cite", Checkbox).value = False
         except Exception:  # noqa: BLE001
             pass
-        self.query_one("#remark-name", Input).focus()
+        name_in.focus()
 
     def action_annotate(self) -> None:
         self.begin_add_remark()
@@ -2102,6 +2127,7 @@ class QueryScreen(BaseScreen):
         if self._remark_drafting:
             self._remark_drafting = False
             self.query_one("#query-remark-draft").remove_class("-open")
+            self._disarm_remark_draft_focus()
             try:
                 self.query_one("#query-remarks-scroll").styles.max_height = 14
             except Exception:  # noqa: BLE001
@@ -2178,6 +2204,7 @@ class QueryScreen(BaseScreen):
             refresh()
         self._remark_drafting = False
         self.query_one("#query-remark-draft").remove_class("-open")
+        self._disarm_remark_draft_focus()
         try:
             self.query_one("#query-remarks-scroll").styles.max_height = 14
         except Exception:  # noqa: BLE001

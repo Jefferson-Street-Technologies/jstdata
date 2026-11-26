@@ -90,7 +90,10 @@ class BugReportPanel(Vertical):
             yield Label("Bug report", id="br-title")
             yield Label("Enter save · Esc cancel", id="br-keys")
         yield Static("", id="br-context", markup=True)
-        yield Input(placeholder="What happened?", id="br-input")
+        # Closed panel must not autofocus — Input would swallow jump keys.
+        inp = Input(placeholder="What happened?", id="br-input")
+        inp.can_focus = False
+        yield inp
 
     def open_panel(
         self,
@@ -110,6 +113,7 @@ class BugReportPanel(Vertical):
             ctx.display = False
         inp = self.query_one("#br-input", Input)
         inp.value = ""
+        inp.can_focus = True
         self.add_class("-open")
         inp.focus()
 
@@ -119,7 +123,11 @@ class BugReportPanel(Vertical):
         self._replication = {}
         self._screen_name = ""
         try:
-            self.query_one("#br-input", Input).value = ""
+            inp = self.query_one("#br-input", Input)
+            inp.value = ""
+            inp.can_focus = False
+            if self.screen is not None and self.screen.focused is inp:
+                self.screen.set_focus(None)
         except Exception:  # noqa: BLE001
             pass
         if was_open:
@@ -133,7 +141,11 @@ class BugReportPanel(Vertical):
         # Keep replication on the panel until the screen handler reads it.
         self.remove_class("-open")
         try:
-            self.query_one("#br-input", Input).value = ""
+            inp = self.query_one("#br-input", Input)
+            inp.value = ""
+            inp.can_focus = False
+            if self.screen is not None and self.screen.focused is inp:
+                self.screen.set_focus(None)
         except Exception:  # noqa: BLE001
             pass
         self.post_message(self.Submitted(message))

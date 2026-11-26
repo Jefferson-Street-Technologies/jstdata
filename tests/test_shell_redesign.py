@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
+from textual.app import App
+from textual.binding import Binding
+from textual.widgets import Input, Static
+
 from jstdata.actions.base import get_action
+from jstdata.actions.screen import BaseScreen
 from jstdata.investigation.api import add_query, create_investigation, persist_investigation
 from jstdata.investigation.project_store import load_project_investigation
 from jstdata.investigation.research_root import ResearchRootScreen
@@ -102,3 +108,59 @@ def test_sidebar_refresh_splits_drafts_and_saved():
     assert "×" in painted
     assert pane.start_jump() is True
     assert pane._jumping is True
+
+
+def test_hidden_header_input_does_not_block_jump_bindings():
+    """display:none header Input must not autofocus / swallow T Q W digits."""
+
+    class Body(Static):
+        can_focus = True
+
+        def __init__(self) -> None:
+            super().__init__("body")
+
+    class JumpScreen(BaseScreen):
+        def compose_body(self):
+            yield Body()
+
+    class Pilot(App):
+        BINDINGS = [Binding("T", "tab_jump", "T")]
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.ok = False
+            self.focus_name = ""
+
+        def on_mount(self) -> None:
+            self.push_screen(JumpScreen())
+            self.call_later(self._drive)
+
+        def action_tab_jump(self) -> None:
+            start = getattr(self.screen, "action_shell_tab_jump", None)
+            if callable(start):
+                start()
+
+        async def _drive(self) -> None:
+            await asyncio.sleep(0.05)
+            screen = self.screen
+            assert isinstance(screen, JumpScreen)
+            self.focus_name = type(self.focused).__name__ if self.focused else ""
+            assert not isinstance(self.focused, Input), self.focus_name
+            header_in = screen.query_one("#shell-header-input", Input)
+            assert header_in.can_focus is False
+            pane = screen.query_one("#shell-pane-bar", PaneBar)
+            pane.set_tabs(
+                ["a", "b"],
+                labels={"a": "Alpha", "b": "Beta"},
+                active="a",
+            )
+            assert await self._check_bindings("T") is True
+            assert pane._jumping is True
+            assert await self._check_bindings("2") is True
+            assert pane._jumping is False
+            self.ok = True
+            self.exit()
+
+    app = Pilot()
+    app.run()
+    assert app.ok

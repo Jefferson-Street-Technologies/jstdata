@@ -79,11 +79,15 @@ class ProjectHeader(Horizontal):
     def compose(self) -> ComposeResult:
         yield Label(self._title or "Untitled", id="shell-header-title", markup=False)
         yield Label("✎", id="shell-header-edit", markup=False)
-        yield Input(
+        # Hidden until edit — must not be focusable or it steals autofocus and
+        # Input.check_consume_key swallows T/Q/W/digits (jump bindings).
+        field = Input(
             value=self._title,
             placeholder="Report name",
             id="shell-header-input",
         )
+        field.can_focus = False
+        yield field
 
     def set_project(self, title: str, *, commands_hint: bool = False) -> None:
         del commands_hint  # Commands live on the pane bar chip.
@@ -101,6 +105,7 @@ class ProjectHeader(Horizontal):
         self._editing = True
         self.add_class("-editing")
         field = self.query_one("#shell-header-input", Input)
+        field.can_focus = True
         field.value = self._title if self._title != "Untitled" else ""
         field.focus()
         try:
@@ -113,21 +118,38 @@ class ProjectHeader(Horizontal):
             return
         self._editing = False
         self.remove_class("-editing")
-        self.query_one("#shell-header-input", Input).value = self._title
+        field = self.query_one("#shell-header-input", Input)
+        field.value = self._title
+        field.can_focus = False
         self.query_one("#shell-header-title", Label).update(self._title)
+        self._blur_if_focused(field)
 
     def _commit_edit(self, value: str) -> None:
         title = value.strip()
         self._editing = False
         self.remove_class("-editing")
+        field = self.query_one("#shell-header-input", Input)
         if not title or title == self._title:
-            self.query_one("#shell-header-input", Input).value = self._title
+            field.value = self._title
+            field.can_focus = False
             self.query_one("#shell-header-title", Label).update(self._title)
+            self._blur_if_focused(field)
             return
         self._title = title
         self.query_one("#shell-header-title", Label).update(title)
-        self.query_one("#shell-header-input", Input).value = title
+        field.value = title
+        field.can_focus = False
+        self._blur_if_focused(field)
         self.post_message(self.RenameCommitted(title))
+
+    @staticmethod
+    def _blur_if_focused(field: Input) -> None:
+        try:
+            screen = field.screen
+        except Exception:  # noqa: BLE001
+            return
+        if screen is not None and screen.focused is field:
+            screen.set_focus(None)
 
     def on_click(self, event) -> None:  # noqa: ANN001
         widget = getattr(event, "widget", None)

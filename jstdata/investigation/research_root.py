@@ -196,10 +196,14 @@ class ResearchRootScreen(BaseScreen):
     def compose_body(self) -> ComposeResult:
         with Vertical(id="root-body"):
             yield Label("", id="root-title")
-            yield Input(placeholder="Title", id="root-title-input")
+            title_in = Input(placeholder="Title", id="root-title-input")
+            title_in.can_focus = False
+            yield title_in
             yield Label("─" * 54, id="root-rule")
             yield Static("", id="root-desc", markup=True)
-            yield Input(placeholder="Description", id="root-desc-input")
+            desc_in = Input(placeholder="Description", id="root-desc-input")
+            desc_in.can_focus = False
+            yield desc_in
             yield Static(
                 "[bold]enter[/bold] save  ·  [bold]esc[/bold] cancel",
                 id="root-edit-hint",
@@ -305,8 +309,10 @@ class ResearchRootScreen(BaseScreen):
         if focus == "title":
             title_in.value = title_val
             title_lbl.display = False
+            title_in.can_focus = True
             title_in.display = True
             desc_lbl.display = True
+            desc_in.can_focus = False
             desc_in.display = False
             self._editing = "title"
             hint.display = True
@@ -315,8 +321,10 @@ class ResearchRootScreen(BaseScreen):
         else:
             desc_in.value = desc_val
             desc_lbl.display = False
+            desc_in.can_focus = True
             desc_in.display = True
             title_lbl.display = True
+            title_in.can_focus = False
             title_in.display = False
             self._editing = "description"
             hint.display = True
@@ -327,10 +335,16 @@ class ResearchRootScreen(BaseScreen):
         self._editing = None
         try:
             self.query_one("#root-title", Label).display = True
-            self.query_one("#root-title-input", Input).display = False
+            title_in = self.query_one("#root-title-input", Input)
+            title_in.display = False
+            title_in.can_focus = False
             self.query_one("#root-desc", Static).display = True
-            self.query_one("#root-desc-input", Input).display = False
+            desc_in = self.query_one("#root-desc-input", Input)
+            desc_in.display = False
+            desc_in.can_focus = False
             self.query_one("#root-edit-hint", Static).display = False
+            if self.focused in (title_in, desc_in):
+                self.set_focus(None)
         except Exception:  # noqa: BLE001
             pass
         if restore:
