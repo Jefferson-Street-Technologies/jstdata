@@ -30,8 +30,8 @@ KNOWN_FREQUENCIES: tuple[str, ...] = tuple(
 
 OBS_MODES = ("most_recent", "earliest", "all")
 OBS_LABELS = {
-    "most_recent": "Most recent 20",
-    "earliest": "Earliest 20",
+    "most_recent": "Most recent observations",
+    "earliest": "Earliest observations",
     "all": "All available",
 }
 
@@ -65,11 +65,11 @@ class QueryComposeHeader(Vertical):
     DEFAULT_CSS = """
     QueryComposeHeader {
         height: auto;
-        max-height: 6;
+        max-height: 7;
         width: 100%;
         background: #0a0a0a;
-        padding: 0 0 0 0;
-        border-bottom: none;
+        padding: 0 0 1 0;
+        border-bottom: solid #1f1f1f;
         margin-bottom: 0;
     }
     /* Query name is the page's largest type (2-row presence + bold). */
@@ -88,9 +88,12 @@ class QueryComposeHeader(Vertical):
     #qc-badge {
         width: auto;
         height: 2;
-        color: #a3a3a3;
+        color: #737373;
         content-align: left middle;
         margin-right: 1;
+    }
+    #qc-badge.-saved {
+        color: #86efac;
     }
     #qc-rename {
         width: auto;
@@ -101,6 +104,7 @@ class QueryComposeHeader(Vertical):
         height: 1;
         margin-top: 0;
         background: #0a0a0a;
+        align: left middle;
     }
     #qc-scope-row EnumSelect {
         background: #0a0a0a;
@@ -169,12 +173,14 @@ class QueryComposeHeader(Vertical):
                 labels={None: "Any frequency", NULL_FREQUENCY: "?"},
                 value=None,
                 id="qc-freq",
+                prefix="Frequency",
             )
             yield EnumSelect(
                 list(OBS_MODES),
                 labels=OBS_LABELS,
                 value="most_recent",
                 id="qc-obs",
+                prefix="Period",
             )
         with Horizontal(id="qc-refresh-row"):
             yield Static("", id="qc-refresh", markup=True)
@@ -208,7 +214,9 @@ class QueryComposeHeader(Vertical):
         self.query_one("#qc-title", Label).update(
             escape(title or "Untitled query")
         )
-        self.query_one("#qc-badge", Label).update(escape(badge))
+        badge_label = self.query_one("#qc-badge", Label)
+        badge_label.update(escape(badge))
+        badge_label.set_class(badge.startswith("✓"), "-saved")
         freq = self.query_one("#qc-freq", EnumSelect)
         if available_frequencies is not None:
             options = list(available_frequencies) or [None]

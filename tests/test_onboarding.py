@@ -280,7 +280,8 @@ def test_tip_for_follows_screen_destination_and_focus():
     assert 'Press "Space" to collect' in tip_for(
         CoachSnapshot(screen="HomeScreen", home_dest="search")
     )
-    assert "Chart, Table, Sources" in tip_for(CoachSnapshot(screen="QueryScreen"))
+    assert "Chart/Table" in tip_for(CoachSnapshot(screen="QueryScreen"))
+    assert "legend checkboxes" in tip_for(CoachSnapshot(screen="QueryScreen"))
     assert '"Esc" to leave the box' in tip_for(
         CoachSnapshot(screen="QueryScreen", focus_in_input=True)
     )
@@ -395,7 +396,7 @@ def test_tips_nudge_the_next_thing_to_collect():
     )
     assert '"c"' not in done
     # Detail views keep their own tip; typing still wins everywhere.
-    assert "Chart, Table, Sources" in tip_for(
+    assert "Chart/Table" in tip_for(
         CoachSnapshot(screen="QueryScreen", entities=("a", "b"))
     )
     assert "typing" in tip_for(

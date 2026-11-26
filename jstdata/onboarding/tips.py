@@ -57,8 +57,9 @@ _SCREENS = {
         'Press "r" to load metrics. "Space" collects; "Enter" opens one.'
     ),
     "QueryScreen": (
-        'Compose in the header: "E"/"M"/"S" add; "r" refreshes. Tabs above the chart '
-        'switch Chart/Table ("c"/"t"). Table Enter opens a release. Annotate at bottom.'
+        'Current query is in the sidebar: "E"/"M"/"S" add; "r" refreshes. '
+        'Chart legend checkboxes show or hide series. Tabs switch Chart/Table '
+        '("c"/"t"). Table Enter opens a release.'
     ),
     "SeriesScreen": (
         '"Enter" or "p" plots this series. "m"/"e" open the parent metric or entity.'

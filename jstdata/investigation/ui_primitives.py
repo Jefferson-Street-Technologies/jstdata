@@ -324,10 +324,12 @@ class EnumSelect(Static, can_focus=True):
         labels: Optional[dict[Any, str]] = None,
         value: Any = None,
         id: Optional[str] = None,
+        prefix: str = "",
     ) -> None:
         super().__init__("", id=id)
         self._options = list(options)
         self._labels = labels or {}
+        self._prefix = prefix
         self._index = 0
         if value in self._options:
             self._index = self._options.index(value)
@@ -371,9 +373,18 @@ class EnumSelect(Static, can_focus=True):
         self._paint()
 
     def _paint(self) -> None:
+        from rich.markup import escape
+
         raw = self.value
         label = self._labels.get(raw, "Any" if raw is None else str(raw))
-        self.update(f"{label} ▾")
+        safe = escape(str(label))
+        if self._prefix:
+            # Match sidebar / chrome accents: bold light green label, muted value.
+            self.update(
+                f"[bold #86efac]{escape(self._prefix)}[/] {safe} ▾"
+            )
+        else:
+            self.update(f"{safe} ▾")
 
     def action_cursor_left(self) -> None:
         self._index = (self._index - 1) % len(self._options)

@@ -768,7 +768,11 @@ class _SidebarActiveKindHeader(Static):
         with Horizontal(classes="sqc-kind-row"):
             yield Label(self._title.upper(), classes="sqc-kind-label")
             yield ActionButton(
-                "+ Add",
+                {
+                    "entity": "+ Add entity",
+                    "metric": "+ Add metric",
+                    "series": "+ Add series",
+                }[self.kind],
                 action_id=f"add_{self.kind}",
                 shortcut={"entity": "E", "metric": "M", "series": "S"}[self.kind],
                 variant="ghost",
@@ -790,9 +794,9 @@ class _SidebarActiveItem(Static):
 
     DEFAULT_CSS = """
     _SidebarActiveItem {
-        height: 2;
-        min-height: 2;
-        max-height: 2;
+        height: 1;
+        min-height: 1;
+        max-height: 1;
         width: 100%;
         padding: 0 1 0 2;
         background: #080808;
@@ -1463,12 +1467,10 @@ class ResearchSidebar(Static):
         self._workspace_token += 1
         total = len(entities) + len(metrics) + len(series)
         active_n = len(ae) + len(am) + len(a_s)
-        if total and active_n:
-            kicker = f"Workspace  {total} · active {active_n}"
-        elif total:
-            kicker = f"Workspace  {total}"
+        if total:
+            kicker = f"Workspace ({total})"
         elif active_n or qid is not None:
-            kicker = f"Workspace · active {active_n}"
+            kicker = "Workspace"
         else:
             kicker = "Workspace"
         self.query_one("#sidebar-ws-kicker", Label).update(kicker)
@@ -1518,7 +1520,9 @@ class ResearchSidebar(Static):
                 ) -> None:
                     if not rows:
                         return
-                    widgets.append(_SidebarSectionHeader(title))
+                    widgets.append(
+                        _SidebarSectionHeader(f"{title} ({len(rows)})")
+                    )
                     for rid, label in rows:
                         widgets.append(
                             _SidebarResourceRow(
@@ -1535,8 +1539,9 @@ class ResearchSidebar(Static):
                     rows: list[tuple[str, str]],
                     qid: int,
                 ) -> None:
+                    count = f"{title} ({len(rows)})" if rows else title
                     widgets.append(
-                        _SidebarActiveKindHeader(title, kind, query_id=qid)
+                        _SidebarActiveKindHeader(count, kind, query_id=qid)
                     )
                     if not rows:
                         widgets.append(_SidebarActiveEmpty())
@@ -1552,14 +1557,16 @@ class ResearchSidebar(Static):
                     ae, am, a_s, qid = active
                     assert qid is not None
                     widgets.append(
-                        _SidebarSectionHeader("Active", emphasis=True)
+                        _SidebarSectionHeader("Current query", emphasis=True)
                     )
                     _active_kind("Entities", "entity", ae, int(qid))
                     _active_kind("Metrics", "metric", am, int(qid))
                     _active_kind("Series", "series", a_s, int(qid))
                     if entities or metrics or series:
                         widgets.append(
-                            _SidebarSectionHeader("Saved", emphasis=True)
+                            _SidebarSectionHeader(
+                                "Collected resources", emphasis=True
+                            )
                         )
 
                 _section("Entities", entities, "entity")

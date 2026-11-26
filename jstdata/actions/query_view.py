@@ -275,16 +275,16 @@ def format_compact_scaled(scaled_value: float, *, units: str | None = None) -> s
     mag = abs(scaled_value)
     prefix = "$" if currency else ""
     if mag >= 1_000_000_000_000:
-        body = f"{mag / 1_000_000_000_000:.2f}".rstrip("0").rstrip(".")
+        body = f"{mag / 1_000_000_000_000:.1f}".rstrip("0").rstrip(".")
         return f"{sign}{prefix}{body}T"
     if mag >= 1_000_000_000:
-        body = f"{mag / 1_000_000_000:.2f}".rstrip("0").rstrip(".")
+        body = f"{mag / 1_000_000_000:.1f}".rstrip("0").rstrip(".")
         return f"{sign}{prefix}{body}B"
     if mag >= 1_000_000:
-        body = f"{mag / 1_000_000:.2f}".rstrip("0").rstrip(".")
+        body = f"{mag / 1_000_000:.1f}".rstrip("0").rstrip(".")
         return f"{sign}{prefix}{body}M"
     if mag >= 10_000:
-        body = f"{mag / 1_000:.2f}".rstrip("0").rstrip(".")
+        body = f"{mag / 1_000:.1f}".rstrip("0").rstrip(".")
         return f"{sign}{prefix}{body}K"
     return f"{sign}{prefix}{format_value(mag)}"
 
@@ -313,17 +313,62 @@ def format_period(stamp: Any, frequency: Optional[str] = None) -> str:
     if "annual" in freq or freq in {"yearly", "year"}:
         return str(dt.year)
     if "month" in freq:
-        return dt.strftime("%Y-%m")
+        return dt.strftime("%b %Y")
     return dt.strftime("%Y-%m-%d")
 
 
-def format_release(stamp: Any, *, short: bool = False) -> str:
+def format_release(stamp: Any, *, short: bool = False, human: bool = False) -> str:
     dt = _parse_stamp(stamp)
     if dt is None:
         return "—"
+    if human:
+        return f"{dt.strftime('%b')} {dt.day}, {dt.year}"
     if short:
         return dt.strftime("%b %Y")
     return dt.strftime("%Y-%m-%d")
+
+
+def _expected_gap_days(frequency: Optional[str]) -> Optional[float]:
+    """Max days between consecutive observations before treating as a gap."""
+    freq = (frequency or "").lower()
+    if "day" in freq:
+        return 2.5
+    if "week" in freq:
+        return 10.0
+    if "month" in freq:
+        return 45.0
+    if "quarter" in freq:
+        return 120.0
+    if "annual" in freq or freq in {"yearly", "year"}:
+        return 400.0
+    return None
+
+
+def history_segments(
+    record: dict[str, Any],
+) -> list[tuple[list[str], list[float]]]:
+    """Split a series into contiguous segments; gaps are not connected."""
+    times, values = history_points(record)
+    if not times:
+        return []
+    gap = _expected_gap_days(str(record.get("frequency") or "") or None)
+    if gap is None or len(times) == 1:
+        return [(times, values)]
+    segments: list[tuple[list[str], list[float]]] = []
+    cur_t = [times[0]]
+    cur_v = [values[0]]
+    for i in range(1, len(times)):
+        prev = datetime.strptime(times[i - 1], "%Y-%m-%d")
+        cur = datetime.strptime(times[i], "%Y-%m-%d")
+        if (cur - prev).days > gap:
+            segments.append((cur_t, cur_v))
+            cur_t = [times[i]]
+            cur_v = [values[i]]
+        else:
+            cur_t.append(times[i])
+            cur_v.append(values[i])
+    segments.append((cur_t, cur_v))
+    return segments
 
 
 def record_title(record: dict[str, Any]) -> str:
@@ -613,11 +658,11 @@ def records_to_csv(records: Sequence[dict[str, Any]]) -> str:
 
 
 def coverage_status(query: Query, records: Sequence[dict[str, Any]]) -> str:
-    """Loading/result line, including missing cartesian pairs."""
+    """Loading/result line: how many requested series came back."""
     n = len(records)
     expected = query.expected_pairs() if hasattr(query, "expected_pairs") else []
     if not expected:
-        return f"{n} series returned" if n else "No series returned"
+        return f"{n} series available" if n else "No series available"
     got: set[tuple[str, str]] = set()
     for rec in records:
         metric = str(rec.get("metric_id") or "")
@@ -625,14 +670,19 @@ def coverage_status(query: Query, records: Sequence[dict[str, Any]]) -> str:
             eid = str(ent.get("id") or "")
             if metric and eid:
                 got.add((metric, eid))
+    available = len(expected) - sum(1 for pair in expected if pair not in got)
     missing = [pair for pair in expected if pair not in got]
+    requested = len(expected)
     if not n:
-        return f"No series returned · {len(expected)} pair(s) expected"
+        return f"0 of {requested} requested series available"
     if missing:
         sample = ", ".join(f"{m} × {e}" for m, e in missing[:2])
         extra = f" +{len(missing) - 2}" if len(missing) > 2 else ""
-        return f"{n} series · {len(missing)} pair(s) missing ({sample}{extra})"
-    return f"{n} series · {len(expected)} pair(s) resolved"
+        return (
+            f"{available} of {requested} requested series available"
+            f" · missing {sample}{extra}"
+        )
+    return f"{n} of {requested} requested series available"
 
 
 def copy_text(text: str) -> bool:
@@ -701,10 +751,12 @@ def plot_history(
     grey = (70, 70, 70)
     lo_s = _naive(bound_lo).strftime("%Y-%m-%d") if bound_lo else None
     hi_s = _naive(bound_hi).strftime("%Y-%m-%d") if bound_hi else None
-    names = line_labels(recs)
-    for i, (rec, name) in enumerate(zip(recs, names)):
-        times, values = history_points(rec)
-        if not times:
+    if not recs:
+        plt.title("All series hidden")
+        return False
+    for i, rec in enumerate(recs):
+        segments = history_segments(rec)
+        if not segments:
             continue
         if not units:
             units = str(rec.get("units") or "").strip()
@@ -713,42 +765,45 @@ def plot_history(
         unit_l = units.lower()
         if any(tok in unit_l for tok in ("percent", "%", "ratio", "index")) and "dollar" not in unit_l:
             scale = 1.0
-        scaled = [v * scale for v in values]
-        all_values.extend(scaled)
-        plt.date_form(CHART_DATE_FORM)
-        draw = plt.scatter if len(scaled) == 1 else plt.plot
         if colors and i < len(colors):
             color = colors[i]
         elif len(recs) == 1:
             color = CHART_LINE_COLOR
         else:
             color = CHART_PALETTE[i % len(CHART_PALETTE)]
-        if lo_s or hi_s:
-            # Full series dimmed, then in-bound overlay in color.
-            draw(times, scaled, marker="braille", color=grey)
-            in_t: list[str] = []
-            in_v: list[float] = []
-            for t, v in zip(times, scaled):
-                if lo_s and t < lo_s:
-                    continue
-                if hi_s and t > hi_s:
-                    continue
-                in_t.append(t)
-                in_v.append(v)
-            if in_t:
-                draw_in = plt.scatter if len(in_v) == 1 else plt.plot
-                draw_in(in_t, in_v, marker="braille", label=name, color=color)
+        plt.date_form(CHART_DATE_FORM)
+        for seg_t, seg_v in segments:
+            scaled = [v * scale for v in seg_v]
+            all_values.extend(scaled)
+            draw = plt.scatter if len(scaled) == 1 else plt.plot
+            if lo_s or hi_s:
+                # Full segment dimmed, then in-bound overlay in color.
+                draw(seg_t, scaled, marker="braille", color=grey)
+                in_t: list[str] = []
+                in_v: list[float] = []
+                for t, v in zip(seg_t, scaled):
+                    if lo_s and t < lo_s:
+                        continue
+                    if hi_s and t > hi_s:
+                        continue
+                    in_t.append(t)
+                    in_v.append(v)
+                if in_t:
+                    draw_in = plt.scatter if len(in_v) == 1 else plt.plot
+                    # No plotext label — interactive legend lives above the chart.
+                    draw_in(in_t, in_v, marker="braille", color=color)
             else:
-                # Keep legend even when the window is empty.
-                draw(times[:1], scaled[:1], marker="braille", label=name, color=color)
-        else:
-            draw(times, scaled, marker="braille", label=name, color=color)
+                draw(seg_t, scaled, marker="braille", color=color)
         drawn += 1
         if cursor_date is not None and cursor_point is None:
             target = _naive(cursor_date).strftime("%Y-%m-%d")
-            for t, v in zip(times, scaled):
-                if t == target:
-                    cursor_point = (t, v)
+            for seg_t, seg_v in segments:
+                scaled = [v * scale for v in seg_v]
+                for t, v in zip(seg_t, scaled):
+                    if t == target:
+                        cursor_point = (t, v)
+                        break
+                if cursor_point is not None:
                     break
     if not drawn:
         plt.title("No observations")
@@ -759,7 +814,7 @@ def plot_history(
             plt.yticks(y_ticks, y_labels)
         except Exception:  # noqa: BLE001
             pass
-    # Axis label: prefer currency when we scaled thousands/millions of dollars.
+    # Unit lives on the y-axis (chart title may already name the metric).
     _, currency = unit_scale(units)
     if currency and unit_scale(units)[0] != 1.0:
         plt.ylabel("USD")
@@ -833,9 +888,15 @@ class ObservationRow(ListItem):
         period = format_period(self.obs.get("observation_timestamp"), freq)
         raw = self.obs.get("value")
         value = format_exact(raw, units=units)
-        released = format_release(self.obs.get("release_timestamp"), short=True)
+        # Prefer a readable release date; fall back to release id for provenance.
+        released = format_release(self.obs.get("release_timestamp"), human=True)
         release_id = str(self.obs.get("release_id") or "")
-        release_bit = release_id[:22] if release_id else released
+        if released != "—":
+            release_bit = released
+        elif release_id:
+            release_bit = release_id[:22]
+        else:
+            release_bit = "—"
         classes = "obs-row obs-missing" if raw is None else "obs-row"
         yield Label(
             f"{period:<12}{value:>16}  {release_bit:<22}",
@@ -925,17 +986,33 @@ class PlotGroupRow(ListItem):
 
 
 class LegendRow(ListItem):
-    """One series in the current chart group (select / hide)."""
+    """One series in the interactive legend (checkbox toggles visibility)."""
 
-    def __init__(self, record: dict[str, Any], *, hidden: bool = False) -> None:
+    def __init__(
+        self,
+        record: dict[str, Any],
+        *,
+        hidden: bool = False,
+        color: Optional[tuple[int, int, int]] = None,
+    ) -> None:
         super().__init__()
         self.record = record
         self.hidden = hidden
+        self.color = color
 
     def compose(self) -> ComposeResult:
-        mark = "○" if self.hidden else "●"
+        check = "[ ]" if self.hidden else "[✓]"
         name = series_line_label(self.record)
-        yield Label(f"{mark} {name}", classes="series-nav-row")
+        if self.color is not None:
+            r, g, b = self.color
+            swatch = f"[rgb({r},{g},{b})]●[/]"
+            yield Label(
+                f"{check} {swatch} {escape(name)}",
+                classes="series-nav-row",
+                markup=True,
+            )
+        else:
+            yield Label(f"{check} {name}", classes="series-nav-row")
 
 
 class ObservationDetail(ModalScreen[None]):
@@ -1016,17 +1093,17 @@ class QueryScreen(BaseScreen):
         Binding("S", "add_series", "Add series", show=False),
         Binding("j", "cursor_down", "Cursor Down", show=False),
         Binding("k", "cursor_up", "Cursor Up", show=False),
-        Binding("h", "obs_left", "Nudge bound older", show=False),
-        Binding("l", "obs_right", "Nudge bound newer", show=False),
-        Binding("left", "obs_left", "Nudge bound older", show=False),
-        Binding("right", "obs_right", "Nudge bound newer", show=False),
-        Binding("x", "toggle_series", "Hide or show series", show=False),
+        Binding("h", "obs_left", "Adjust date older", show=False),
+        Binding("l", "obs_right", "Adjust date newer", show=False),
+        Binding("left", "obs_left", "Adjust date older", show=False),
+        Binding("right", "obs_right", "Adjust date newer", show=False),
+        Binding("x", "toggle_series", "Show or hide series", show=False),
         Binding("o", "toggle_sort", "Sort observations", show=False),
         Binding("y", "copy_python", "Copy Python", show=False),
         Binding("[", "prev_group", "Previous chart group", show=False),
         Binding("]", "next_group", "Next chart group", show=False),
-        Binding("tab", "toggle_bound_focus", "Toggle lo/hi bound", show=False, priority=True),
-        Binding("enter", "inspect", "Toggle series / inspect", priority=True),
+        Binding("tab", "toggle_bound_focus", "Toggle start/end date", show=False, priority=True),
+        Binding("enter", "inspect", "Show/hide series / inspect", priority=True),
         Binding("escape", "cancel_remark", "Cancel remark / pick", show=False),
     ]
 
@@ -1051,8 +1128,8 @@ class QueryScreen(BaseScreen):
         background: #0a0a0a;
     }
     #query-view-tabs ActionButton.-tab {
-        color: #e5e5e5;
-        background: #333333;
+        color: #a3a3a3;
+        background: #1a1a1a;
     }
     #query-view-tabs ActionButton.-tab.-active {
         color: #0a0a0a;
@@ -1064,25 +1141,33 @@ class QueryScreen(BaseScreen):
         min-height: 12;
         background: #0a0a0a;
     }
+    #query-series-meta {
+        height: 1;
+        color: #737373;
+        display: none;
+        margin: 0 0 0 0;
+    }
     #query-series {
-        width: 28;
-        height: 1fr;
+        width: 100%;
+        height: auto;
+        max-height: 5;
         background: #0a0a0a;
         display: none;
-        border-right: solid #262626;
+        border-bottom: solid #1f1f1f;
+        margin-bottom: 0;
     }
     #query-pane {
         width: 1fr;
         height: 1fr;
         background: #0a0a0a;
     }
-    /* Metric chart title — prominent, but under the query name. */
+    /* Metric chart title — hidden when it duplicates the query name. */
     #query-chart-title {
         height: 1;
         width: 100%;
-        color: #f0f0f0;
+        color: #d4d4d4;
         text-style: bold;
-        margin: 0 0 1 0;
+        margin: 0 0 0 0;
     }
     #query-chart-title.-empty { display: none; }
     #query-obs-header { color: #888; height: 1; }
@@ -1093,14 +1178,18 @@ class QueryScreen(BaseScreen):
         min-height: 14;
         display: none;
         background: #0a0a0a;
+        border: solid #1a1a1a;
     }
     #query-obs-strip {
-        height: 3;
+        height: auto;
+        min-height: 3;
+        max-height: 5;
         margin-top: 0;
         display: none;
     }
     #strip-line1 { color: #e0e0e0; height: 1; }
-    #strip-line2 { color: #888; height: 1; }
+    #strip-line2 { color: #d4d4d4; height: 1; }
+    #strip-line3 { color: #737373; height: 1; }
     #strip-controls {
         height: 1;
         align: left middle;
@@ -1187,12 +1276,12 @@ class QueryScreen(BaseScreen):
     }
     #strip-controls ActionButton.-tab {
         color: #e5e5e5;
-        background: #333333;
+        background: #262626;
         text-style: none;
     }
     #strip-controls ActionButton.-tab.-active {
         color: #0a0a0a;
-        background: #86efac;
+        background: #60a5fa;
         text-style: bold;
     }
     .obs-row { width: 100%; height: 1; color: #e0e0e0; }
@@ -1210,8 +1299,8 @@ class QueryScreen(BaseScreen):
     }
     .series-nav-row { width: 100%; height: 1; color: #d0d0d0; }
     ListView > ListItem.--highlight {
-        background: #1a3a2a;
-        border-left: solid #4ade80;
+        background: #1a1a22;
+        border-left: solid #60a5fa;
     }
     ObservationRow {
         height: 2;
@@ -1228,9 +1317,9 @@ class QueryScreen(BaseScreen):
         padding: 0 1;
     }
     PlotGroupRow, LegendRow {
-        height: 2;
-        min-height: 2;
-        max-height: 2;
+        height: 1;
+        min-height: 1;
+        max-height: 1;
         border-left: solid #0a0a0a;
         padding: 0 1;
     }
@@ -1301,45 +1390,47 @@ class QueryScreen(BaseScreen):
                     variant="tab",
                     id="query-tab-table",
                 )
-            with Horizontal(id="query-main"):
-                yield ListView(id="query-series")
+            with Vertical(id="query-main"):
                 with Vertical(id="query-pane"):
                     yield Label("", id="query-chart-title")
+                    yield Label("", id="query-series-meta")
+                    yield ListView(id="query-series")
                     yield Label(
-                        f"{'Period':<12}{'Value':>16}  {'Release':<22}",
+                        f"{'Period':<12}{'Value':>16}  {'Release date':<22}",
                         id="query-obs-header",
                     )
                     yield ListView(id="query-obs")
                     yield HistoryPlot(id="query-chart")
                     with Vertical(id="query-obs-strip"):
-                        yield Label("", id="strip-line1")
-                        yield Label("", id="strip-line2")
                         with Horizontal(id="strip-controls"):
                             yield ActionButton(
-                                "Lower",
+                                "Start date",
                                 action_id="bound_lo",
                                 shortcut="Tab",
                                 variant="tab",
                                 id="bound-lo-btn",
                             )
                             yield ActionButton(
-                                "Upper",
+                                "End date",
                                 action_id="bound_hi",
                                 shortcut="Tab",
                                 variant="tab",
                                 id="bound-hi-btn",
                             )
                             yield ActionButton(
-                                "Reset",
+                                "Reset period",
                                 action_id="reset_bounds",
                                 variant="ghost",
                                 id="bound-reset-btn",
                             )
+                        yield Label("", id="strip-line1")
+                        yield Label("", id="strip-line2")
+                        yield Label("", id="strip-line3")
             with Vertical(id="query-notes"):
                 with Horizontal(id="query-notes-header"):
-                    yield Label("Remarks", id="query-notes-kicker")
+                    yield Label("Research remarks", id="query-notes-kicker")
                     yield ActionButton(
-                        "+ Add",
+                        "+ Add remark",
                         action_id="annotate",
                         shortcut="R",
                         variant="ghost",
@@ -1350,7 +1441,7 @@ class QueryScreen(BaseScreen):
                 with Vertical(id="query-remark-draft"):
                     with Horizontal(id="remark-name-row"):
                         yield Input(placeholder="Name (optional)", id="remark-name")
-                        yield Checkbox("Cite", id="remark-cite", value=False)
+                        yield Checkbox("Source", id="remark-cite", value=False)
                     yield Label("Remark", classes="remark-field-label")
                     yield TextArea("", id="remark-text")
                     yield Label(
@@ -1425,13 +1516,13 @@ class QueryScreen(BaseScreen):
         return f"[dim]Query[/] [bold]{escape(str(name))}[/] [dim]→ client.query(…)[/]"
 
     def footer_action_keys(self) -> list[str]:
-        # BaseScreen.FOOTER_CHROME already has ``a remark`` alias; R adds here.
-        return [
-            "[bold]Tab[/bold] lo/hi bound",
-            "[bold]h/l[/bold] nudge",
-            "[bold]Enter[/bold] toggle series",
-            "[bold]Shift+X[/bold] delete query",
-        ]
+        # Contextual hints only — full help lives beside controls / under ?.
+        if self._mode == "chart" and self._loaded:
+            return [
+                "[bold]←→[/bold] Adjust date",
+                "[bold]Enter[/bold] Show/hide series",
+            ]
+        return []
 
     def shell_breadcrumb(self) -> str:
         try:
@@ -1470,49 +1561,77 @@ class QueryScreen(BaseScreen):
         self._render_annotations(query)
         self.query_one("#query-obs-strip").display = False
 
+    def _format_remark_citation(self, remark: QueryRemark) -> str:
+        """Human-readable evidence line from structured cite fields."""
+        labels = getattr(self.app, "labels", {}) or {}
+        names: list[str] = []
+        for sid in (remark.series or [])[:3]:
+            rec = self._obs_cache.get(sid)
+            if rec is not None:
+                entity = series_line_label(rec)
+                metric = str(rec.get("label") or "")
+                if " for " in metric:
+                    metric = metric.split(" for ", 1)[0].strip()
+                elif rec.get("metric_id"):
+                    mid = str(rec["metric_id"])
+                    metric = label_for(labels, mid) or mid.replace("-", " ").title()
+                bit = " · ".join(p for p in (entity, metric) if p)
+                names.append(bit or sid)
+                continue
+            # Fall back: last path segments of opaque series ids.
+            parts = [p for p in str(sid).split(":") if p]
+            if len(parts) >= 3:
+                names.append(
+                    label_for(labels, parts[1])
+                    or parts[1].replace("-", " ").title()
+                )
+            else:
+                names.append(label_for(labels, sid) or sid)
+        extra = "…" if len(remark.series or []) > 3 else ""
+        who = ", ".join(names) + extra if names else ""
+        span = ""
+        if remark.from_ or remark.to:
+            span = f"{remark.from_ or '…'}–{remark.to or '…'}"
+        bits = [b for b in (who, span) if b]
+        if not bits:
+            return ""
+        return "Source: " + " · ".join(bits)
+
     def _render_annotations(self, query: Query) -> None:
         panel = self.query_one("#query-remarks-list", Static)
-        lines: list[str] = []
+        kicker = self.query_one("#query-notes-kicker", Label)
         remarks = list(query.remarks or [])
+        n = len(remarks)
+        kicker.update(f"Research remarks ({n})" if n else "Research remarks")
+        lines: list[str] = []
         picking = self._remark_pick_mode
         selected = self._selected_remark_i
         for i, remark in enumerate(remarks, start=1):
             selected_here = picking and selected == i
             num = f"[bold #fbbf24]{i}[/] " if picking else ""
+            body = escape(remark.text)
             if remark.name:
                 title = escape(remark.name)
-            elif picking:
-                title = f"Remark {i}"
+                if selected_here:
+                    lines.append(f"{num}[bold #0a0a0a on #86efac] {title} [/]")
+                    lines.append(f"[#bbf7d0]{body}[/]")
+                else:
+                    lines.append(f"{num}[bold]{title}[/]")
+                    lines.append(body)
             else:
-                title = "Remark"
-            if selected_here:
-                head = f"{num}[bold #0a0a0a on #86efac] {title} [/]"
-            else:
-                head = f"{num}[bold]{title}[/]"
-            lines.append(head)
-            body = escape(remark.text)
-            if selected_here:
-                lines.append(f"  [#bbf7d0]{body}[/]")
-            else:
-                lines.append(f"  {body}")
-            cite_bits: list[str] = []
-            if remark.series:
-                cite_bits.append(
-                    ", ".join(remark.series[:3])
-                    + ("…" if len(remark.series) > 3 else "")
-                )
-            if remark.from_ or remark.to:
-                cite_bits.append(
-                    f"{remark.from_ or '…'} – {remark.to or '…'}"
-                )
-            if cite_bits:
-                lines.append(
-                    f"  [dim]cite · {' · '.join(escape(b) for b in cite_bits)}[/]"
-                )
+                if selected_here:
+                    lines.append(f"{num}[#bbf7d0]{body}[/]")
+                else:
+                    lines.append(f"{num}{body}")
+            cite = self._format_remark_citation(remark)
+            if cite:
+                lines.append(f"[dim]{escape(cite)}[/]")
+            if i < n:
+                lines.append("[dim]────────────────────────────────────────[/]")
         if not lines:
             lines.append(
                 "[dim]No remarks yet. Press R to add one — optional name, "
-                "required text, optional cite of the chart cross section. "
+                "required text, optional source cite from the chart. "
                 "Shift+A to pick.[/]"
             )
         elif picking and selected is None:
@@ -2050,21 +2169,34 @@ class QueryScreen(BaseScreen):
 
     def _fill_nav(self) -> None:
         nav = self.query_one("#query-series", ListView)
+        meta = self.query_one("#query-series-meta", Label)
         nav.clear()
         group = self._selected_group()
         if self._mode == "chart" and group is not None:
             show = len(group.records) > 1
             nav.display = show
+            meta.display = show
             if not show:
+                meta.update("")
                 return
-            for record in group.records:
+            visible_n = sum(
+                1
+                for r in group.records
+                if str(r.get("id") or "") not in self._hidden
+            )
+            total = len(group.records)
+            meta.update(f"Series visibility: {visible_n} of {total}")
+            for i, record in enumerate(group.records):
                 hidden = str(record.get("id") or "") in self._hidden
-                nav.append(LegendRow(record, hidden=hidden))
+                color = CHART_PALETTE[i % len(CHART_PALETTE)]
+                nav.append(LegendRow(record, hidden=hidden, color=color))
             ids = [str(r.get("id") or "") for r in group.records]
             current = self._selected_record()
             cid = str(current.get("id") or "") if current else ""
             nav.index = ids.index(cid) if cid in ids else 0
             return
+        meta.display = False
+        meta.update("")
         show = len(self._records) > 1
         nav.display = show
         if not show:
@@ -2100,8 +2232,7 @@ class QueryScreen(BaseScreen):
     def _clamp_bounds(self) -> None:
         dates = self._all_cursor_dates()
         if not dates:
-            self._bound_lo_i = 0
-            self._bound_hi_i = 0
+            # Keep prior indices so re-showing a series restores the window.
             return
         n = len(dates)
         self._bound_lo_i = max(0, min(self._bound_lo_i, n - 1))
@@ -2185,8 +2316,29 @@ class QueryScreen(BaseScreen):
     def _paint_chart_title(self) -> None:
         title = self._chart_title_text()
         label = self.query_one("#query-chart-title", Label)
-        label.update(title)
-        label.set_class(not bool(title), "-empty")
+        # Hide when the chart title just repeats the query name.
+        try:
+            query = self._resolve_query()
+            qname = (query.name or "").strip()
+        except Exception:
+            qname = ""
+        redundant = bool(
+            title and qname and title.casefold() == qname.casefold()
+        )
+        units = ""
+        group = self._selected_group()
+        if group is not None and group.units:
+            units = group.units
+        elif self._visible_records():
+            units = str(self._visible_records()[0].get("units") or "")
+        _, currency = unit_scale(units)
+        unit_bit = "USD" if currency and unit_scale(units)[0] != 1.0 else units
+        if title and unit_bit and not redundant:
+            display = f"{title}  ·  {unit_bit}"
+        else:
+            display = "" if redundant else title
+        label.update(display)
+        label.set_class(not bool(display), "-empty")
 
     def _render_chart(self) -> None:
         visible = self._visible_records()
@@ -2222,8 +2374,19 @@ class QueryScreen(BaseScreen):
 
     def _render_obs_strip(self) -> None:
         strip = self.query_one("#query-obs-strip")
-        if self._mode != "chart" or not self._visible_records():
+        if self._mode != "chart" or not self._records:
             strip.display = False
+            return
+        if not self._visible_records():
+            strip.display = True
+            self._paint_bound_buttons()
+            self.query_one("#strip-line1", Label).update(
+                "Selected period — all series hidden"
+            )
+            self.query_one("#strip-line2", Label).update(
+                "Enter on a series checkbox to show it again"
+            )
+            self.query_one("#strip-line3", Label).update("")
             return
         strip.display = True
         self._paint_bound_buttons()
@@ -2236,29 +2399,34 @@ class QueryScreen(BaseScreen):
         if day is None:
             self.query_one("#strip-line1", Label).update("No observations")
             self.query_one("#strip-line2", Label).update("")
+            self.query_one("#strip-line3", Label).update("")
             return
-        focus = "LOWER" if self._bound_focus == "lo" else "UPPER"
-        lo_s = lo.strftime("%Y-%m-%d") if lo else "—"
-        hi_s = hi.strftime("%Y-%m-%d") if hi else "—"
+        lo_s = format_period(lo, freq) if lo else "—"
+        hi_s = format_period(hi, freq) if hi else "—"
         primary = (
             observation_on_date(record, day) if record is not None else None
         )
         exact = format_exact(
             primary.get("value") if primary else None, units=units
         )
+        entity = series_line_label(record) if record else "—"
+        period = format_period(day, freq)
         self.query_one("#strip-line1", Label).update(
-            f"Bounds {lo_s} → {hi_s}   ·   {focus} {format_period(day, freq)}   {exact}"
+            f"Selected period  {lo_s} — {hi_s}"
         )
-        meta = (
-            f"Tab switches bound · h/l nudges {focus.lower()} · "
-            f"Enter toggles series · Reset clears window"
-        )
+        reported = ""
         if primary:
-            meta += (
-                f" · reported "
-                f"{format_release(primary.get('release_timestamp'))}"
+            reported = format_release(
+                primary.get("release_timestamp"), human=True
             )
-        self.query_one("#strip-line2", Label).update(meta)
+        fact_bits = [entity, period, exact]
+        if reported and reported != "—":
+            fact_bits.append(f"Reported {reported}")
+        self.query_one("#strip-line2", Label).update(" · ".join(fact_bits))
+        focus = "start date" if self._bound_focus == "lo" else "end date"
+        self.query_one("#strip-line3", Label).update(
+            f"Tab switches {focus} · ←→ adjust date"
+        )
 
     def _paint_view_tabs(self) -> None:
         for key in ("chart", "table"):
@@ -2278,7 +2446,7 @@ class QueryScreen(BaseScreen):
         )
         order = "latest first" if self._newest_first else "oldest first"
         self.query_one("#query-obs-header", Label).update(
-            f"{'Period':<12}{'Value':>16}  {'Release':<22}  {order}"
+            f"{'Period':<12}{'Value':>16}  {'Release date':<22}  {order}"
         )
         self._paint_view_tabs()
         self._paint_chart_title()
@@ -2381,7 +2549,7 @@ class QueryScreen(BaseScreen):
             return
         self._sync_frequency_options(query)
         labels = getattr(self.app, "labels", {}) or {}
-        badge = "Saved" if query.in_report else "Draft"
+        badge = "✓ Saved" if query.in_report else "Draft"
         if self._needs_refresh:
             badge = f"{badge} · pending refresh"
         if self._busy:
@@ -2674,15 +2842,15 @@ class QueryScreen(BaseScreen):
         )
         self._render_chart()
         self._render_obs_strip()
-        which = "lower" if self._bound_focus == "lo" else "upper"
-        self.notify(f"Nudging {which} bound", timeout=1)
+        which = "start date" if self._bound_focus == "lo" else "end date"
+        self.notify(f"Adjusting {which}", timeout=1)
 
     def action_reset_bounds(self) -> None:
         self._hidden.clear()
         self._reset_bounds()
         self._fill_nav()
         self._show_selected()
-        self.notify("Reset bounds and series visibility", timeout=2)
+        self.notify("Reset period and series visibility", timeout=2)
 
     def action_toggle_series(self) -> None:
         if self._mode != "chart":
@@ -2696,9 +2864,6 @@ class QueryScreen(BaseScreen):
         if sid in self._hidden:
             self._hidden.discard(sid)
         else:
-            if len(self._visible_records()) <= 1:
-                self.notify("Keep at least one series visible", severity="warning")
-                return
             self._hidden.add(sid)
         self._fill_nav()
         self._show_selected()
@@ -2990,7 +3155,7 @@ QUERY_VIEW = register(
         description=(
             "Interactive query composition and chart workbench. "
             "First executable plot runs automatically; further edits need r. "
-            "Remarks: R to add, Shift+A to pick/apply cite; Tab switches lo/hi bounds."
+            "Remarks: R to add, Shift+A to pick/apply a source; Tab switches start/end date."
         ),
         create_screen=create_query_screen,
         arguments=(
@@ -3003,20 +3168,20 @@ QUERY_VIEW = register(
         bindings=(
             ActionBinding("r", "load", "Refresh / run GET /query"),
             ActionBinding("R", "annotate", "Add an inline remark"),
-            ActionBinding("A", "pick_remark", "Number remarks and apply a cite"),
+            ActionBinding("A", "pick_remark", "Number remarks and apply a source cite"),
             ActionBinding("c / t", "mode", "Chart or table"),
             ActionBinding("E", "add_entity", "Add entity (scoped when possible)"),
             ActionBinding("M", "add_metric", "Add metric (scoped when possible)"),
             ActionBinding("S", "add_series", "Add direct series"),
-            ActionBinding("Tab", "bound", "Toggle lower/upper time bound"),
-            ActionBinding("h / l", "obs", "Nudge the focused time bound"),
-            ActionBinding("enter", "inspect", "Chart: toggle series; table: open release"),
-            ActionBinding("x", "toggle_series", "Hide or show a series on the chart"),
+            ActionBinding("Tab", "bound", "Toggle start/end date"),
+            ActionBinding("h / l", "obs", "Adjust the focused date"),
+            ActionBinding("enter", "inspect", "Chart: show/hide series; table: open release"),
+            ActionBinding("x", "toggle_series", "Show or hide a series on the chart"),
             ActionBinding("D + digit", "delete_remark", "Delete remark 1–9"),
             ActionBinding("[ / ]", "group", "Cycle incompatible-unit chart groups"),
             ActionBinding("o", "sort", "Toggle observation table sort"),
             ActionBinding("y", "copy_python", "Copy a Python query snippet"),
-            ActionBinding("j / k", "cursor", "Move series or observations"),
+            ActionBinding("j / k", "cursor", "Move series legend or observations"),
         ),
         example=':add query --args \'{"query_id":1}\'',
     )

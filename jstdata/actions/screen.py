@@ -27,7 +27,9 @@ class BaseScreen(Screen):
     # Keep the footer minimal — Home / Search live on the pane bar.
     FOOTER_SHOW_HOME: bool = False
     FOOTER_CHROME: tuple[str, ...] = (
-        "[bold]R[/bold] remark",
+        "[bold]/[/bold] Search",
+        "[bold]:[/bold] Commands",
+        "[bold]Esc[/bold] Back",
     )
 
     # Shell-level bindings (host also owns some; these help when focus is here).
@@ -146,7 +148,7 @@ class BaseScreen(Screen):
             with Horizontal(id="cmd-bar"):
                 yield Label("", id="help-hint", markup=True)
                 yield Label(
-                    "Problems? Press !",
+                    "Report issue  !",
                     id="bug-report-hint",
                     markup=False,
                 )
@@ -230,7 +232,7 @@ class BaseScreen(Screen):
                 hint.update("Enter save · Esc cancel")
                 footer.add_class("-bug-open")
             else:
-                hint.update("Problems? Press !")
+                hint.update("Report issue  !")
                 footer.remove_class("-bug-open")
         except Exception:  # noqa: BLE001
             pass

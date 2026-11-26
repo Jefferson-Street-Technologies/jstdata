@@ -1130,8 +1130,9 @@ def test_query_groups_overlay_same_metric_units():
     assert plot_history(plt, overlay.records) is True
     plt.plotsize(60, 14)
     chart = plt.uncolorize(plt.build())
-    assert "France" in chart
-    assert "United States" in chart
+    # Series names live in the interactive legend; the plot shows axis units.
+    assert "Ratio" in chart
+    assert "2020" in chart
     lonely = group_plot_records(
         [
             rec("a", "", "Annual", "X", "France", [1.0]),
@@ -1208,8 +1209,40 @@ def test_query_chart_axis_export_and_cursor():
         Query(id=2, metric=["household-debt-to-gdp"], entity=["france", "united-states"]),
         [record],
     )
+    assert "1 of 2 requested series available" in status
     assert "missing" in status
     assert "france" in status
+
+    from jstdata.actions.query_view import history_segments
+
+    gapped = {
+        **record,
+        "frequency": "Annual",
+        "observations": [
+            {
+                "observation_timestamp": "2019-01-01T00:00:00",
+                "release_timestamp": "2019-08-01T00:00:00",
+                "value": 70,
+                "release_id": "r2019",
+            },
+            {
+                "observation_timestamp": "2020-01-01T00:00:00",
+                "release_timestamp": "2020-08-01T00:00:00",
+                "value": 71,
+                "release_id": "r2020",
+            },
+            {
+                "observation_timestamp": "2022-01-01T00:00:00",
+                "release_timestamp": "2022-08-01T00:00:00",
+                "value": 73,
+                "release_id": "r2022",
+            },
+        ],
+    }
+    segments = history_segments(gapped)
+    assert len(segments) == 2
+    assert segments[0][0] == ["2019-01-01", "2020-01-01"]
+    assert segments[1][0] == ["2022-01-01"]
 
 
 def test_series_to_record_is_json_not_frame():
