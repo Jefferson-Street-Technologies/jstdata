@@ -25,18 +25,45 @@ from .model import (
     ROOT_ACTION_ID,
     Workspace,
 )
+from .project import Project
+from .project_store import (
+    add_investigation_to_project,
+    create_project_with_investigation,
+    find_investigation_project,
+    list_all_investigations,
+    list_projects,
+    load_project,
+    load_project_investigation,
+    project_exists,
+    save_project_investigation,
+)
 from .store import (
-    allocate_investigation_id,
-    investigation_exists,
     list_investigations,
-    load_investigation,
-    save_investigation,
     validate_investigation_id,
 )
 
 
 def _inv_root(app_dir: Optional[Path]) -> Optional[Path]:
+    """Legacy flat investigations root (tests / direct store callers)."""
     return None if app_dir is None else app_dir / "investigations"
+
+
+def _resolve_project_for_investigation(
+    investigation_id: str, *, app_dir: Optional[Path] = None
+) -> str:
+    pid = find_investigation_project(investigation_id, app_dir=app_dir)
+    if pid is not None:
+        return pid
+    # Late-arriving legacy flat YAML (written after an earlier bootstrap).
+    from .project_store import migrate_legacy_investigations
+
+    migrate_legacy_investigations(app_dir=app_dir)
+    pid = find_investigation_project(investigation_id, app_dir=app_dir)
+    if pid is None:
+        raise InvestigationError(
+            f"Investigation {investigation_id!r} not found in any project."
+        )
+    return pid
 
 
 def create_investigation(
@@ -47,30 +74,76 @@ def create_investigation(
     app_dir: Optional[Path] = None,
     activate: bool = True,
     open_tui: bool = False,
+    project_id: Optional[str] = None,
 ) -> Investigation:
-    """Create a new investigation on disk and optionally activate it.
+    """Create a one-investigation project (or add a tab when ``project_id`` set).
 
-    ``investigation_id`` is optional; a unique ``inv-<unix>`` slug is allocated
-    when omitted. Title defaults to ``Untitled`` for generated ids, otherwise
-    to the id. ``open_tui`` is ignored here — the CLI launches the host.
+    Without ``project_id``, creates a new project. When ``investigation_id`` is
+    provided it is used as the project id (1:1, matching legacy migration).
+    When omitted, a ``proj-<unix>`` project is allocated with investigation
+    ``main``. Title defaults to ``Untitled`` for generated ids.
+    ``open_tui`` is ignored here — the CLI launches the host.
     """
     ensure_bootstrap(app_dir=app_dir)
-    inv_root = _inv_root(app_dir)
+
+    if project_id is not None:
+        inv = add_investigation_to_project(
+            project_id,
+            investigation_id=investigation_id,
+            title=title,
+            notes=notes,
+            app_dir=app_dir,
+        )
+        if activate:
+            set_active(
+                inv.id,
+                project=project_id,
+                workspace=DEFAULT_WORKSPACE_ID,
+                action=ROOT_ACTION_ID,
+                app_dir=app_dir,
+            )
+        return inv
+
     if investigation_id is None:
-        investigation_id = allocate_investigation_id(root=inv_root)
         if title is None:
             title = "Untitled"
+        # 1:1 project↔investigation so investigation ids stay globally unique
+        # (active pointer, publish abort checks, clone collisions).
+        from .project_store import allocate_project_id, slugify_title
+
+        preferred = slugify_title(title) if title else None
+        pid = allocate_project_id(preferred=preferred, app_dir=app_dir)
+        project, inv = create_project_with_investigation(
+            project_id=pid,
+            title=title,
+            notes=notes,
+            investigation_id=pid,
+            investigation_title=title,
+            app_dir=app_dir,
+        )
     else:
         validate_investigation_id(investigation_id)
-        if investigation_exists(investigation_id, root=inv_root):
+        if find_investigation_project(investigation_id, app_dir=app_dir):
             raise InvestigationError(
                 f"Investigation {investigation_id!r} already exists."
             )
-    inv = Investigation.new(investigation_id, title=title, notes=notes)
-    save_investigation(inv, root=inv_root)
+        if project_exists(investigation_id, app_dir=app_dir):
+            raise InvestigationError(
+                f"Project {investigation_id!r} already exists."
+            )
+        project, inv = create_project_with_investigation(
+            project_id=investigation_id,
+            title=title or investigation_id,
+            notes=notes,
+            investigation_id=investigation_id,
+            investigation_title=title or investigation_id,
+            app_dir=app_dir,
+        )
+
     if activate:
         set_active(
-            investigation_id,
+            inv.id,
+            project=project.id,
             workspace=DEFAULT_WORKSPACE_ID,
             action=ROOT_ACTION_ID,
             app_dir=app_dir,
@@ -83,21 +156,39 @@ def open_investigation(
     *,
     app_dir: Optional[Path] = None,
     activate: bool = True,
+    project_id: Optional[str] = None,
 ) -> Investigation:
-    """Load an existing investigation and optionally make it active."""
+    """Load an investigation (by id or via ``project_id``) and optionally activate."""
     ensure_bootstrap(app_dir=app_dir)
-    inv_root = _inv_root(app_dir)
-    inv = load_investigation(investigation_id, root=inv_root)
+
+    # Allow ``jst open <project-id>``: open the first investigation in the project.
+    if project_id is None and project_exists(investigation_id, app_dir=app_dir):
+        project = load_project(investigation_id, app_dir=app_dir)
+        project_id = project.id
+        investigation_id = project.investigations[0]
+
+    if project_id is None:
+        project_id = _resolve_project_for_investigation(
+            investigation_id, app_dir=app_dir
+        )
+
+    inv = load_project_investigation(
+        project_id, investigation_id, app_dir=app_dir
+    )
     if activate:
-        # Prefer existing active action/workspace if already on this inv.
         current = try_load_active(app_dir=app_dir)
         workspace = DEFAULT_WORKSPACE_ID
         action = ROOT_ACTION_ID
-        if current and current.investigation == investigation_id:
+        if (
+            current
+            and current.investigation == investigation_id
+            and (current.project is None or current.project == project_id)
+        ):
             if current.action in inv.actions:
                 action = current.action
         set_active(
             investigation_id,
+            project=project_id,
             workspace=workspace,
             action=action,
             app_dir=app_dir,
@@ -106,15 +197,35 @@ def open_investigation(
 
 
 def get_investigation(
-    investigation_id: str, *, app_dir: Optional[Path] = None
+    investigation_id: str,
+    *,
+    app_dir: Optional[Path] = None,
+    project_id: Optional[str] = None,
 ) -> Investigation:
-    return load_investigation(investigation_id, root=_inv_root(app_dir))
+    if project_id is None:
+        project_id = _resolve_project_for_investigation(
+            investigation_id, app_dir=app_dir
+        )
+    return load_project_investigation(
+        project_id, investigation_id, app_dir=app_dir
+    )
 
 
 def persist_investigation(
-    inv: Investigation, *, app_dir: Optional[Path] = None
+    inv: Investigation,
+    *,
+    app_dir: Optional[Path] = None,
+    project_id: Optional[str] = None,
 ) -> Path:
-    return save_investigation(inv, root=_inv_root(app_dir))
+    if project_id is None:
+        ctx = try_load_active(app_dir=app_dir)
+        if ctx and ctx.investigation == inv.id and ctx.project:
+            project_id = ctx.project
+        else:
+            project_id = _resolve_project_for_investigation(
+                inv.id, app_dir=app_dir
+            )
+    return save_project_investigation(project_id, inv, app_dir=app_dir)
 
 
 def update_investigation(
@@ -153,20 +264,40 @@ def update_query(
     *,
     name: Optional[str] = None,
     annotations: Optional[str] = None,
+    remarks: Optional[list] = None,
     app_dir: Optional[Path] = None,
     persist: bool = True,
 ) -> Query:
-    """Patch a saved query's display name and/or annotations.
+    """Patch a saved query's display name and/or remarks.
 
-    ``annotations=""`` clears; ``annotations=None`` leaves unchanged.
+    ``remarks`` replaces the full list when provided. ``annotations=""``
+    clears freeform remarks (keeps cross-section cites); ``None`` leaves
+    unchanged. Prefer ``remarks`` for new callers.
     """
+    from .model import QueryRemark, _remarks_from_legacy
+
     query = inv.get_query(query_id)
     if name is not None:
         stripped = name.strip()
         query.name = stripped or None
-    if annotations is not None:
+    if remarks is not None:
+        query.remarks = [
+            r if isinstance(r, QueryRemark) else QueryRemark.from_dict(r, label="remark")
+            for r in remarks
+        ]
+        query.sync_legacy_annotation_fields()
+    elif annotations is not None:
         stripped = annotations.strip()
-        query.annotations = stripped or None
+        cited = [
+            r for r in query.remarks if r.series or r.from_ or r.to
+        ]
+        free = (
+            _remarks_from_legacy(annotations=stripped, notes_on=[])
+            if stripped
+            else []
+        )
+        query.remarks = free + cited
+        query.sync_legacy_annotation_fields()
     if persist:
         persist_investigation(inv, app_dir=app_dir)
     return query
@@ -182,11 +313,20 @@ def set_active(
     workspace: int = DEFAULT_WORKSPACE_ID,
     action: int = ROOT_ACTION_ID,
     app_dir: Optional[Path] = None,
+    project: Optional[str] = None,
 ) -> ActiveContext:
+    if project is None:
+        try:
+            project = _resolve_project_for_investigation(
+                investigation, app_dir=app_dir
+            )
+        except InvestigationError:
+            project = None
     ctx = ActiveContext(
         investigation=investigation,
         workspace=workspace,
         action=action,
+        project=project,
     )
     save_active(ctx, app_dir=app_dir)
     return ctx
@@ -224,8 +364,11 @@ def add_action(
     if persist:
         persist_investigation(inv, app_dir=app_dir)
     if activate:
+        ctx = try_load_active(app_dir=app_dir)
+        project = ctx.project if ctx and ctx.investigation == inv.id else None
         set_active(
             inv.id,
+            project=project,
             workspace=DEFAULT_WORKSPACE_ID,
             action=action.id,
             app_dir=app_dir,
@@ -399,12 +542,16 @@ def run_query(
 def resume_or_create_investigation(
     *, app_dir: Optional[Path] = None
 ) -> Investigation:
-    """Resume ``.active.yaml``, or create an Untitled investigation if none."""
+    """Resume ``.active.yaml``, or create an Untitled project if none."""
     ensure_bootstrap(app_dir=app_dir)
     ctx = try_load_active(app_dir=app_dir)
     if ctx is not None:
         try:
-            return open_investigation(ctx.investigation, app_dir=app_dir)
+            return open_investigation(
+                ctx.investigation,
+                app_dir=app_dir,
+                project_id=ctx.project,
+            )
         except InvestigationError:
             pass
     return create_investigation(app_dir=app_dir)
@@ -416,7 +563,17 @@ def require_active_investigation(
     """Load the investigation named by ``.active.yaml``."""
     ensure_bootstrap(app_dir=app_dir)
     ctx = get_active(app_dir=app_dir)
-    inv = get_investigation(ctx.investigation, app_dir=app_dir)
+    inv = get_investigation(
+        ctx.investigation, app_dir=app_dir, project_id=ctx.project
+    )
+    if ctx.project is None:
+        try:
+            ctx.project = _resolve_project_for_investigation(
+                ctx.investigation, app_dir=app_dir
+            )
+            save_active(ctx, app_dir=app_dir)
+        except InvestigationError:
+            pass
     return inv, ctx
 
 
@@ -452,16 +609,22 @@ __all__ = [
     "ActiveContext",
     "Investigation",
     "InvestigationError",
+    "Project",
     "Query",
     "Workspace",
     "add_action",
+    "add_investigation_to_project",
     "add_query",
     "create_investigation",
+    "create_project_with_investigation",
     "ensure_bootstrap",
     "get_active",
     "get_investigation",
     "inspect_query",
+    "list_all_investigations",
     "list_investigations",
+    "list_projects",
+    "load_project",
     "open_investigation",
     "parse_action_args_json",
     "persist_investigation",

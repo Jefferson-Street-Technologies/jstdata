@@ -4,10 +4,31 @@ import requests
 from typing import List, Union, Optional
 
 from .add_options import apply_click_add_options
+from .cli_actions import actions_group
 from .client import ApiKeyNotSetError, JSTDataClient, InvalidApiKeyError
 from .utils import common_params, common_search_params, format_and_print
 
 client = JSTDataClient()
+
+
+class _RetiredGroup(click.Group):
+    """Click group that always exits with a migration pointer."""
+
+    def __init__(self, *args, retirement_message: str, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.retirement_message = retirement_message
+
+    def get_command(self, ctx, cmd_name):
+        click.echo(self.retirement_message, err=True)
+        ctx.exit(2)
+
+    def list_commands(self, ctx):
+        return []
+
+    def invoke(self, ctx):
+        click.echo(self.retirement_message, err=True)
+        ctx.exit(2)
+
 
 def resolve_id(value: str, search_func, get_func=None) -> str:
     """
@@ -47,6 +68,10 @@ def cli(ctx):
     """
     if ctx.invoked_subcommand is None:
         _resume_investigation()
+
+
+cli.add_command(actions_group, "actions")
+
 
 @cli.command()
 @click.option("--api-key", prompt="Enter your Jefferson Street API Key", hide_input=True, help="Your API Key")
@@ -114,12 +139,23 @@ def config_set(key, value):
     client._cfg.write(**{key: value})
     click.echo(f"Set {key} to {value}")
 
-# --- Low-level API (agent / power-user) ---
+# --- Low-level API (legacy; prefer ``jst actions``) ---
 
 @cli.group()
-def api():
-    """Direct API access. Prefer investigations for research; use api for resolution and queries."""
-    pass
+@click.pass_context
+def api(ctx):
+    """Direct API access (deprecated for research). Prefer ``jst actions``.
+
+    Agents must use ``jst actions search`` / ``metadata`` / ``relationships`` /
+    ``query run`` / ``coverage``. ``jst api`` remains only for ad-hoc human
+    debugging and rare endpoints not yet wrapped as logged actions.
+    """
+    if ctx.invoked_subcommand is not None:
+        click.echo(
+            "Warning: `jst api` is outside the audited research path. "
+            "Prefer `jst actions …` (search, metadata, query run, coverage).",
+            err=True,
+        )
 
 # --- Metric Commands ---
 
@@ -259,11 +295,22 @@ def show_entity(id, format):
 
 @entity.command("search")
 @click.argument("query", required=False, default=None)
-@click.option("--taxonomy", help="Restrict search to entities in a taxonomy")
+@click.option("--taxonomy", help="Membership taxonomy slug (not a relationship filter)")
 @click.option(
     "--relation",
     multiple=True,
     help="Filter by relationship anchor (<relationship_type>:<to_entity_id>). Repeatable; OR'd.",
+)
+@click.option(
+    "--relation-direction",
+    type=click.Choice(["outgoing", "incoming"]),
+    default=None,
+    help="Direction relative to the candidate (default outgoing)",
+)
+@click.option(
+    "--relation-taxonomy",
+    default=None,
+    help="Edge taxonomy slug (requires --relation)",
 )
 @click.option(
     "--metric",
@@ -277,7 +324,18 @@ def show_entity(id, format):
     help="How to combine multiple --metric values",
 )
 @common_search_params
-def search_entities(query, taxonomy, relation, metric, mode, limit, offset, format):
+def search_entities(
+    query,
+    taxonomy,
+    relation,
+    relation_direction,
+    relation_taxonomy,
+    metric,
+    mode,
+    limit,
+    offset,
+    format,
+):
     """Search for entities by intent. Omit QUERY to list the matching set."""
     results = client.search_entities(
         query,
@@ -287,6 +345,8 @@ def search_entities(query, taxonomy, relation, metric, mode, limit, offset, form
         mode=mode,
         limit=limit,
         offset=offset,
+        relation_direction=relation_direction,
+        relation_taxonomy=relation_taxonomy,
     )
     format_and_print(results, format)
 
@@ -300,10 +360,51 @@ def entity_series(id, limit, offset, format):
 
 @entity.command("relations")
 @click.argument("id")
+@click.option(
+    "--direction",
+    type=click.Choice(["outgoing", "incoming"]),
+    default=None,
+    help="Relative to the path entity (default outgoing)",
+)
+@click.option(
+    "--relationship",
+    type=click.Choice(
+        ["classified_as", "equivalent_to", "part_of", "has_security"]
+    ),
+    default=None,
+    help="Edge type (not identity)",
+)
+@click.option(
+    "--relation-taxonomy",
+    default=None,
+    help="Edge taxonomy slug",
+)
+@click.option(
+    "--taxonomy",
+    default=None,
+    help="Membership taxonomy of the related entity",
+)
 @common_params
-def entity_relations(id, limit, offset, format):
-    """Walk the entity graph."""
-    results = client.get_entity_relations(id, limit=limit, offset=offset)
+def entity_relations(
+    id,
+    direction,
+    relationship,
+    relation_taxonomy,
+    taxonomy,
+    limit,
+    offset,
+    format,
+):
+    """Walk the entity graph (prefer ``jst actions relationships``)."""
+    results = client.get_entity_relations(
+        id,
+        limit=limit,
+        offset=offset,
+        direction=direction,
+        relationship=relationship,
+        relation_taxonomy=relation_taxonomy,
+        taxonomy=taxonomy,
+    )
     format_and_print(results, format)
 
 # --- Taxonomy Commands ---
@@ -511,7 +612,14 @@ def query(
 
 @cli.command("agent-guide")
 def agent_guide_cmd() -> None:
-    """Print a markdown bootstrap guide for agents (version-tied)."""
+    """Deprecated — use ``jst agent guide``.
+
+    Still prints the guide so older skills keep working; prefer the nested form.
+    """
+    click.echo(
+        "Deprecated: `jst agent-guide` → use `jst agent guide`.",
+        err=True,
+    )
     from .agent_guide import render_agent_guide
 
     click.echo(render_agent_guide(cli), nl=False)
@@ -553,12 +661,21 @@ def agent_install_cmd(target: str) -> None:
         click.echo(f"  {path}")
     click.echo()
     click.echo("If the agent does not pick it up automatically, say:")
-    click.echo("  Use the jst skill. Then run `jst agent-guide` and follow it.")
+    click.echo("  Use the jst skill. Then run `jst agent guide` and follow it.")
 
 
-@cli.group("action")
+@cli.group(
+    "action",
+    cls=_RetiredGroup,
+    retirement_message=(
+        "`jst action` is retired.\n"
+        "Use `jst actions …` for research operations "
+        "(search, metadata, relationships, workspace, query, log).\n"
+        "TUI view-tree edits happen inside `jst open` for now."
+    ),
+)
 def action_group() -> None:
-    """Catalog and mutate investigation actions."""
+    """Retired — see ``jst actions``."""
 
 
 @action_group.command("ls")
@@ -716,17 +833,28 @@ def _resume_investigation() -> None:
 )
 @click.option("--title", default=None, help="Display title (defaults to Untitled)")
 @click.option("--notes", default=None, help="Freeform notes (for agents / later you)")
+@click.option(
+    "--project",
+    "project_id",
+    default=None,
+    help="Add a tab to this project instead of creating a new one",
+)
 def new_cmd(
-    investigation_id: str | None, title: str | None, notes: str | None
+    investigation_id: str | None,
+    title: str | None,
+    notes: str | None,
+    project_id: str | None,
 ) -> None:
     """Create an investigation, activate it, and open the TUI.
 
-    Id and title are optional.
+    Id and title are optional. Pass ``--project`` to add a tab to an
+    existing project.
 
     \b
     jst new
     jst new --title "European defense constraints"
     jst new --id housing-slowdown --title Housing
+    jst new --project ftai-aviation --title Peers
     """
     from .investigation import (
         InvestigationError,
@@ -735,11 +863,21 @@ def new_cmd(
     )
 
     try:
-        inv = create_investigation(investigation_id, title=title, notes=notes)
+        inv = create_investigation(
+            investigation_id,
+            title=title,
+            notes=notes,
+            project_id=project_id,
+        )
     except InvestigationError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(2)
-    click.echo(f"Created investigation {inv.id!r} ({inv.title})")
+    if project_id:
+        click.echo(
+            f"Added investigation {inv.id!r} ({inv.title}) to project {project_id!r}"
+        )
+    else:
+        click.echo(f"Created investigation {inv.id!r} ({inv.title})")
     run_investigation_host(client)
 
 
@@ -781,12 +919,26 @@ def _site_url() -> str:
 @click.option("--no-edit", is_flag=True, help="Skip the draft and publish the text already saved")
 @click.option("--update", "mode", flag_value="update", help="Update the text on this investigation's last link")
 @click.option("--new", "mode", flag_value="new", help="Publish to a new link even if it was published before")
+@click.option(
+    "--exclude-workspace",
+    is_flag=True,
+    default=False,
+    help="Omit workspace from the publication payload (included by default)",
+)
+@click.option(
+    "--exclude-actions",
+    is_flag=True,
+    default=False,
+    help="Omit view-tree actions from the publication payload (included by default)",
+)
 def publish_cmd(
     investigation_id: str | None,
     publisher_name: str | None,
     yes: bool,
     no_edit: bool,
     mode: str | None,
+    exclude_workspace: bool,
+    exclude_actions: bool,
 ) -> None:
     """Publish an investigation as a shareable web page.
 
@@ -814,8 +966,10 @@ def publish_cmd(
         QueriesChangedError,
         last_publication,
         publish_investigation,
+        publish_project,
         record_publication,
         update_publication,
+        update_project_publication,
     )
     from .publish_sync import text_of
 
@@ -827,6 +981,17 @@ def publish_cmd(
                 sys.exit(2)
             investigation_id = ctx.investigation
         inv = get_investigation(investigation_id)
+        from .investigation.project_store import (
+            find_investigation_project,
+            load_project,
+        )
+
+        multi_tab_project_id: str | None = None
+        pid = find_investigation_project(investigation_id)
+        if pid is not None:
+            project = load_project(pid)
+            if len(project.investigations) > 1:
+                multi_tab_project_id = pid
         api_key = client.api_key
     except InvestigationError as e:
         click.echo(f"Error: {e}", err=True)
@@ -834,6 +999,101 @@ def publish_cmd(
     except ApiKeyNotSetError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(2)
+
+    # Multi-tab: publish the whole project (version-2 wire). Skip the
+    # single-investigation draft/pull loop — tab text is already on disk.
+    if multi_tab_project_id is not None:
+        from .ops.curation import project_publication_projection
+        from .ops.result import OperationError
+
+        try:
+            projected, _notes = project_publication_projection(multi_tab_project_id)
+        except OperationError as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(2)
+        previous = last_publication(multi_tab_project_id)
+        if mode == "update" and previous is None:
+            click.echo(
+                f"Error: project {multi_tab_project_id!r} hasn't been published "
+                "from this computer yet. Publish it first.",
+                err=True,
+            )
+            sys.exit(2)
+        interactive = sys.stdin.isatty() and sys.stdout.isatty()
+        if mode is None:
+            mode = "new"
+            if previous is not None and not yes:
+                click.echo(
+                    f"Project {multi_tab_project_id!r} was published at {previous['url']}"
+                )
+                choice = click.prompt(
+                    "Update that page's text (u), or publish a new link (n)?",
+                    type=click.Choice(["u", "n"]),
+                    default="u",
+                )
+                mode = "update" if choice == "u" else "new"
+        tab_count = len(projected["investigations"])
+        query_count = sum(len(t["queries"]) for t in projected["investigations"])
+        site = _site_url()
+        if mode == "update":
+            assert previous is not None
+            if not yes and not click.confirm(
+                f"Update the text at {previous['url']}?", default=True
+            ):
+                click.echo("Not updated.")
+                return
+            try:
+                result = update_project_publication(
+                    multi_tab_project_id,
+                    previous["id"],
+                    api_key=api_key,
+                    site_url=site,
+                    publisher_name=publisher_name,
+                )
+            except QueriesChangedError as e:
+                click.secho(f"Not updated: {e}", fg="yellow", err=True)
+                if yes or not interactive or not click.confirm(
+                    "Publish a new link instead?", default=True
+                ):
+                    sys.exit(1)
+                mode = "new"
+            except PublishError as e:
+                click.secho(f"Error: {e}", fg="red", err=True)
+                sys.exit(1)
+            else:
+                record_publication(multi_tab_project_id, result)
+                click.secho("Updated.", fg="green")
+                click.echo(result["url"])
+                return
+        click.echo(
+            f"Publishing project {projected['title']!r} ({multi_tab_project_id}) "
+            f"with {tab_count} tabs / {query_count} quer"
+            f"{'y' if query_count == 1 else 'ies'}:"
+        )
+        for tab in projected["investigations"]:
+            click.echo(f"  [{tab['title']}]")
+            for q in tab["queries"]:
+                click.echo(f"    {q['id']}. {q.get('name') or 'Query ' + str(q['id'])}")
+        if not yes and not click.confirm("Publish?", default=True):
+            click.echo("Not published.")
+            return
+        click.echo("Running the queries…")
+        try:
+            result = publish_project(
+                multi_tab_project_id,
+                api_key=api_key,
+                site_url=site,
+                publisher_name=publisher_name,
+            )
+        except PublishError as e:
+            click.secho(f"Error: {e}", fg="red", err=True)
+            sys.exit(1)
+        for note in result.get("notifications") or []:
+            click.secho(note, fg="yellow", err=True)
+        record_publication(multi_tab_project_id, result)
+        click.secho("Published.", fg="green")
+        click.echo(result["url"])
+        return
 
     if not inv.queries:
         click.echo(f"Error: {inv.id!r} has no queries to publish. Add one with `jst query add`.", err=True)
@@ -924,7 +1184,13 @@ def publish_cmd(
             return
         try:
             result = update_publication(
-                inv, previous["id"], api_key=api_key, site_url=site, publisher_name=publisher_name
+                inv,
+                previous["id"],
+                api_key=api_key,
+                site_url=site,
+                publisher_name=publisher_name,
+                include_workspace=not exclude_workspace,
+                include_actions=not exclude_actions,
             )
         except QueriesChangedError as e:
             click.secho(f"Not updated: {e}", fg="yellow", err=True)
@@ -950,31 +1216,107 @@ def publish_cmd(
 
     click.echo("Running the queries…")
     try:
-        result = publish_investigation(inv, api_key=api_key, site_url=site, publisher_name=publisher_name)
+        result = publish_investigation(
+            inv,
+            api_key=api_key,
+            site_url=site,
+            publisher_name=publisher_name,
+            include_workspace=not exclude_workspace,
+            include_actions=not exclude_actions,
+        )
     except PublishError as e:
         click.secho(f"Error: {e}", fg="red", err=True)
         sys.exit(1)
+    for note in result.get("notifications") or []:
+        click.secho(note, fg="yellow", err=True)
     record_publication(inv.id, result, text=text_of(inv))
     click.secho("Published.", fg="green")
     click.echo(result["url"])
 
 
 @cli.command("clone")
-@click.argument("url")
-@click.option("--as", "new_id", help="Save under this investigation id instead of the published one")
-def clone_cmd(url: str, new_id: str | None) -> None:
-    """Copy a published investigation into your own environment.
+@click.argument("url", required=False, default=None)
+@click.option(
+    "--as",
+    "new_id",
+    help="Save under this project / investigation id instead of the default",
+)
+def clone_cmd(url: str | None, new_id: str | None) -> None:
+    """Clone a published investigation or a local project.
 
-    Saves the published queries and annotations as a new local investigation
-    and makes it active. Your copy is independent of the publication. No API
-    key is needed; running the queries afterwards uses yours.
+    With no argument, opens the same project picker as ``jst ls``, then prompts
+    for a name (default: ``<title> (branched)``) and copies the whole project.
+    Pass a local project id to skip the picker. Pass a publication URL or id to
+    clone from jeffersonst.io.
 
     \b
+    jst clone
+    jst clone my-project
+    jst clone my-project --as my-project-branched
     jst clone https://www.jeffersonst.io/p/AbCdEf1234
     jst clone AbCdEf1234 --as my-copy
     """
-    from .investigation import InvestigationError, set_active
+    from .investigation import (
+        InvestigationError,
+        clone_project,
+        ensure_bootstrap,
+        get_active,
+        load_project,
+        open_investigation,
+        set_active,
+    )
+    from .investigation.project_picker import run_project_picker
+    from .investigation.project_store import project_exists
     from .publish import PublishError, clone_publication
+
+    ensure_bootstrap()
+
+    # Local clone: no arg (picker) or an existing local project id.
+    local_source: str | None = None
+    if url is None:
+        try:
+            active = get_active()
+            active_project = active.project
+        except Exception:
+            active_project = None
+        selected = run_project_picker(active_project=active_project)
+        if selected is None:
+            return
+        local_source = selected
+    else:
+        try:
+            if project_exists(url):
+                local_source = url
+        except InvestigationError:
+            local_source = None
+
+    if local_source is not None:
+        try:
+            source = load_project(local_source)
+        except InvestigationError as e:
+            click.secho(f"Error: {e}", fg="red", err=True)
+            sys.exit(1)
+        default_title = f"{source.title} (branched)"
+        if sys.stdin.isatty():
+            new_title = click.prompt("Name for the clone", default=default_title)
+        else:
+            new_title = default_title
+        try:
+            project = clone_project(
+                local_source, title=new_title, project_id=new_id
+            )
+            open_investigation(project.investigations[0], project_id=project.id)
+        except InvestigationError as e:
+            click.secho(f"Error: {e}", fg="red", err=True)
+            sys.exit(1)
+        click.secho(
+            f"Cloned project {source.title!r} as {project.title!r} ({project.id}).",
+            fg="green",
+        )
+        click.echo(
+            "It's now active. Run `jst` to open it, or `jst ls` to browse projects."
+        )
+        return
 
     try:
         inv = clone_publication(url, site_url=_site_url(), new_id=new_id)
@@ -983,7 +1325,9 @@ def clone_cmd(url: str, new_id: str | None) -> None:
         sys.exit(1)
     set_active(inv.id)
     click.secho(f"Cloned {inv.title!r} as {inv.id!r}.", fg="green")
-    click.echo(f"It's now active. Run `jst` to open it, or `jst query run 1` to rerun a query.")
+    click.echo(
+        "It's now active. Run `jst` to open it, or `jst query run 1` to rerun a query."
+    )
 
 
 @cli.command("preview")
@@ -994,12 +1338,15 @@ def clone_cmd(url: str, new_id: str | None) -> None:
     help="Write the HTML file without opening a browser",
 )
 def preview_cmd(investigation_id: str | None, no_open: bool) -> None:
-    """Render a static HTML preview of an investigation (Bokeh).
+    """Render a static HTML preview of a project or investigation.
 
-    Defaults to the most recently modified investigation.
+    Defaults to the active project (``.active.yaml``), else the most recently
+    modified investigation. Pass a project id for multi-tab report queries,
+    remarks (click cited remarks to filter charts), and investigation chrome.
 
     \b
     jst preview
+    jst preview my-project
     jst preview inv-1794531175
     """
     from .investigation import InvestigationError
@@ -1025,44 +1372,95 @@ def preview_cmd(investigation_id: str | None, no_open: bool) -> None:
 
 
 @cli.command("ls")
-def ls_cmd() -> None:
-    """List investigations on disk (active marked with *).
+@click.option(
+    "--plain",
+    is_flag=True,
+    help="Print a plain text listing instead of the interactive picker",
+)
+def ls_cmd(plain: bool) -> None:
+    """Browse projects interactively (Enter opens). Use ``--plain`` to print.
 
     \b
     jst ls
+    jst ls --plain
     """
     from .investigation import (
+        InvestigationError,
         ensure_bootstrap,
         get_active,
-        list_investigations,
-        load_investigation,
+        open_investigation,
+        run_investigation_host,
     )
-    from .investigation.store import investigations_dir
+    from .investigation.project_picker import run_project_picker
+    from .investigation.project_store import (
+        list_projects,
+        load_project,
+        load_project_investigation,
+    )
 
     ensure_bootstrap()
     try:
-        active_id = get_active().investigation
+        active = get_active()
+        active_project = active.project
+        active_inv = active.investigation
     except Exception:
-        active_id = None
+        active_project = None
+        active_inv = None
 
-    ids = list_investigations()
-    if not ids:
-        click.echo("No investigations.")
-        return
-    root = investigations_dir()
-    for inv_id in ids:
-        marker = "*" if inv_id == active_id else " "
+    if not plain:
+        selected = run_project_picker(active_project=active_project)
+        if selected is None:
+            return
         try:
-            inv = load_investigation(inv_id, root=root)
-            title = inv.title
+            inv = open_investigation(selected)
+        except InvestigationError as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(2)
+        click.echo(f"Opened investigation {inv.id!r} ({inv.title})")
+        run_investigation_host(client)
+        return
+
+    ids = list_projects()
+    if not ids:
+        click.echo("No projects.")
+        return
+    for pid in ids:
+        try:
+            project = load_project(pid)
+            title = project.title
         except Exception:
             title = "?"
-        click.echo(f"{marker} {inv_id:<28} {title}")
+            project = None
+        marker = "*" if pid == active_project or (
+            active_project is None and active_inv in (project.investigations if project else [])
+        ) else " "
+        click.echo(f"{marker} {pid:<28} {title}")
+        if project is None:
+            continue
+        for inv_id in project.investigations:
+            inv_marker = "*" if inv_id == active_inv and (
+                active_project is None or active_project == pid
+            ) else " "
+            try:
+                inv = load_project_investigation(pid, inv_id)
+                inv_title = inv.title
+            except Exception:
+                inv_title = "?"
+            click.echo(f"  {inv_marker} {inv_id:<26} {inv_title}")
 
 
-@cli.group("query")
+@cli.group(
+    "query",
+    cls=_RetiredGroup,
+    retirement_message=(
+        "`jst query` is retired.\n"
+        "Use `jst actions query ls` (more query ops coming) "
+        "and `jst actions workspace show`.\n"
+        "Saved-query mutations also work inside `jst open` for now."
+    ),
+)
 def query_group() -> None:
-    """Saved investigation queries (cartesian metric × entity)."""
+    """Retired — see ``jst actions query``."""
 
 
 @query_group.command("ls")

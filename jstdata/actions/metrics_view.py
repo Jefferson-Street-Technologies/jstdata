@@ -345,7 +345,7 @@ class MetricsScreen(BaseScreen):
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if action == "collect" and isinstance(self.focused, Input):
             return False
-        return True
+        return super().check_action(action, parameters)
 
     def action_collect(self) -> None:
         metric = self._highlighted_metric()

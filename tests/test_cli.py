@@ -284,57 +284,23 @@ def test_series_observations(runner, mock_url):
         assert qs["limit"] == ["100"]
 
 
-def test_action_ls(runner):
-    result = runner.invoke(cli, ["action", "ls"])
-    assert result.exit_code == 0
-    assert "console" in result.output
-    assert "discover" in result.output
+def test_action_group_retired(runner):
+    for args in (
+        ["action", "ls"],
+        ["action", "ls", "--json"],
+        ["action", "show", "console"],
+        ["action", "show", "nope"],
+    ):
+        result = runner.invoke(cli, args)
+        assert result.exit_code == 2, args
+        assert "retired" in result.output.lower()
+        assert "jst actions" in result.output
 
 
-def test_action_ls_json(runner):
-    result = runner.invoke(cli, ["action", "ls", "--json"])
-    assert result.exit_code == 0
-    data = json.loads(result.output)
-    assert any(s["id"] == "console" for s in data)
-    assert any(s["id"] == "discover" for s in data)
-
-
-def test_action_show(runner):
-    result = runner.invoke(cli, ["action", "show", "console"])
-    assert result.exit_code == 0
-    assert "Console" in result.output
-    assert "jst action add console" in result.output
-    assert "--resource-type" in result.output
-
-
-def test_action_show_discover(runner):
-    result = runner.invoke(cli, ["action", "show", "discover"])
-    assert result.exit_code == 0
-    assert "Discover" in result.output
-    assert "--mode" in result.output
-    assert "space" in result.output
-
-
-def test_action_show_json(runner):
-    result = runner.invoke(cli, ["action", "show", "console", "--json"])
-    assert result.exit_code == 0
-    data = json.loads(result.output)
-    assert data["id"] == "console"
-    assert any(a["name"] == "taxonomy" for a in data["arguments"])
-    assert any(a["name"] == "relation" for a in data["arguments"])
-    assert any(a["name"] == "resource_type" for a in data["arguments"])
-    assert any(b["key"] == "/" for b in data["bindings"])
-
-
-def test_action_show_unknown(runner):
-    result = runner.invoke(cli, ["action", "show", "nope"])
-    assert result.exit_code == 1
-    assert "Unknown action" in result.output
-
-
-def test_actions_plural_removed(runner):
+def test_actions_plural_available(runner):
     result = runner.invoke(cli, ["actions"])
-    assert result.exit_code != 0
+    assert result.exit_code == 0
+    assert "search" in result.output
 
 
 def test_bare_jst_resumes_active(runner, monkeypatch, tmp_path):

@@ -16,18 +16,27 @@ ACTIVE_FILENAME = ".active.yaml"
 
 @dataclass
 class ActiveContext:
-    """Currently focused investigation / workspace / action."""
+    """Currently focused project / investigation / workspace / action.
+
+    ``project`` is optional for legacy ``.active.yaml`` files; loaders resolve
+    it from the investigation when missing. Bare ``jst`` may use this pointer;
+    agents must pass explicit ``--project`` / ``--investigation``.
+    """
 
     investigation: str
     workspace: int = DEFAULT_WORKSPACE_ID
     action: int = ROOT_ACTION_ID
+    project: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "investigation": self.investigation,
             "workspace": self.workspace,
             "action": self.action,
         }
+        if self.project is not None:
+            data["project"] = self.project
+        return data
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> ActiveContext:
@@ -37,6 +46,11 @@ class ActiveContext:
         if not inv or not isinstance(inv, str):
             raise InvestigationError(
                 "Active context requires a string 'investigation'."
+            )
+        project = data.get("project")
+        if project is not None and not isinstance(project, str):
+            raise InvestigationError(
+                "Active context 'project' must be a string when set."
             )
         try:
             workspace = int(data.get("workspace", DEFAULT_WORKSPACE_ID))
@@ -50,7 +64,12 @@ class ActiveContext:
             raise InvestigationError(
                 "Active context 'action' must be an integer."
             ) from exc
-        return cls(investigation=inv, workspace=workspace, action=action)
+        return cls(
+            investigation=inv,
+            workspace=workspace,
+            action=action,
+            project=project,
+        )
 
 
 def active_path(*, app_dir: Optional[Path] = None) -> Path:

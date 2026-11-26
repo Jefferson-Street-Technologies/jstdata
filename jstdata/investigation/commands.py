@@ -47,6 +47,11 @@ COMMANDS: tuple[CommandSpec, ...] = (
         usage="query [id]",
     ),
     CommandSpec(
+        "tab",
+        "Manage investigation tabs (new, dup, rm, next/prev, left/right)",
+        usage="tab [new|dup|rm|next|prev|left|right] …",
+    ),
+    CommandSpec(
         "rename",
         "Set the investigation title and description",
         usage="rename [title] [--description text]",
@@ -81,7 +86,31 @@ COMMANDS: tuple[CommandSpec, ...] = (
         "Show or hide the pop-out tips (no argument toggles)",
         usage="tips [on|off]",
     ),
+    CommandSpec(
+        "feedback",
+        "Queue local product feedback (outbox until remote ingest)",
+        usage="feedback <message>",
+    ),
+    CommandSpec(
+        "activity",
+        "Open the Research activity trail for this project/investigation",
+        usage="activity",
+    ),
 )
+
+_TAB_SUBCOMMANDS = (
+    "new",
+    "dup",
+    "rm",
+    "next",
+    "prev",
+    "left",
+    "right",
+)
+_TAB_FLAG_DOCS = {
+    "--force": "Confirm removing the current investigation tab",
+    "--id": "Slug for the new or duplicated tab",
+}
 
 _COMMAND_BY_NAME = {c.name: c for c in COMMANDS}
 SEARCH_TYPES = frozenset({"metric", "entity", "series", "taxonomy", "all"})
@@ -149,6 +178,22 @@ def completion_doc(candidate: str) -> str:
         flag = tokens[-1]
         if flag.startswith("-"):
             return _RENAME_FLAG_DOCS.get(flag, "")
+
+    if cmd == "tab":
+        if len(tokens) == 2 and not tokens[1].startswith("-"):
+            docs = {
+                "new": "Create a blank investigation tab in this project",
+                "dup": "Duplicate the current investigation into a new tab",
+                "rm": "Remove the current investigation tab",
+                "next": "Switch to the next investigation tab",
+                "prev": "Switch to the previous investigation tab",
+                "left": "Move the current tab one slot left",
+                "right": "Move the current tab one slot right",
+            }
+            return docs.get(tokens[1].lower(), "")
+        flag = tokens[-1]
+        if flag.startswith("-"):
+            return _TAB_FLAG_DOCS.get(flag, "")
 
     return ""
 
@@ -317,6 +362,26 @@ def complete_command_line(raw: str) -> list[str]:
         matches = _prefix_matches(available, partial)
         return [_rebuild(head, m) for m in matches]
 
+    if cmd == "tab":
+        if len(head) == 1:
+            matches = _prefix_matches(list(_TAB_SUBCOMMANDS), partial)
+            return [_rebuild(head, m) for m in matches]
+        sub = head[1].lower()
+        if sub == "rm":
+            used = set(head[2:])
+            available = [f for f in ("--force",) if f not in used]
+            matches = _prefix_matches(available, partial)
+            return [_rebuild(head, m) for m in matches]
+        if sub in ("new", "dup"):
+            used = set(head[2:])
+            if "--id" in used:
+                return []
+            if head[-1] == "--id":
+                return []
+            matches = _prefix_matches(["--id"], partial)
+            return [_rebuild(head, m) for m in matches]
+        return []
+
     return []
 
 
@@ -327,7 +392,7 @@ def parse_command_line(raw: str) -> ParsedCommand:
         text = text[1:].strip()
     if not text:
         raise CommandError(
-            "Empty command. Try: workspace, search, query, rename, "
+            "Empty command. Try: workspace, search, query, tab, rename, "
             "annotate, add, rm"
         )
     try:
@@ -346,6 +411,12 @@ def parse_command_line(raw: str) -> ParsedCommand:
             raise CommandError("Usage: tips [on|off]")
         state = None if not rest else rest[0].lower() == "on"
         return ParsedCommand(name=name, options={"state": state})
+    if name == "feedback":
+        if not rest:
+            raise CommandError("Usage: feedback <message>")
+        return ParsedCommand(
+            name=name, options={"message": " ".join(rest).strip()}
+        )
     if name == "tutorial":
         if len(tokens) > 1:
             raise CommandError("Usage: tutorial")
@@ -357,6 +428,10 @@ def parse_command_line(raw: str) -> ParsedCommand:
     if name == "publish":
         if rest:
             raise CommandError("Usage: publish")
+        return ParsedCommand(name=name)
+    if name == "activity":
+        if rest:
+            raise CommandError("Usage: activity")
         return ParsedCommand(name=name)
     if name == "search":
         return _parse_search(rest)
@@ -370,7 +445,56 @@ def parse_command_line(raw: str) -> ParsedCommand:
         return _parse_add(rest)
     if name == "rm":
         return _parse_rm(rest)
+    if name == "tab":
+        return _parse_tab(rest)
     raise CommandError(f"Unhandled command {name!r}")
+
+
+def _parse_tab(rest: list[str]) -> ParsedCommand:
+    """``tab [new|dup|rm|next|prev|left|right] …`` (bare ``tab`` → next)."""
+    if not rest:
+        return ParsedCommand(name="tab", options={"op": "next"})
+    op = rest[0].lower()
+    if op not in _TAB_SUBCOMMANDS:
+        raise CommandError(
+            "Usage: tab [new|dup|rm|next|prev|left|right] …"
+        )
+    tail = rest[1:]
+    if op in ("next", "prev", "left", "right"):
+        if tail:
+            raise CommandError(f"Usage: tab {op}")
+        return ParsedCommand(name="tab", options={"op": op})
+    if op == "rm":
+        force = False
+        for tok in tail:
+            if tok == "--force":
+                force = True
+            else:
+                raise CommandError("Usage: tab rm [--force]")
+        return ParsedCommand(
+            name="tab", options={"op": "rm", "force": force}
+        )
+    # new / dup — optional --id <slug> and remaining tokens as title
+    inv_id: Optional[str] = None
+    title_parts: list[str] = []
+    i = 0
+    while i < len(tail):
+        tok = tail[i]
+        if tok == "--id":
+            if i + 1 >= len(tail):
+                raise CommandError(f"Usage: tab {op} [--id slug] [title]")
+            inv_id = tail[i + 1]
+            i += 2
+            continue
+        if tok.startswith("-"):
+            raise CommandError(f"Unknown flag {tok!r} for tab {op}")
+        title_parts.append(tok)
+        i += 1
+    title = " ".join(title_parts).strip() or None
+    return ParsedCommand(
+        name="tab",
+        options={"op": op, "investigation_id": inv_id, "title": title},
+    )
 
 
 def _parse_search(rest: list[str]) -> ParsedCommand:

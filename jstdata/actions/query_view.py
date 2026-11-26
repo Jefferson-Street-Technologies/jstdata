@@ -1,7 +1,7 @@
 """Query View — run a saved query and inspect observations.
 
 Idle until ``r``. Results stay JSON records under the hood (one per series);
-the human surface is a formatted table, optional chart, and a Raw JSON mode.
+the human surface is a chart or observation table above research notes.
 """
 
 from __future__ import annotations
@@ -14,22 +14,31 @@ import json
 from collections import OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import StringIO
 from pathlib import Path
 from typing import Any, Optional
 
-from textual import on, work
+from textual import events, on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import Label, ListItem, ListView, Static
+from textual.widgets import Checkbox, Input, Label, ListItem, ListView, Static, TextArea
 from textual_plotext import PlotextPlot
 
 from ..client import JSTDataClient
-from ..investigation.model import Query, Workspace
-from ..investigation.nav import annotations_panel
+from ..investigation.model import Query, QueryRemark, Workspace
+from ..investigation.naming import label_for
+from ..investigation.query_compose import (
+    OBS_MODES,
+    QueryComposeHeader,
+    default_frequency,
+    frequency_options_for,
+    normalize_variant_frequency,
+)
+from ..investigation.ui_primitives import ActionButton
 from ..models import TimeSeries
 from .base import (
     ActionArgument,
@@ -40,7 +49,7 @@ from .base import (
 )
 from .screen import BaseScreen
 
-MODES = ("table", "chart", "raw")
+MODES = ("chart", "table")
 
 
 def series_to_record(ts: TimeSeries) -> dict[str, Any]:
@@ -83,7 +92,7 @@ def _parse_stamp(value: Any) -> Optional[datetime]:
 
 
 def format_value(value: Any, *, digits: int = 2) -> str:
-    """Human-facing number; raw precision stays on the record."""
+    """Exact-ish table/detail number; raw precision stays on the record."""
     if value is None:
         return "—"
     try:
@@ -98,6 +107,204 @@ def format_value(value: Any, *, digits: int = 2) -> str:
     return formatted or "0"
 
 
+def unit_scale(units: str | None) -> tuple[float, bool]:
+    """Scale factor from reported units → display units, plus currency flag.
+
+    Catalog values are often stored in thousands/millions of dollars. A raw
+    ``14336729`` with units ``Thousands of Dollars`` is **$14.34B**, not $14.34M.
+    """
+    unit = (units or "").strip().lower()
+    if not unit:
+        return 1.0, False
+    currency = any(
+        tok in unit
+        for tok in ("dollar", "usd", "$", "euro", "eur", "pound", "gbp", "yen")
+    )
+    # Explicit scale words (order matters: "thousands of millions" rare — skip).
+    if "trillion" in unit:
+        return 1_000_000_000_000.0, currency
+    if "billion" in unit:
+        return 1_000_000_000.0, currency
+    if "million" in unit:
+        return 1_000_000.0, currency
+    if "thousand" in unit:
+        return 1_000.0, currency
+    return 1.0, currency
+
+
+def scaled_number(value: Any, *, units: str | None = None) -> Optional[float]:
+    """Apply unit scale; None when value is missing/non-numeric."""
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number:
+        return None
+    scale, _ = unit_scale(units)
+    return number * scale
+
+
+def format_compact(value: Any, *, units: str | None = None) -> str:
+    """Headline / chart-axis number: $14.34B, 4.3%, 71.5, … (unit-aware)."""
+    unit = (units or "").strip().lower()
+    # Percents / rates / ratios: no magnitude scaling.
+    if any(tok in unit for tok in ("percent", "%", "ratio", "index")) and "dollar" not in unit:
+        if value is None:
+            return "—"
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+        if number != number:
+            return "—"
+        sign = "-" if number < 0 else ""
+        body = f"{abs(number):.2f}".rstrip("0").rstrip(".")
+        suffix = "%" if "percent" in unit or unit == "%" else ""
+        return f"{sign}{body}{suffix}"
+
+    scaled = scaled_number(value, units=units)
+    if scaled is None:
+        return "—" if value is None else str(value)
+    _, currency = unit_scale(units)
+    sign = "-" if scaled < 0 else ""
+    mag = abs(scaled)
+    prefix = "$" if currency else ""
+    if mag >= 1_000_000_000_000:
+        body = f"{mag / 1_000_000_000_000:.2f}".rstrip("0").rstrip(".")
+        return f"{sign}{prefix}{body}T"
+    if mag >= 1_000_000_000:
+        body = f"{mag / 1_000_000_000:.2f}".rstrip("0").rstrip(".")
+        return f"{sign}{prefix}{body}B"
+    if mag >= 1_000_000:
+        body = f"{mag / 1_000_000:.2f}".rstrip("0").rstrip(".")
+        return f"{sign}{prefix}{body}M"
+    if mag >= 10_000:
+        body = f"{mag / 1_000:.2f}".rstrip("0").rstrip(".")
+        return f"{sign}{prefix}{body}K"
+    body = format_value(mag)
+    return f"{sign}{prefix}{body}"
+
+
+def format_exact(value: Any, *, units: str | None = None) -> str:
+    """Full-precision display after unit scaling (observation strip / table)."""
+    unit = (units or "").strip().lower()
+    if any(tok in unit for tok in ("percent", "%", "ratio", "index")) and "dollar" not in unit:
+        return format_value(value)
+    scaled = scaled_number(value, units=units)
+    if scaled is None:
+        return format_value(value)
+    _, currency = unit_scale(units)
+    formatted = format_value(scaled, digits=0 if abs(scaled) >= 1000 else 2)
+    return f"${formatted}" if currency else formatted
+
+
+def format_pct_change(current: Any, prior: Any) -> str:
+    """Signed percent change for headlines (e.g. ``+3.3%``)."""
+    try:
+        cur = float(current)
+        old = float(prior)
+    except (TypeError, ValueError):
+        return "—"
+    if old == 0 or cur != cur or old != old:
+        return "—"
+    pct = (cur - old) / abs(old) * 100.0
+    sign = "+" if pct > 0 else ""
+    return f"{sign}{pct:.1f}%"
+
+
+def _obs_chronological(record: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = list(record.get("observations") or [])
+    rows.sort(
+        key=lambda obs: _parse_stamp(obs.get("observation_timestamp"))
+        or datetime.min
+    )
+    return rows
+
+
+def headline_changes(
+    record: dict[str, Any],
+) -> tuple[str, str]:
+    """Return ``(pop_label, yoy_label)`` for the selected series."""
+    rows = _obs_chronological(record)
+    if len(rows) < 2:
+        return "—", "—"
+    latest = rows[-1]
+    prev = rows[-2]
+    freq = str(record.get("frequency") or "").lower()
+    pop_tag = "QoQ" if "quarter" in freq else ("MoM" if "month" in freq else "PoP")
+    pop = format_pct_change(latest.get("value"), prev.get("value"))
+    pop_label = f"{pop} {pop_tag}" if pop != "—" else "—"
+
+    latest_dt = _parse_stamp(latest.get("observation_timestamp"))
+    yoy = "—"
+    if latest_dt is not None:
+        target_year = latest_dt.year - 1
+        # Prefer same month/quarter in prior year; else nearest earlier stamp ≥11mo.
+        candidates = [
+            obs
+            for obs in rows[:-1]
+            if (dt := _parse_stamp(obs.get("observation_timestamp"))) is not None
+            and dt.year == target_year
+            and dt.month == latest_dt.month
+        ]
+        if not candidates:
+            floor = latest_dt - timedelta(days=400)
+            ceiling = latest_dt - timedelta(days=300)
+            candidates = [
+                obs
+                for obs in rows[:-1]
+                if (dt := _parse_stamp(obs.get("observation_timestamp"))) is not None
+                and floor <= dt <= ceiling
+            ]
+        if candidates:
+            yoy = format_pct_change(latest.get("value"), candidates[-1].get("value"))
+    yoy_label = f"{yoy} YoY" if yoy != "—" else "—"
+    return pop_label, yoy_label
+
+
+def format_compact_scaled(scaled_value: float, *, units: str | None = None) -> str:
+    """Format a value that is **already** unit-scaled (chart ticks)."""
+    _, currency = unit_scale(units)
+    unit = (units or "").strip().lower()
+    if any(tok in unit for tok in ("percent", "%", "ratio", "index")) and "dollar" not in unit:
+        sign = "-" if scaled_value < 0 else ""
+        body = f"{abs(scaled_value):.2f}".rstrip("0").rstrip(".")
+        suffix = "%" if "percent" in unit or unit == "%" else ""
+        return f"{sign}{body}{suffix}"
+    sign = "-" if scaled_value < 0 else ""
+    mag = abs(scaled_value)
+    prefix = "$" if currency else ""
+    if mag >= 1_000_000_000_000:
+        body = f"{mag / 1_000_000_000_000:.1f}".rstrip("0").rstrip(".")
+        return f"{sign}{prefix}{body}T"
+    if mag >= 1_000_000_000:
+        body = f"{mag / 1_000_000_000:.1f}".rstrip("0").rstrip(".")
+        return f"{sign}{prefix}{body}B"
+    if mag >= 1_000_000:
+        body = f"{mag / 1_000_000:.1f}".rstrip("0").rstrip(".")
+        return f"{sign}{prefix}{body}M"
+    if mag >= 10_000:
+        body = f"{mag / 1_000:.1f}".rstrip("0").rstrip(".")
+        return f"{sign}{prefix}{body}K"
+    return f"{sign}{prefix}{format_value(mag)}"
+
+
+def _compact_yticks(
+    values: Sequence[float], *, units: str | None = None
+) -> tuple[list[float], list[str]]:
+    if not values:
+        return [], []
+    lo, hi = min(values), max(values)
+    if lo == hi:
+        return [lo], [format_compact_scaled(lo, units=units)]
+    span = hi - lo
+    step = span / 4.0
+    ticks = [lo + step * i for i in range(5)]
+    return ticks, [format_compact_scaled(t, units=units) for t in ticks]
+
+
 def format_period(stamp: Any, frequency: Optional[str] = None) -> str:
     dt = _parse_stamp(stamp)
     if dt is None:
@@ -108,17 +315,62 @@ def format_period(stamp: Any, frequency: Optional[str] = None) -> str:
     if "annual" in freq or freq in {"yearly", "year"}:
         return str(dt.year)
     if "month" in freq:
-        return dt.strftime("%Y-%m")
+        return dt.strftime("%b %Y")
     return dt.strftime("%Y-%m-%d")
 
 
-def format_release(stamp: Any, *, short: bool = False) -> str:
+def format_release(stamp: Any, *, short: bool = False, human: bool = False) -> str:
     dt = _parse_stamp(stamp)
     if dt is None:
         return "—"
+    if human:
+        return f"{dt.strftime('%b')} {dt.day}, {dt.year}"
     if short:
         return dt.strftime("%b %Y")
     return dt.strftime("%Y-%m-%d")
+
+
+def _expected_gap_days(frequency: Optional[str]) -> Optional[float]:
+    """Max days between consecutive observations before treating as a gap."""
+    freq = (frequency or "").lower()
+    if "day" in freq:
+        return 2.5
+    if "week" in freq:
+        return 10.0
+    if "month" in freq:
+        return 45.0
+    if "quarter" in freq:
+        return 120.0
+    if "annual" in freq or freq in {"yearly", "year"}:
+        return 400.0
+    return None
+
+
+def history_segments(
+    record: dict[str, Any],
+) -> list[tuple[list[str], list[float]]]:
+    """Split a series into contiguous segments; gaps are not connected."""
+    times, values = history_points(record)
+    if not times:
+        return []
+    gap = _expected_gap_days(str(record.get("frequency") or "") or None)
+    if gap is None or len(times) == 1:
+        return [(times, values)]
+    segments: list[tuple[list[str], list[float]]] = []
+    cur_t = [times[0]]
+    cur_v = [values[0]]
+    for i in range(1, len(times)):
+        prev = datetime.strptime(times[i - 1], "%Y-%m-%d")
+        cur = datetime.strptime(times[i], "%Y-%m-%d")
+        if (cur - prev).days > gap:
+            segments.append((cur_t, cur_v))
+            cur_t = [times[i]]
+            cur_v = [values[i]]
+        else:
+            cur_t.append(times[i])
+            cur_v.append(values[i])
+    segments.append((cur_t, cur_v))
+    return segments
 
 
 def record_title(record: dict[str, Any]) -> str:
@@ -337,6 +589,82 @@ def cursor_dates(records: Sequence[dict[str, Any]]) -> list[datetime]:
     return out
 
 
+# Chart bound drag: map terminal columns onto observation indices.
+BOUND_HIT_RADIUS = 3
+_DEFAULT_CANVAS_GUTTER = 10
+
+
+def canvas_region_for_width(width: int, *, gutter: Optional[int] = None) -> tuple[int, int]:
+    """Inclusive left/right columns for the plot canvas inside a widget."""
+    w = max(1, int(width))
+    g = _DEFAULT_CANVAS_GUTTER if gutter is None else max(0, int(gutter))
+    left = min(g, max(0, w // 5))
+    right = max(left, w - 1)
+    return left, right
+
+
+def date_index_to_x(
+    index: int,
+    n_dates: int,
+    canvas_left: int,
+    canvas_right: int,
+) -> int:
+    """Map a 0-based date index onto a canvas column."""
+    if n_dates <= 1:
+        return int(canvas_left)
+    span = max(1, int(canvas_right) - int(canvas_left))
+    t = max(0, min(n_dates - 1, int(index))) / (n_dates - 1)
+    return int(round(canvas_left + t * span))
+
+
+def x_to_date_index(
+    x: int,
+    n_dates: int,
+    canvas_left: int,
+    canvas_right: int,
+) -> int:
+    """Snap a widget X column to the nearest observation index."""
+    if n_dates <= 0:
+        return 0
+    if n_dates == 1:
+        return 0
+    left = int(canvas_left)
+    right = int(canvas_right)
+    span = max(1, right - left)
+    x_clamped = max(left, min(right, int(x)))
+    t = (x_clamped - left) / span
+    return int(round(t * (n_dates - 1)))
+
+
+def nearest_bound_to_drag(
+    click_x: int,
+    lo_x: int,
+    hi_x: int,
+    *,
+    focused: str = "hi",
+    hit_radius: int = BOUND_HIT_RADIUS,
+) -> str:
+    """Choose ``lo`` or ``hi`` from a click.
+
+    Grab a bound if the click is within ``hit_radius`` of its marker.
+    Otherwise place the Tab-focused bound (so Tab then click moves that one).
+    """
+    focus = "lo" if focused == "lo" else "hi"
+    d_lo = abs(int(click_x) - int(lo_x))
+    d_hi = abs(int(click_x) - int(hi_x))
+    radius = max(0, int(hit_radius))
+    in_lo = d_lo <= radius
+    in_hi = d_hi <= radius
+    if in_lo and in_hi:
+        return "lo" if d_lo <= d_hi else "hi"
+    if in_lo:
+        return "lo"
+    if in_hi:
+        return "hi"
+    return focus
+
+
+
 def observation_on_date(
     record: dict[str, Any], day: datetime
 ) -> Optional[dict[str, Any]]:
@@ -408,11 +736,11 @@ def records_to_csv(records: Sequence[dict[str, Any]]) -> str:
 
 
 def coverage_status(query: Query, records: Sequence[dict[str, Any]]) -> str:
-    """Loading/result line, including missing cartesian pairs."""
+    """Loading/result line: how many requested series came back."""
     n = len(records)
     expected = query.expected_pairs() if hasattr(query, "expected_pairs") else []
     if not expected:
-        return f"{n} series returned" if n else "No series returned"
+        return f"{n} series available" if n else "No series available"
     got: set[tuple[str, str]] = set()
     for rec in records:
         metric = str(rec.get("metric_id") or "")
@@ -420,14 +748,19 @@ def coverage_status(query: Query, records: Sequence[dict[str, Any]]) -> str:
             eid = str(ent.get("id") or "")
             if metric and eid:
                 got.add((metric, eid))
+    available = len(expected) - sum(1 for pair in expected if pair not in got)
     missing = [pair for pair in expected if pair not in got]
+    requested = len(expected)
     if not n:
-        return f"No series returned · {len(expected)} pair(s) expected"
+        return f"0 of {requested} requested series available"
     if missing:
         sample = ", ".join(f"{m} × {e}" for m, e in missing[:2])
         extra = f" +{len(missing) - 2}" if len(missing) > 2 else ""
-        return f"{n} series · {len(missing)} pair(s) missing ({sample}{extra})"
-    return f"{n} series · {len(expected)} pair(s) resolved"
+        return (
+            f"{available} of {requested} requested series available"
+            f" · missing {sample}{extra}"
+        )
+    return f"{n} of {requested} requested series available"
 
 
 def copy_text(text: str) -> bool:
@@ -468,13 +801,16 @@ def plot_history(
     records: Optional[dict[str, Any] | Sequence[dict[str, Any]]] = None,
     *,
     cursor_date: Optional[datetime] = None,
+    bound_lo: Optional[datetime] = None,
+    bound_hi: Optional[datetime] = None,
     colors: Optional[Sequence[tuple[int, int, int]]] = None,
 ) -> bool:
     """Draw one or more series onto a plotext figure.
 
     Overlay series that share an axis (same units). Returns True when at
     least one line (or scatter) was drawn. X ticks are calendar years when
-    the span is long enough; a cursor date draws a vertical marker.
+    the span is long enough. ``bound_lo`` / ``bound_hi`` grey out the
+    outside; ``cursor_date`` marks the active bound.
     """
     if records is None:
         recs: list[dict[str, Any]] = []
@@ -488,32 +824,108 @@ def plot_history(
     plt.ylabel("")
     drawn = 0
     units = ""
-    names = line_labels(recs)
-    for i, (rec, name) in enumerate(zip(recs, names)):
-        times, values = history_points(rec)
-        if not times:
+    all_values: list[float] = []
+    cursor_point: tuple[str, float] | None = None
+    grey = (70, 70, 70)
+    lo_s = _naive(bound_lo).strftime("%Y-%m-%d") if bound_lo else None
+    hi_s = _naive(bound_hi).strftime("%Y-%m-%d") if bound_hi else None
+    if not recs:
+        plt.title("All series hidden")
+        return False
+    for i, rec in enumerate(recs):
+        segments = history_segments(rec)
+        if not segments:
             continue
         if not units:
             units = str(rec.get("units") or "").strip()
-        plt.date_form(CHART_DATE_FORM)
-        draw = plt.scatter if len(values) == 1 else plt.plot
+        scale, _ = unit_scale(units)
+        # Skip scaling for percent-like units (handled as identity in unit_scale).
+        unit_l = units.lower()
+        if any(tok in unit_l for tok in ("percent", "%", "ratio", "index")) and "dollar" not in unit_l:
+            scale = 1.0
         if colors and i < len(colors):
             color = colors[i]
         elif len(recs) == 1:
             color = CHART_LINE_COLOR
         else:
             color = CHART_PALETTE[i % len(CHART_PALETTE)]
-        draw(times, values, marker="braille", label=name, color=color)
+        plt.date_form(CHART_DATE_FORM)
+        for seg_t, seg_v in segments:
+            scaled = [v * scale for v in seg_v]
+            all_values.extend(scaled)
+            draw = plt.scatter if len(scaled) == 1 else plt.plot
+            if lo_s or hi_s:
+                # Full segment dimmed, then in-bound overlay in color.
+                draw(seg_t, scaled, marker="braille", color=grey)
+                in_t: list[str] = []
+                in_v: list[float] = []
+                for t, v in zip(seg_t, scaled):
+                    if lo_s and t < lo_s:
+                        continue
+                    if hi_s and t > hi_s:
+                        continue
+                    in_t.append(t)
+                    in_v.append(v)
+                if in_t:
+                    draw_in = plt.scatter if len(in_v) == 1 else plt.plot
+                    # No plotext label — interactive legend lives above the chart.
+                    draw_in(in_t, in_v, marker="braille", color=color)
+            else:
+                draw(seg_t, scaled, marker="braille", color=color)
         drawn += 1
+        if cursor_date is not None and cursor_point is None:
+            target = _naive(cursor_date).strftime("%Y-%m-%d")
+            for seg_t, seg_v in segments:
+                scaled = [v * scale for v in seg_v]
+                for t, v in zip(seg_t, scaled):
+                    if t == target:
+                        cursor_point = (t, v)
+                        break
+                if cursor_point is not None:
+                    break
     if not drawn:
         plt.title("No observations")
         return False
-    plt.ylabel(units)
+    y_ticks, y_labels = _compact_yticks(all_values, units=units)
+    if y_ticks:
+        try:
+            plt.yticks(y_ticks, y_labels)
+        except Exception:  # noqa: BLE001
+            pass
+    # Unit lives on the y-axis (chart title may already name the metric).
+    _, currency = unit_scale(units)
+    if currency and unit_scale(units)[0] != 1.0:
+        plt.ylabel("USD")
+    else:
+        plt.ylabel(units)
     ticks, labels = calendar_xticks(recs)
     if ticks:
         plt.xticks(ticks, labels)
+    for bound, dim in ((bound_lo, True), (bound_hi, True)):
+        if bound is None:
+            continue
+        day = _naive(bound).strftime("%Y-%m-%d")
+        try:
+            plt.vline(day)
+        except Exception:  # noqa: BLE001
+            pass
     if cursor_date is not None:
-        plt.vline(_naive(cursor_date).strftime("%Y-%m-%d"))
+        day = _naive(cursor_date).strftime("%Y-%m-%d")
+        try:
+            plt.vline(day)
+        except Exception:  # noqa: BLE001
+            pass
+        # Bright marker so h/l movement is visible on the series, not just a line.
+        if cursor_point is not None:
+            try:
+                plt.scatter(
+                    [cursor_point[0]],
+                    [cursor_point[1]],
+                    marker="hd",
+                    color=(250, 250, 250),
+                )
+            except Exception:  # noqa: BLE001
+                pass
     return True
 
 
@@ -550,15 +962,70 @@ class ObservationRow(ListItem):
 
     def compose(self) -> ComposeResult:
         freq = self.record.get("frequency")
+        units = self.record.get("units")
         period = format_period(self.obs.get("observation_timestamp"), freq)
         raw = self.obs.get("value")
-        value = format_value(raw)
-        released = format_release(self.obs.get("release_timestamp"))
+        value = format_exact(raw, units=units)
+        # Prefer a readable release date; fall back to release id for provenance.
+        released = format_release(self.obs.get("release_timestamp"), human=True)
+        release_id = str(self.obs.get("release_id") or "")
+        if released != "—":
+            release_bit = released
+        elif release_id:
+            release_bit = release_id[:22]
+        else:
+            release_bit = "—"
         classes = "obs-row obs-missing" if raw is None else "obs-row"
         yield Label(
-            f"{period:<14}{value:>14}{released:>16}",
+            f"{period:<12}{value:>16}  {release_bit:<22}",
             classes=classes,
         )
+
+
+class SeriesValuesFallback(ModalScreen[None]):
+    """When an observation has no release_id — series name · value · units."""
+
+    DEFAULT_CSS = """
+    SeriesValuesFallback {
+        align: center middle;
+        background: rgba(0, 0, 0, 0.35);
+    }
+    #sv-box {
+        width: 72;
+        height: auto;
+        max-height: 24;
+        border: tall #4ade80;
+        background: #111111;
+        padding: 1 2;
+    }
+    #sv-kicker { color: #4ade80; text-style: bold; height: 1; }
+    #sv-body { color: #e0e0e0; height: auto; max-height: 18; }
+    #sv-hint { color: #666; height: 1; margin-top: 1; }
+    """
+
+    BINDINGS = [
+        Binding("escape", "dismiss", "Close", show=True),
+        Binding("enter", "dismiss", "Close", show=False),
+    ]
+
+    def __init__(self, rows: list[tuple[str, str, str]], *, title: str) -> None:
+        super().__init__()
+        self._rows = rows
+        self._title = title
+
+    def compose(self) -> ComposeResult:
+        lines = [f"{'Series':<36}{'Value':>14}  {'Units':<12}"]
+        lines.append("─" * 64)
+        for name, value, units in self._rows:
+            lines.append(f"{name[:36]:<36}{value:>14}  {(units or '—')[:12]:<12}")
+        with Vertical(id="sv-box"):
+            yield Label("OBSERVATION", id="sv-kicker")
+            yield Static(
+                f"[bold]{escape(self._title)}[/]\n\n" + "\n".join(lines),
+                id="sv-body",
+                markup=True,
+            )
+            yield Label("Esc to close", id="sv-hint")
 
 
 class SeriesNavRow(ListItem):
@@ -569,9 +1036,17 @@ class SeriesNavRow(ListItem):
     def compose(self) -> ComposeResult:
         last = self.record.get("last") or {}
         entities = self.record.get("entities") or []
-        name = entities[0]["label"] if entities else (self.record.get("label") or self.record.get("id"))
+        name = (
+            entities[0]["label"]
+            if entities
+            else (self.record.get("label") or self.record.get("id"))
+        )
         value = format_value(last.get("value"))
-        yield Label(f"{name:<22}{value:>10}", classes="series-nav-row")
+        freq = self.record.get("frequency") or ""
+        units = self.record.get("units") or ""
+        yield Label(str(name), classes="series-nav-name")
+        meta = " · ".join(p for p in (value, freq, units) if p)
+        yield Label(meta or "—", classes="series-nav-meta")
 
 
 class PlotGroupRow(ListItem):
@@ -589,17 +1064,111 @@ class PlotGroupRow(ListItem):
 
 
 class LegendRow(ListItem):
-    """One series in the current chart group (select / hide)."""
+    """Legacy list-row legend (table / fallback)."""
 
-    def __init__(self, record: dict[str, Any], *, hidden: bool = False) -> None:
+    def __init__(
+        self,
+        record: dict[str, Any],
+        *,
+        hidden: bool = False,
+        color: Optional[tuple[int, int, int]] = None,
+    ) -> None:
         super().__init__()
         self.record = record
         self.hidden = hidden
+        self.color = color
 
     def compose(self) -> ComposeResult:
-        mark = "○" if self.hidden else "●"
+        check = "[ ]" if self.hidden else "[✓]"
         name = series_line_label(self.record)
-        yield Label(f"{mark} {name}", classes="series-nav-row")
+        if self.color is not None:
+            r, g, b = self.color
+            swatch = f"[rgb({r},{g},{b})]●[/]"
+            yield Label(
+                f"{check} {swatch} {escape(name)}",
+                classes="series-nav-row",
+                markup=True,
+            )
+        else:
+            yield Label(f"{check} {name}", classes="series-nav-row")
+
+
+class LegendChip(Static, can_focus=True):
+    """Compact horizontal legend chip — checkmark = visibility, focus = outline."""
+
+    DEFAULT_CSS = """
+    LegendChip {
+        width: auto;
+        height: 1;
+        padding: 0 1;
+        margin-right: 1;
+        color: #d4d4d4;
+        background: #141414;
+        /* No border — Textual height-1 borders eat the content row. */
+    }
+    LegendChip.-hidden {
+        color: #737373;
+    }
+    LegendChip:hover {
+        background: #1f1f28;
+        color: #fafafa;
+    }
+    LegendChip:focus {
+        background: #1a1a22;
+        text-style: bold underline;
+        color: #fafafa;
+    }
+    LegendChip.-hidden:hover,
+    LegendChip.-hidden:focus {
+        color: #a3a3a3;
+    }
+    """
+
+    class Toggled(Message):
+        def __init__(self, series_id: str) -> None:
+            super().__init__()
+            self.series_id = series_id
+
+    def __init__(
+        self,
+        record: dict[str, Any],
+        *,
+        hidden: bool = False,
+        color: Optional[tuple[int, int, int]] = None,
+    ) -> None:
+        super().__init__()
+        self.record = record
+        self.hidden = hidden
+        self.color = color
+        self._paint()
+
+    def _paint(self) -> None:
+        check = "[ ]" if self.hidden else "[✓]"
+        name = series_line_label(self.record)
+        if self.color is not None:
+            r, g, b = self.color
+            swatch = f"[rgb({r},{g},{b})]●[/]"
+            self.update(f"{check} {swatch} {escape(name)}")
+        else:
+            self.update(f"{check} {escape(name)}")
+        self.set_class(self.hidden, "-hidden")
+
+    def set_hidden(self, hidden: bool) -> None:
+        self.hidden = hidden
+        self._paint()
+
+    def on_click(self) -> None:
+        sid = str(self.record.get("id") or "")
+        if sid:
+            self.post_message(self.Toggled(sid))
+
+    def on_key(self, event) -> None:  # noqa: ANN001
+        # Space toggles here; Enter is handled by QueryScreen.action_inspect.
+        if event.key == "space":
+            sid = str(self.record.get("id") or "")
+            if sid:
+                self.post_message(self.Toggled(sid))
+            event.stop()
 
 
 class ObservationDetail(ModalScreen[None]):
@@ -639,136 +1208,408 @@ class ObservationDetail(ModalScreen[None]):
 
 
 class HistoryPlot(PlotextPlot):
-    """Plotext line chart for one comparable query group."""
+    """Plotext line chart for one comparable query group.
+
+    Supports click-drag on the start/end time bounds (vertical markers).
+    """
 
     can_focus = False
+
+    class BoundDrag(Message):
+        """Posted while the user drags a time bound on the chart."""
+
+        def __init__(self, which: str, date_index: int) -> None:
+            self.which = which  # "lo" | "hi"
+            self.date_index = int(date_index)
+            super().__init__()
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._drag_which: Optional[str] = None
+        self._drag_dates_n: int = 0
+        self._bound_lo_i: int = 0
+        self._bound_hi_i: int = 0
+        self._bound_focus: str = "hi"
+        self._canvas_left: int = 0
+        self._canvas_right: int = 0
+
+    def set_drag_context(
+        self,
+        *,
+        n_dates: int,
+        bound_lo_i: int,
+        bound_hi_i: int,
+        bound_focus: str = "hi",
+    ) -> None:
+        """Observation count and bound indices for hit-testing / snapping."""
+        self._drag_dates_n = max(0, int(n_dates))
+        self._bound_lo_i = int(bound_lo_i)
+        self._bound_hi_i = int(bound_hi_i)
+        self._bound_focus = "lo" if bound_focus == "lo" else "hi"
+        self._refresh_canvas_region()
+
+    def _refresh_canvas_region(self) -> None:
+        width = max(1, int(self.size.width or 1))
+        left, right = self._probe_canvas_cols(width)
+        if left is None or right is None:
+            left, right = canvas_region_for_width(width)
+        self._canvas_left = left
+        self._canvas_right = right
+
+    def _probe_canvas_cols(
+        self, width: int
+    ) -> tuple[Optional[int], Optional[int]]:
+        """Read plotext canvas columns when a prior render left them behind."""
+        _ = width
+        matrix = getattr(self.plt, "matrix", None)
+        cols = getattr(matrix, "Cols_canvas", None) if matrix is not None else None
+        if cols is None:
+            return None, None
+        try:
+            seq = list(cols)
+        except TypeError:
+            return None, None
+        if not seq:
+            return None, None
+        return int(seq[0]), int(seq[-1])
 
     def plot_records(
         self,
         records: Optional[Sequence[dict[str, Any]]] = None,
         *,
         cursor_date: Optional[datetime] = None,
+        bound_lo: Optional[datetime] = None,
+        bound_hi: Optional[datetime] = None,
         colors: Optional[Sequence[tuple[int, int, int]]] = None,
     ) -> None:
         plot_history(
-            self.plt, records, cursor_date=cursor_date, colors=colors
+            self.plt,
+            records,
+            cursor_date=cursor_date,
+            bound_lo=bound_lo,
+            bound_hi=bound_hi,
+            colors=colors,
         )
         self.refresh()
+        self._refresh_canvas_region()
 
     def plot_record(self, record: Optional[dict[str, Any]]) -> None:
         self.plot_records(None if record is None else [record])
+
+    def _date_index_at_x(self, x: int) -> int:
+        return x_to_date_index(
+            x,
+            self._drag_dates_n,
+            self._canvas_left,
+            self._canvas_right,
+        )
+
+    def _bound_x(self, which: str) -> int:
+        index = self._bound_lo_i if which == "lo" else self._bound_hi_i
+        return date_index_to_x(
+            index,
+            self._drag_dates_n,
+            self._canvas_left,
+            self._canvas_right,
+        )
+
+    def _emit_drag(self, x: int) -> None:
+        if self._drag_which is None or self._drag_dates_n <= 0:
+            return
+        self.post_message(
+            self.BoundDrag(self._drag_which, self._date_index_at_x(x))
+        )
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if event.button != 1 or self._drag_dates_n <= 0:
+            return
+        self._refresh_canvas_region()
+        lo_x = self._bound_x("lo")
+        hi_x = self._bound_x("hi")
+        self._drag_which = nearest_bound_to_drag(
+            event.x, lo_x, hi_x, focused=self._bound_focus
+        )
+        self.capture_mouse()
+        event.stop()
+        self._emit_drag(event.x)
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if self._drag_which is None:
+            return
+        event.stop()
+        self._emit_drag(event.x)
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        if self._drag_which is None:
+            return
+        event.stop()
+        self._emit_drag(event.x)
+        self._drag_which = None
+        self.release_mouse()
 
 
 class QueryScreen(BaseScreen):
     """Observation workbench for a saved (or workspace) query."""
 
     BINDINGS = [
-        Binding("r", "load", "Run query", key_display="r"),
-        Binding("a", "annotate", "Annotate", show=False),
+        Binding("r", "load", "Refresh", key_display="r"),
+        Binding("R", "annotate", "Add remark", show=False),
+        Binding("A", "pick_remark", "Pick remark", show=False, priority=True),
         Binding("t", "mode_table", "Table", show=False),
         Binding("c", "mode_chart", "Chart", show=False),
-        Binding("v", "mode_raw", "Raw JSON", show=False),
-        Binding("space", "collect", "Collect into workspace", show=False),
+        Binding("E", "add_entity", "Add entity", show=False),
+        Binding("M", "add_metric", "Add metric", show=False),
+        Binding("S", "add_series", "Add series", show=False),
         Binding("j", "cursor_down", "Cursor Down", show=False),
         Binding("k", "cursor_up", "Cursor Up", show=False),
-        Binding("h", "obs_left", "Older observation", show=False),
-        Binding("l", "obs_right", "Newer observation", show=False),
-        Binding("left", "obs_left", "Older observation", show=False),
-        Binding("right", "obs_right", "Newer observation", show=False),
-        Binding("x", "toggle_series", "Hide or show series", show=False),
+        Binding("h", "obs_left", "Adjust date older", show=False),
+        Binding("l", "obs_right", "Adjust date newer", show=False),
+        Binding("left", "obs_left", "Adjust date older", show=False),
+        Binding("right", "obs_right", "Adjust date newer", show=False),
+        Binding("x", "toggle_series", "Show or hide series", show=False),
         Binding("o", "toggle_sort", "Sort observations", show=False),
-        Binding("e", "export_csv", "Export CSV", show=False),
         Binding("y", "copy_python", "Copy Python", show=False),
         Binding("[", "prev_group", "Previous chart group", show=False),
         Binding("]", "next_group", "Next chart group", show=False),
-        Binding("enter", "inspect", "Inspect", priority=True),
+        Binding("tab", "toggle_bound_focus", "Toggle start/end date", show=False, priority=True),
+        Binding("enter", "inspect", "Show/hide series / inspect", priority=True),
+        Binding("escape", "cancel_remark", "Cancel remark / pick", show=False),
     ]
 
-    FOOTER_CHROME: tuple[str, ...] = (
-        "[bold #e0e0e0]:[/] [#888]commands[/]",
-        "[bold #e0e0e0]g[/] [#888]home[/]",
-        "[bold #e0e0e0]?[/] [#888]help[/]",
-        "[bold #e0e0e0]q[/] [#888]quit[/]",
-    )
+    FOOTER_CHROME: tuple[str, ...] = BaseScreen.FOOTER_CHROME
 
     DEFAULT_CSS = """
-    #query-body { height: 1fr; padding: 1 2 0 2; }
-    #query-kicker { color: #4ade80; text-style: bold; height: 1; }
-    #query-title { color: #e0e0e0; text-style: bold; height: 1; }
-    #query-spec { color: #888; height: 1; }
-    #query-annotations {
-        color: #c0c0c0;
-        height: auto;
-        max-height: 6;
-        margin-bottom: 1;
-    }
-    #query-status { color: #888; height: 1; margin-bottom: 1; }
-    #query-summary {
-        height: 7;
-        background: #111a14;
-        padding: 0 1;
-        margin-bottom: 1;
-        display: none;
-    }
-    #sum-kicker { color: #4ade80; height: 1; }
-    #sum-cols { height: 4; }
-    #sum-left, #sum-right { width: 1fr; height: 4; }
-    #sum-latest-kicker { color: #888; height: 1; }
-    #sum-latest-value { color: #f5f5f5; text-style: bold; height: 1; }
-    #sum-units { color: #888; height: 1; }
-    #sum-cov-kicker { color: #888; height: 1; }
-    #sum-cov-value { color: #f5f5f5; text-style: bold; height: 1; }
-    #sum-cov-meta { color: #888; height: 1; }
-    #sum-foot { color: #666; height: 1; }
-    #query-cursor {
-        height: 4;
-        background: #111a14;
-        padding: 0 1;
-        margin-bottom: 1;
-        display: none;
-    }
-    #cur-kicker { color: #4ade80; height: 1; }
-    #cur-period { color: #e0e0e0; text-style: bold; height: 1; }
-    #cur-meta { color: #888; height: 1; }
-    #cur-compare { color: #c0c0c0; height: 1; }
-    #cur-value { color: #86efac; text-style: bold; height: 1; text-align: right; }
-    #cur-left { width: 1fr; }
-    #cur-right { width: 16; }
-    #query-main { height: 1fr; }
-    #query-series {
-        width: 28;
+    #query-body {
         height: 1fr;
-        background: #0f0f0f;
-        display: none;
-        border-right: solid #222;
+        padding: 0 2 0 2;
+        background: #0a0a0a;
     }
-    #query-pane { width: 1fr; height: 1fr; }
-    #query-pane-kicker { color: #4ade80; text-style: bold; height: 1; margin-bottom: 1; }
+    #query-status {
+        color: #a3a3a3;
+        height: 1;
+        display: none;
+        background: #0a0a0a;
+    }
+    #query-view-tabs {
+        height: 1;
+        margin: 0 0 0 0;
+        padding: 0;
+        background: #0a0a0a;
+    }
+    #query-view-tabs ActionButton.-tab {
+        color: #a3a3a3;
+        background: #1a1a1a;
+    }
+    #query-view-tabs ActionButton.-tab.-active {
+        color: #0a0a0a;
+        background: #86efac;
+        text-style: bold;
+    }
+    #query-main {
+        height: 1fr;
+        min-height: 12;
+        background: #0a0a0a;
+    }
+    #query-series-meta {
+        height: 1;
+        color: #737373;
+        display: none;
+        margin: 0 0 0 0;
+    }
+    #query-legend {
+        width: 100%;
+        height: auto;
+        max-height: 3;
+        background: #0a0a0a;
+        display: none;
+        margin: 0 0 0 0;
+        padding: 0 0 0 0;
+    }
+    #query-series {
+        width: 100%;
+        height: auto;
+        max-height: 5;
+        background: #0a0a0a;
+        display: none;
+        border-bottom: solid #1f1f1f;
+        margin-bottom: 0;
+    }
+    #strip-dates-label {
+        color: #737373;
+        width: auto;
+        margin-right: 1;
+    }
+    #strip-dates-sep {
+        color: #737373;
+        width: auto;
+        margin: 0 1;
+    }
+    #query-pane {
+        width: 1fr;
+        height: 1fr;
+        background: #0a0a0a;
+    }
+    /* Metric chart title — hidden when it duplicates the query name. */
+    #query-chart-title {
+        height: 1;
+        width: 100%;
+        color: #d4d4d4;
+        text-style: bold;
+        margin: 0 0 0 0;
+    }
+    #query-chart-title.-empty { display: none; }
     #query-obs-header { color: #888; height: 1; }
     #query-obs { height: 1fr; background: #0a0a0a; }
     #query-chart {
         height: 1fr;
         width: 1fr;
+        min-height: 14;
+        display: none;
+        background: #0a0a0a;
+        border: solid #1a1a1a;
+    }
+    #query-obs-strip {
+        height: auto;
+        min-height: 3;
+        max-height: 5;
+        margin-top: 0;
         display: none;
     }
-    #query-raw {
-        height: 1fr;
-        color: #c0c0c0;
+    #strip-line1 { color: #fafafa; text-style: bold; height: 1; }
+    #strip-line2 { color: #e5e5e5; height: 1; }
+    #strip-line3 { color: #737373; height: 1; }
+    #strip-controls {
+        height: 1;
+        align: left middle;
+    }
+    #query-notes {
+        height: auto;
+        min-height: 6;
+        max-height: 28;
+        margin-top: 1;
+        border-top: solid #333;
+        padding-top: 1;
+        overflow-y: auto;
+    }
+    #query-notes-header { height: 1; margin-bottom: 0; align: left middle; }
+    #query-notes-kicker {
+        width: 1fr;
+        color: #f5f5f5;
+        text-style: bold;
+        height: 1;
+    }
+    #query-annotate {
+        width: auto;
+        height: 1;
+        color: #86efac;
+        background: #0a0a0a;
+    }
+    #query-annotate:hover {
+        color: #bbf7d0;
+        text-style: bold;
+    }
+    #query-remarks-scroll {
+        height: auto;
+        min-height: 4;
+        max-height: 14;
+        overflow-y: auto;
+        background: #0a0a0a;
+    }
+    #query-remarks-list {
+        color: #e8e8e8;
+        height: auto;
+        width: 100%;
+    }
+    #query-remark-draft {
+        height: auto;
         display: none;
+        margin-top: 1;
+        background: #111;
+        padding: 1;
+        border: solid #333;
+    }
+    #query-remark-draft.-open { display: block; }
+    #remark-name-row {
+        height: 3;
+        margin-bottom: 0;
+        align: left middle;
+    }
+    #remark-name {
+        width: 1fr;
+        height: 3;
+        background: #0a0a0a;
+        border: solid #333;
+        margin-right: 1;
+    }
+    #remark-cite {
+        width: auto;
+        color: #a3a3a3;
+        height: 3;
+        content-align: left middle;
+        padding: 0 1;
+    }
+    #remark-text {
+        background: #0a0a0a;
+        border: solid #333;
+        width: 100%;
+        height: 3;
+        margin-bottom: 0;
+    }
+    #remark-actions { height: 1; margin-top: 1; }
+    #remark-submit-hint {
+        color: #e5e5e5;
+        height: 1;
+        margin-top: 1;
+        text-style: bold;
+    }
+    #strip-controls ActionButton.-tab {
+        color: #e5e5e5;
+        background: #262626;
+        text-style: none;
+    }
+    #strip-controls ActionButton.-tab.-active {
+        color: #0a0a0a;
+        background: #60a5fa;
+        text-style: bold;
     }
     .obs-row { width: 100%; height: 1; color: #e0e0e0; }
     .obs-missing { color: #666; }
+    .series-nav-name {
+        width: 100%;
+        height: 1;
+        color: #f0f0f0;
+        text-style: bold;
+    }
+    .series-nav-meta {
+        width: 100%;
+        height: 1;
+        color: #888;
+    }
     .series-nav-row { width: 100%; height: 1; color: #d0d0d0; }
     ListView > ListItem.--highlight {
-        background: #1a3a2a;
-        border-left: solid #4ade80;
+        background: #1a1a22;
+        border-left: solid #60a5fa;
     }
-    ObservationRow, SeriesNavRow, PlotGroupRow, LegendRow {
+    ObservationRow {
+        height: 2;
+        min-height: 2;
+        max-height: 2;
+        border-left: solid #0a0a0a;
+        padding: 0 1;
+    }
+    SeriesNavRow {
+        height: 3;
+        min-height: 3;
+        max-height: 3;
+        border-left: solid #0a0a0a;
+        padding: 0 1;
+    }
+    PlotGroupRow, LegendRow {
         height: 1;
         min-height: 1;
         max-height: 1;
         border-left: solid #0a0a0a;
-        padding: 0 1 0 0;
+        padding: 0 1;
     }
     """
 
@@ -787,106 +1628,230 @@ class QueryScreen(BaseScreen):
         self._records: list[dict[str, Any]] = []
         self._groups: list[PlotGroup] = []
         self._loaded = False
-        self._mode = "table"
+        self._mode = "chart"
         self._series_i = 0
         self._group_i = 0
         self._hidden: set[str] = set()
-        self._cursor_i = -1
+        self._cursor_i = -1  # legacy single-cursor index; bounds prefer lo/hi
+        self._bound_lo_i: int = 0
+        self._bound_hi_i: int = 0
+        self._bound_focus: str = "hi"  # "lo" | "hi" — Tab toggles; h/l nudges
         self._newest_first = True
         self._busy = False
+        self._has_run_once = False
+        self._needs_refresh = False
+        self._run_token = 0
+        self._remark_drafting = False
+        self._pending_remark_delete = False
+        self._remark_pick_mode = False
+        self._selected_remark_i: Optional[int] = None  # 1-based when set
+        self._pre_pick_hidden: set[str] = set()
+        self._pre_pick_lo_i: int = 0
+        self._pre_pick_hi_i: int = 0
+        self._pre_pick_focus: str = "hi"
+        self._pre_pick_records: list[dict[str, Any]] = []
+        self._pre_pick_entity: list[str] = []
+        self._pre_pick_metric: list[str] = []
+        self._pre_pick_series: list[str] = []
+        # Series records seen this session — survive composition drops for remark cite.
+        self._obs_cache: dict[str, dict[str, Any]] = {}
+        # Frequency selector options derived from metric variants / series.
+        self._freq_options: list[Optional[str]] = [None]
+        self._freq_source_key: tuple[str, ...] = ()
+        # Composition key we already auto-picked a default frequency for
+        # (so choosing "Any frequency" later is not overridden).
+        self._freq_auto_key: Optional[tuple[str, ...]] = None
+        self._legend_expanded = False
+        self._remarks_collapsed = False
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="query-body"):
-            yield Label("QUERY", id="query-kicker")
-            yield Label("", id="query-title")
-            yield Static("", id="query-spec")
-            yield Static("", id="query-annotations", markup=True)
-            yield Static(
-                "Idle — press [bold]r[/bold] to run",
-                id="query-status",
-                markup=True,
-            )
-            with Vertical(id="query-summary"):
-                yield Label("", id="sum-kicker")
-                with Horizontal(id="sum-cols"):
-                    with Vertical(id="sum-left"):
-                        yield Label("", id="sum-latest-kicker")
-                        yield Label("—", id="sum-latest-value")
-                        yield Label("", id="sum-units")
-                    with Vertical(id="sum-right"):
-                        yield Label("Historical coverage", id="sum-cov-kicker")
-                        yield Label("—", id="sum-cov-value")
-                        yield Label("", id="sum-cov-meta")
-                yield Label("", id="sum-foot")
-            with Horizontal(id="query-cursor"):
-                with Vertical(id="cur-left"):
-                    yield Label("SELECTED OBSERVATION          h / l", id="cur-kicker")
-                    yield Label("", id="cur-period")
-                    yield Label("", id="cur-meta")
-                    yield Label("", id="cur-compare")
-                with Vertical(id="cur-right"):
-                    yield Label("")
-                    yield Label("—", id="cur-value")
-            with Horizontal(id="query-main"):
-                yield ListView(id="query-series")
+            yield QueryComposeHeader(id="query-compose")
+            yield Static("", id="query-status", markup=True)
+            with Horizontal(id="query-view-tabs"):
+                yield ActionButton(
+                    "Chart",
+                    action_id="mode_chart",
+                    shortcut="c",
+                    variant="tab",
+                    id="query-tab-chart",
+                )
+                yield ActionButton(
+                    "Table",
+                    action_id="mode_table",
+                    shortcut="t",
+                    variant="tab",
+                    id="query-tab-table",
+                )
+            with Vertical(id="query-main"):
                 with Vertical(id="query-pane"):
-                    yield Label("OBSERVATIONS", id="query-pane-kicker")
+                    yield Label("", id="query-chart-title")
+                    yield Label("", id="query-series-meta")
+                    yield Horizontal(id="query-legend")
+                    yield ListView(id="query-series")
                     yield Label(
-                        f"{'Period':<14}{'Value':>14}{'Released':>16}",
+                        f"{'Period':<12}{'Value':>16}  {'Release date':<22}",
                         id="query-obs-header",
                     )
                     yield ListView(id="query-obs")
                     yield HistoryPlot(id="query-chart")
-                    with VerticalScroll(id="query-raw"):
-                        yield Static("", id="query-raw-body")
+                    with Vertical(id="query-obs-strip"):
+                        with Horizontal(id="strip-controls"):
+                            yield Label("Selected dates", id="strip-dates-label")
+                            yield ActionButton(
+                                "—",
+                                action_id="bound_lo",
+                                shortcut="Tab",
+                                variant="secondary",
+                                id="bound-lo-btn",
+                            )
+                            yield Label("—", id="strip-dates-sep")
+                            yield ActionButton(
+                                "—",
+                                action_id="bound_hi",
+                                shortcut="Tab",
+                                variant="secondary",
+                                id="bound-hi-btn",
+                            )
+                            yield ActionButton(
+                                "Reset",
+                                action_id="reset_bounds",
+                                variant="secondary",
+                                id="bound-reset-btn",
+                            )
+                        yield Label("", id="strip-line1", markup=True)
+                        yield Label("", id="strip-line2", markup=True)
+                        yield Label("", id="strip-line3")
+            with Vertical(id="query-notes"):
+                with Horizontal(id="query-notes-header"):
+                    yield Label("Research remarks", id="query-notes-kicker")
+                    yield ActionButton(
+                        "▾",
+                        action_id="toggle_remarks",
+                        variant="ghost",
+                        id="query-remarks-toggle",
+                    )
+                    yield ActionButton(
+                        "+ Add remark",
+                        action_id="annotate",
+                        shortcut="R",
+                        variant="secondary",
+                        id="query-annotate",
+                    )
+                with VerticalScroll(id="query-remarks-scroll"):
+                    yield Static("", id="query-remarks-list", markup=True)
+                with Vertical(id="query-remark-draft"):
+                    with Horizontal(id="remark-name-row"):
+                        remark_name = Input(
+                            placeholder="Name (optional)", id="remark-name"
+                        )
+                        remark_name.can_focus = False
+                        yield remark_name
+                        yield Checkbox("Source", id="remark-cite", value=False)
+                    yield Label("Remark", classes="remark-field-label")
+                    remark_text = TextArea("", id="remark-text")
+                    remark_text.can_focus = False
+                    yield remark_text
+                    yield Label(
+                        "Enter to add remark",
+                        id="remark-submit-hint",
+                        markup=False,
+                    )
+                    with Horizontal(id="remark-actions"):
+                        yield ActionButton(
+                            "Save",
+                            action_id="save_remark",
+                            variant="primary",
+                            id="remark-save",
+                        )
+                        yield ActionButton(
+                            "Cancel",
+                            action_id="cancel_remark",
+                            variant="ghost",
+                            id="remark-cancel",
+                        )
 
     def on_mount(self) -> None:
         super().on_mount()
         self._render_idle()
         self._apply_mode()
+        self._paint_compose()
         self.query_one("#query-obs", ListView).focus()
+        # First-time auto-run only when the query is already executable.
+        # Prefer disk cache; explicit ``r`` / refresh banner uses network.
+        try:
+            query = self._resolve_query()
+            if self._is_executable(query) and not self._has_run_once:
+                self.call_later(lambda: self.load_query(query, refresh=False))
+        except Exception:  # noqa: BLE001
+            pass
 
     def footer_status(self) -> list[str]:
         return []
 
-    def footer_action_keys(self) -> list[str]:
-        keys = [
-            "[bold #e0e0e0]r[/] [#888]run[/]",
-            "[bold #e0e0e0]a[/] [#888]annotate[/]",
+    def bug_report_snapshot(self) -> dict[str, Any]:
+        try:
+            query = self._resolve_query()
+            query_payload = query.to_dict()
+            api = {"client.query": query.to_query_kwargs()}
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "kind": "query",
+                "error": str(exc),
+                "query_id": self.query_id,
+            }
+        series_ids = [
+            str(r.get("id") or "")
+            for r in self._records
+            if r.get("id")
         ]
-        if self._loaded:
-            keys.extend(
-                [
-                    "[bold #e0e0e0]t[/] [#888]table[/]",
-                    "[bold #e0e0e0]c[/] [#888]chart[/]",
-                    "[bold #e0e0e0]v[/] [#888]raw[/]",
-                    "[bold #e0e0e0]j[/]/[bold #e0e0e0]k[/] [#888]move[/]",
-                ]
-            )
-            if self._mode == "chart":
-                keys.extend(
-                    [
-                        "[bold #e0e0e0]h[/]/[bold #e0e0e0]l[/] [#888]obs[/]",
-                        "[bold #e0e0e0]x[/] [#888]hide[/]",
-                    ]
-                )
-                if len(self._groups) > 1:
-                    keys.append("[bold #e0e0e0]\\[\\][/] [#888]group[/]")
-            if self._mode == "table":
-                keys.append("[bold #e0e0e0]o[/] [#888]sort[/]")
-            keys.extend(
-                [
-                    "[bold #e0e0e0]e[/] [#888]csv[/]",
-                    "[bold #e0e0e0]y[/] [#888]python[/]",
-                    "[bold #e0e0e0]↵[/] [#888]inspect[/]",
-                    "[bold #e0e0e0]space[/] [#888]collect[/]",
-                ]
-            )
-        return keys
+        return {
+            "kind": "query",
+            "query_id": self.query_id,
+            "query": query_payload,
+            "api": api,
+            "loaded": self._loaded,
+            "result_series_ids": series_ids,
+            "result_series_count": len(self._records),
+        }
+
+    def bug_report_summary(self) -> str:
+        try:
+            query = self._resolve_query()
+            name = query.name or f"Q{query.id}"
+        except Exception:
+            name = f"query {self.query_id}"
+        return f"[dim]Query[/] [bold]{escape(str(name))}[/] [dim]→ client.query(…)[/]"
+
+    def footer_action_keys(self) -> list[str]:
+        # Contextual hints only — full help lives beside controls / under ?.
+        if self._mode == "chart" and self._loaded:
+            return [
+                "[bold]←→[/bold] Adjust date",
+                "[bold]Enter[/bold] Show/hide series",
+            ]
+        return []
+
+    def shell_breadcrumb(self) -> str:
+        try:
+            query = self._resolve_query()
+        except Exception:
+            return "Query"
+        tag = f"Q{query.id}" if query.id else "Query"
+        name = query.name or tag
+        mode = "Table" if self._mode == "table" else "Chart"
+        return f"{tag} · {name} · {mode}"
 
     def refresh_footer(self) -> None:
-        parts = [*self.footer_action_keys(), *self.FOOTER_CHROME]
-        self.query_one("#help-hint", Label).update("    ".join(parts))
+        parts = [
+            *self.footer_action_keys(),
+            *self.FOOTER_CHROME,
+        ]
+        try:
+            self.query_one("#help-hint", Label).update(" // ".join(parts))
+        except Exception:  # noqa: BLE001
+            pass
+        self.refresh_bug_report_chrome()
 
     def _resolve_query(self) -> Query:
         inv = getattr(self.app, "investigation", None)
@@ -899,44 +1864,594 @@ class QueryScreen(BaseScreen):
     def _render_idle(self) -> None:
         try:
             query = self._resolve_query()
-        except Exception as exc:
-            self.query_one("#query-kicker", Label).update("QUERY")
-            self.query_one("#query-title", Label).update(str(exc))
+        except Exception:
             return
-        tag = f"Q{query.id}" if query.id else "WORKSPACE"
-        title = escape(query.name) if query.name else tag
-        self.query_one("#query-kicker", Label).update(f"QUERY / {tag}")
-        self.query_one("#query-title", Label).update(title)
-        self.query_one("#query-spec", Static).update(query_spec_line(query))
         self._render_annotations(query)
-        self.query_one("#query-summary").display = False
-        self.query_one("#query-cursor").display = False
+        self.query_one("#query-obs-strip").display = False
+
+    def _humanize_series_id(self, sid: str) -> str:
+        """Best-effort entity · metric from a series id or obs cache."""
+        labels = getattr(self.app, "labels", {}) or {}
+        rec = self._obs_cache.get(sid)
+        if rec is not None:
+            entity = series_line_label(rec)
+            metric = str(rec.get("label") or "")
+            if " for " in metric:
+                metric = metric.split(" for ", 1)[0].strip()
+            elif rec.get("metric_id"):
+                mid = str(rec["metric_id"])
+                metric = label_for(labels, mid) or mid.replace("-", " ").title()
+            return " · ".join(p for p in (entity, metric) if p) or sid
+        parts = [p for p in str(sid).split(":") if p]
+        if len(parts) >= 3:
+            # edgar:CIK:metric-slug:units:freq
+            cik = parts[1]
+            metric_slug = parts[2]
+            entity = (
+                label_for(labels, f"cik:{cik}")
+                or label_for(labels, cik)
+                or ""
+            )
+            # Prefer a cached entity that matches this CIK fragment.
+            if not entity or entity == cik or entity.startswith("000"):
+                for cached in self._obs_cache.values():
+                    if sid.rsplit(":", 2)[0] in str(cached.get("id") or ""):
+                        entity = series_line_label(cached)
+                        break
+                    for ent in cached.get("entities") or []:
+                        eid = str(ent.get("id") or "")
+                        if cik in eid:
+                            entity = str(ent.get("label") or eid)
+                            break
+            metric = label_for(labels, metric_slug) or metric_slug.replace(
+                "-", " "
+            ).title()
+            if entity and not entity.startswith("000"):
+                return f"{entity} · {metric}"
+            return metric
+        return label_for(labels, sid) or sid
+
+    def _format_remark_citation(self, remark: QueryRemark) -> tuple[str, str]:
+        """Return ``(source_line, span_line)`` for display."""
+        names = [
+            self._humanize_series_id(sid) for sid in (remark.series or [])[:3]
+        ]
+        extra = "…" if len(remark.series or []) > 3 else ""
+        who = ", ".join(names) + extra if names else ""
+        span = ""
+        if remark.from_ or remark.to:
+            def _year(raw: str) -> str:
+                text = (raw or "").strip()
+                return text[:4] if len(text) >= 4 and text[:4].isdigit() else text
+
+            span = f"{_year(remark.from_ or '…')}–{_year(remark.to or '…')}"
+        source = f"Source: {who}" if who else ""
+        return source, span
 
     def _render_annotations(self, query: Query) -> None:
-        panel = self.query_one("#query-annotations", Static)
-        if query.id:
-            panel.update(annotations_panel(query.annotations))
-            panel.display = True
-        else:
+        panel = self.query_one("#query-remarks-list", Static)
+        scroll = self.query_one("#query-remarks-scroll")
+        kicker = self.query_one("#query-notes-kicker", Label)
+        toggle = self.query_one("#query-remarks-toggle", ActionButton)
+        remarks = list(query.remarks or [])
+        n = len(remarks)
+        kicker.update(f"Research remarks ({n})" if n else "Research remarks")
+        toggle.set_label("▸" if self._remarks_collapsed else "▾")
+        if self._remarks_collapsed:
+            scroll.display = False
             panel.update("")
-            panel.display = False
+            return
+        scroll.display = True
+        lines: list[str] = []
+        picking = self._remark_pick_mode
+        selected = self._selected_remark_i
+        for i, remark in enumerate(remarks, start=1):
+            selected_here = picking and selected == i
+            num = f"[bold #fbbf24]{i}[/] " if picking else ""
+            body = escape(remark.text)
+            if remark.name:
+                title = escape(remark.name)
+                if selected_here:
+                    lines.append(f"{num}[bold #0a0a0a on #86efac] {title} [/]")
+                    lines.append(f"[#bbf7d0]{body}[/]")
+                else:
+                    lines.append(f"{num}[bold]{title}[/]")
+                    lines.append(body)
+            else:
+                if selected_here:
+                    lines.append(f"{num}[#bbf7d0]{body}[/]")
+                else:
+                    lines.append(f"{num}{body}")
+            source, span = self._format_remark_citation(remark)
+            if source:
+                lines.append(f"[dim]{escape(source)}[/]")
+            if span or remark.series:
+                evidence = f"[#86efac]View evidence[/] [dim](Shift+A {i})[/]"
+                if span:
+                    lines.append(f"[dim]{escape(span)}[/]  {evidence}")
+                else:
+                    lines.append(evidence)
+            if i < n:
+                lines.append("[dim]────────────────────────────────────────[/]")
+        if not lines:
+            lines.append(
+                "[dim]No remarks yet. Press R to add one — optional name, "
+                "required text, optional source cite from the chart. "
+                "Shift+A to pick.[/]"
+            )
+        elif picking and selected is None:
+            lines.append("[dim]Press 1–9 to highlight a remark · Esc to exit[/]")
+        elif picking and selected is not None:
+            lines.append(
+                f"[dim]Remark {selected} selected · dd delete · Esc exit[/]"
+            )
+        panel.update("\n".join(lines))
 
     def refresh_annotations(self) -> None:
-        """Host hook after annotation edits."""
+        """Host hook after remark edits."""
         try:
             query = self._resolve_query()
         except Exception:
             return
         self._render_annotations(query)
 
-    def action_annotate(self) -> None:
+    def _disarm_remark_draft_focus(self) -> None:
+        """Hide remark fields from the focus chain so they don't swallow jump keys."""
+        try:
+            name_in = self.query_one("#remark-name", Input)
+            body = self.query_one("#remark-text", TextArea)
+        except Exception:  # noqa: BLE001
+            return
+        name_in.can_focus = False
+        body.can_focus = False
+        if self.focused in (name_in, body):
+            try:
+                self.query_one("#query-obs", ListView).focus()
+            except Exception:  # noqa: BLE001
+                self.set_focus(None)
+
+    def begin_add_remark(self) -> None:
+        """Open the inline remark draft (``R`` / header button)."""
         if self.query_id is None:
             self.notify(
-                "Save as a query first to attach annotations",
+                "Save as a query first to attach remarks",
                 severity="warning",
             )
             return
-        edit = getattr(self.app, "edit_query_annotations", None)
+        if self._remark_pick_mode:
+            self._exit_remark_pick(restore=True)
+        self._remark_drafting = True
+        draft = self.query_one("#query-remark-draft")
+        draft.add_class("-open")
+        # Shrink the list so the draft (incl. Enter hint) stays on screen.
+        try:
+            self.query_one("#query-remarks-scroll").styles.max_height = 5
+        except Exception:  # noqa: BLE001
+            pass
+        name_in = self.query_one("#remark-name", Input)
+        body = self.query_one("#remark-text", TextArea)
+        name_in.value = ""
+        body.load_text("")
+        name_in.can_focus = True
+        body.can_focus = True
+        try:
+            self.query_one("#remark-cite", Checkbox).value = False
+        except Exception:  # noqa: BLE001
+            pass
+        name_in.focus()
+
+    def action_annotate(self) -> None:
+        self.begin_add_remark()
+
+    def action_pick_remark(self) -> None:
+        """Shift+A — number the remarks and apply a picked cite to the chart."""
+        if self._remark_drafting:
+            return
+        try:
+            query = self._resolve_query()
+        except Exception:
+            return
+        remarks = list(query.remarks or [])
+        if not remarks:
+            self.notify("No remarks to pick — press R to add one", severity="warning")
+            return
+        if not self._remark_pick_mode:
+            self._snapshot_remark_pick(query)
+            self._remark_pick_mode = True
+            self._selected_remark_i = None
+        self._render_annotations(query)
+        self.notify("Pick remark 1–9 · Esc to exit", timeout=3)
+
+    def _snapshot_remark_pick(self, query: Query) -> None:
+        self._pre_pick_hidden = set(self._hidden)
+        self._pre_pick_lo_i = self._bound_lo_i
+        self._pre_pick_hi_i = self._bound_hi_i
+        self._pre_pick_focus = self._bound_focus
+        self._pre_pick_records = list(self._records)
+        self._pre_pick_entity = list(query.entity)
+        self._pre_pick_metric = list(query.metric)
+        self._pre_pick_series = list(query.series)
+
+    def _restore_remark_pick_baseline(self) -> None:
+        """Undo temporary cite restores without leaving pick mode."""
+        try:
+            query = self._resolve_query()
+        except Exception:
+            query = None
+        if query is not None:
+            query.entity = list(self._pre_pick_entity)
+            query.metric = list(self._pre_pick_metric)
+            query.series = list(self._pre_pick_series)
+        self._records = list(self._pre_pick_records)
+        self._groups = group_plot_records(self._records)
+        self._hidden = set(self._pre_pick_hidden)
+        self._bound_lo_i = self._pre_pick_lo_i
+        self._bound_hi_i = self._pre_pick_hi_i
+        self._bound_focus = self._pre_pick_focus
+
+    def _exit_remark_pick(self, *, restore: bool = True) -> None:
+        if not self._remark_pick_mode:
+            return
+        self._remark_pick_mode = False
+        self._selected_remark_i = None
+        if restore:
+            self._restore_remark_pick_baseline()
+            self._fill_nav()
+            self._show_selected()
+            refresh = getattr(self.app, "refresh_shell_chrome", None)
+            if callable(refresh):
+                refresh()
+        try:
+            query = self._resolve_query()
+        except Exception:
+            return
+        self._render_annotations(query)
+
+    def _select_remark(self, index: int) -> None:
+        try:
+            query = self._resolve_query()
+        except Exception:
+            return
+        remarks = list(query.remarks or [])
+        if index < 1 or index > len(remarks):
+            self.notify(f"No remark {index}", severity="warning")
+            return
+        # Each pick starts from the pre-mode composition / records.
+        self._restore_remark_pick_baseline()
+        self._selected_remark_i = index
+        self._apply_remark_cite(remarks[index - 1])
+        try:
+            query = self._resolve_query()
+        except Exception:
+            return
+        self._render_annotations(query)
+
+    def _entity_ids_from_record(self, rec: dict[str, Any]) -> list[str]:
+        out: list[str] = []
+        for ent in rec.get("entities") or []:
+            if isinstance(ent, dict):
+                eid = str(ent.get("id") or "").strip()
+            else:
+                eid = str(getattr(ent, "id", "") or "").strip()
+            if eid and eid not in out:
+                out.append(eid)
+        return out
+
+    def _fetch_cited_series_record(self, series_id: str) -> Optional[dict[str, Any]]:
+        """Load one series record, preferring session / disk cache."""
+        cached = self._obs_cache.get(series_id)
+        if cached is not None:
+            return cached
+        client = getattr(self.app, "client", None) or self.client
+        if client is None:
+            return None
+        try:
+            query = self._resolve_query()
+        except Exception:
+            query = None
+        # Prefer /query (disk-cached) when the open query has a window size.
+        try:
+            kwargs: dict[str, Any] = {"series": [series_id]}
+            if query is not None:
+                if query.head is not None:
+                    kwargs["head"] = query.head
+                elif query.tail is not None:
+                    kwargs["tail"] = query.tail
+                else:
+                    # Full cite windows need history; use a wide tail.
+                    kwargs["tail"] = 500
+                if query.frequency and query.frequency != "?":
+                    kwargs["frequency"] = query.frequency
+            results = client.query(**kwargs)
+            if results:
+                rec = series_to_record(results[0])
+                self._obs_cache[series_id] = rec
+                return rec
+        except Exception:  # noqa: BLE001
+            pass
+        # Fall back to series metadata + observations endpoints (also cached).
+        try:
+            meta = client.get_series(series_id)
+            start = None
+            end = None
+            obs = client.get_series_observations(
+                series_id, start_date=start, end_date=end
+            )
+            ts = TimeSeries(series=meta, observations=list(obs))
+            rec = series_to_record(ts)
+            self._obs_cache[series_id] = rec
+            return rec
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _ensure_cited_series(
+        self, keep: set[str]
+    ) -> tuple[set[str], list[str]]:
+        """Restore missing cited series into ``_records`` and query entities.
+
+        Returns ``(present_ids, restored_entity_ids)``. Temporary — undone on
+        pick exit / next pick baseline restore.
+        """
+        present = {
+            str(rec.get("id") or "").strip()
+            for rec in self._records
+            if rec.get("id")
+        }
+        restored_entities: list[str] = []
+        missing = [sid for sid in keep if sid not in present]
+        if not missing:
+            return present, restored_entities
+        try:
+            query = self._resolve_query()
+        except Exception:
+            query = None
+        added = False
+        for sid in missing:
+            rec = self._fetch_cited_series_record(sid)
+            if rec is None:
+                continue
+            self._records.append(rec)
+            present.add(sid)
+            added = True
+            if query is None:
+                continue
+            for eid in self._entity_ids_from_record(rec):
+                if eid not in query.entity:
+                    query.entity = list(query.entity) + [eid]
+                    restored_entities.append(eid)
+                    remember = getattr(self.app, "remember_label", None)
+                    if callable(remember):
+                        for ent in rec.get("entities") or []:
+                            if isinstance(ent, dict) and str(ent.get("id")) == eid:
+                                lab = ent.get("label")
+                                if lab:
+                                    remember(eid, str(lab))
+                    labels = getattr(self.app, "labels", None)
+                    if isinstance(labels, dict) and eid not in labels:
+                        for ent in rec.get("entities") or []:
+                            if isinstance(ent, dict) and str(ent.get("id")) == eid:
+                                lab = ent.get("label")
+                                if lab:
+                                    labels[eid] = str(lab)
+            mid = str(rec.get("metric_id") or "").strip()
+            if mid and mid not in query.metric:
+                query.metric = list(query.metric) + [mid]
+        if added:
+            self._groups = group_plot_records(self._records)
+            refresh = getattr(self.app, "refresh_shell_chrome", None)
+            if callable(refresh):
+                refresh()
+        return present, restored_entities
+
+    def _apply_remark_cite(self, remark: QueryRemark) -> None:
+        """Filter chart series / date bounds from a remark's cross-section cite.
+
+        Temporarily rehydrates cited series (and their entities) that were
+        dropped from the active composition, preferring session/disk cache.
+        """
+        restored: list[str] = []
+        if remark.series:
+            keep = {str(s).strip() for s in remark.series if str(s).strip()}
+            present, restored = self._ensure_cited_series(keep)
+            if keep & present:
+                self._hidden = {
+                    sid
+                    for sid in {
+                        str(rec.get("id") or "").strip()
+                        for rec in self._records
+                        if rec.get("id")
+                    }
+                    if sid not in keep
+                }
+            else:
+                self.notify(
+                    "Cited series unavailable — could not restore",
+                    severity="warning",
+                    timeout=3,
+                )
+                self._hidden = set()
+        else:
+            self._hidden = set()
+        self._fill_nav()
+        self._reset_bounds()
+        dates = self._all_cursor_dates()
+        if dates and (remark.from_ or remark.to):
+            lo_day = _parse_stamp(remark.from_)
+            hi_day = _parse_stamp(remark.to)
+
+            def _as_date(value: Optional[datetime]):
+                if value is None:
+                    return None
+                return value.date() if hasattr(value, "date") else value
+
+            lo_target = _as_date(lo_day)
+            hi_target = _as_date(hi_day)
+            if lo_target is not None:
+                self._bound_lo_i = 0
+                for i, day in enumerate(dates):
+                    if _as_date(day) >= lo_target:
+                        self._bound_lo_i = i
+                        break
+                else:
+                    self._bound_lo_i = len(dates) - 1
+            if hi_target is not None:
+                self._bound_hi_i = len(dates) - 1
+                for i, day in enumerate(dates):
+                    if _as_date(day) <= hi_target:
+                        self._bound_hi_i = i
+            self._clamp_bounds()
+            self._cursor_i = (
+                self._bound_lo_i if self._bound_focus == "lo" else self._bound_hi_i
+            )
+        self._show_selected()
+        bits: list[str] = []
+        if remark.series:
+            bits.append(f"{len(remark.series)} series")
+        if restored:
+            bits.append(f"restored {len(restored)} entit{'y' if len(restored) == 1 else 'ies'}")
+        if remark.from_ or remark.to:
+            bits.append(f"{remark.from_ or '…'}–{remark.to or '…'}")
+        if bits:
+            self.notify("Applied cite · " + " · ".join(bits), timeout=3)
+        else:
+            self.notify("Remark has no cite — chart unchanged", timeout=2)
+
+    def action_cancel_remark(self) -> None:
+        if self._remark_pick_mode:
+            self._exit_remark_pick(restore=True)
+            self.notify("Remark pick cancelled", timeout=1)
+            return
+        if self._remark_drafting:
+            self._remark_drafting = False
+            self.query_one("#query-remark-draft").remove_class("-open")
+            self._disarm_remark_draft_focus()
+            try:
+                self.query_one("#query-remarks-scroll").styles.max_height = 14
+            except Exception:  # noqa: BLE001
+                pass
+            self.notify("Remark cancelled", timeout=1)
+            return
+        # Esc still backs out of the shell when not drafting a remark.
+        self.action_shell_escape()
+
+    def _op_target(self) -> dict:
+        """Project / investigation / app_dir kwargs for logged query ops."""
+        active = getattr(self.app, "active", None)
+        return {
+            "project": getattr(self.app, "project_id", None),
+            "investigation": (
+                getattr(active, "investigation", None) if active else None
+            ),
+            "app_dir": getattr(self.app, "app_dir", None),
+        }
+
+    def _resync_after_op(self) -> None:
+        resync = getattr(self.app, "resync_from_disk", None)
+        if callable(resync):
+            resync()
+
+    def action_save_remark(self) -> None:
+        if not self._remark_drafting or self.query_id is None:
+            return
+        name = self.query_one("#remark-name", Input).value.strip() or None
+        text = self.query_one("#remark-text", TextArea).text.strip()
+        if not text:
+            self.notify("Remark text is required", severity="warning")
+            return
+        cite = False
+        try:
+            cite = bool(self.query_one("#remark-cite", Checkbox).value)
+        except Exception:  # noqa: BLE001
+            pass
+        series: list[str] = []
+        date_from: Optional[str] = None
+        date_to: Optional[str] = None
+        if cite:
+            for rec in self._visible_records():
+                sid = str(rec.get("id") or "").strip()
+                if sid and sid not in series:
+                    series.append(sid)
+            lo = self._bound_lo_day()
+            hi = self._bound_hi_day()
+            date_from = lo.strftime("%Y-%m-%d") if lo else None
+            date_to = hi.strftime("%Y-%m-%d") if hi else None
+        try:
+            from ..ops.query_ops import remark_add_op
+
+            remark_add_op(
+                int(self.query_id),
+                text,
+                name=name,
+                series=series or None,
+                date_from=date_from,
+                date_to=date_to,
+                **self._op_target(),
+            )
+            self._resync_after_op()
+        except Exception as exc:  # noqa: BLE001
+            self.notify(str(exc), severity="error")
+            return
+        try:
+            query = self._resolve_query()
+            self._render_annotations(query)
+        except Exception:  # noqa: BLE001
+            pass
+        refresh = getattr(self.app, "refresh_shell_chrome", None)
+        if callable(refresh):
+            refresh()
+        self._remark_drafting = False
+        self.query_one("#query-remark-draft").remove_class("-open")
+        self._disarm_remark_draft_focus()
+        try:
+            self.query_one("#query-remarks-scroll").styles.max_height = 14
+        except Exception:  # noqa: BLE001
+            pass
+        self.notify("Remark saved")
+
+    def delete_selected_remark(self) -> bool:
+        """Delete the highlighted remark (``dd``). Returns True if handled."""
+        index = self._selected_remark_i
+        if index is None:
+            return False
+        self.action_delete_remark(int(index))
+        return True
+
+    def action_delete_remark(self, index: int) -> None:
+        """Delete remark at 1-based index."""
+        if self.query_id is None:
+            return
+        try:
+            from ..ops.query_ops import remark_remove_op
+
+            remark_remove_op(
+                int(self.query_id),
+                int(index),
+                **self._op_target(),
+            )
+            self._resync_after_op()
+        except Exception as exc:  # noqa: BLE001
+            self.notify(str(exc), severity="error")
+            return
+        # Selection / pick mode pointed at a now-stale index — clear cite highlight.
+        if self._remark_pick_mode or self._selected_remark_i is not None:
+            self._exit_remark_pick(restore=True)
+        try:
+            self._render_annotations(self._resolve_query())
+        except Exception:  # noqa: BLE001
+            pass
+        refresh = getattr(self.app, "refresh_shell_chrome", None)
+        if callable(refresh):
+            refresh()
+        self.notify(f"Deleted remark {index}")
+
+    def action_rename_query(self) -> None:
+        if self.query_id is None:
+            self.notify(
+                "Save as a query first to rename it",
+                severity="warning",
+            )
+            return
+        edit = getattr(self.app, "edit_query_name", None)
         if callable(edit):
             edit(self.query_id)
 
@@ -949,68 +2464,158 @@ class QueryScreen(BaseScreen):
                 flags.add("chart")
         return flags
 
+    def _is_executable(self, query: Query) -> bool:
+        return bool(query.series) or (bool(query.metric) and bool(query.entity))
+
     def action_load(self) -> None:
         try:
             query = self._resolve_query()
         except Exception as exc:
             self.notify(str(exc), severity="error")
             return
-        if query.is_empty():
+        if not self._is_executable(query):
             self.notify(
-                "Query is empty — Search / Collect into the workspace first",
+                "Add a metric and entity (or a series) to run this query",
                 severity="warning",
             )
             return
-        self.load_query(query)
+        self._needs_refresh = False
+        # Explicit refresh / ``r`` bypasses disk cache then rewrites it.
+        self.load_query(query, refresh=True)
 
     @work(exclusive=True, group="query-view")
-    async def load_query(self, query: Query) -> None:
+    async def load_query(self, query: Query, *, refresh: bool = False) -> None:
         status = self.query_one("#query-status", Static)
         self._busy = True
+        self._run_token += 1
+        token = self._run_token
+        status.display = True
         status.update("Running /query…")
         try:
-            results = await asyncio.to_thread(query.execute, self.client)
+            results = await asyncio.to_thread(
+                query.execute, self.client, refresh=refresh
+            )
         except Exception as exc:
+            if token != self._run_token:
+                return
             self._busy = False
             status.update(f"Query failed: {exc}")
             self.notify(str(exc), severity="error")
+            self._paint_compose()
+            return
+        if token != self._run_token:
             return
         self._busy = False
         self._records = [series_to_record(ts) for ts in results]
+        for rec in self._records:
+            sid = str(rec.get("id") or "").strip()
+            if sid:
+                self._obs_cache[sid] = rec
         self._groups = group_plot_records(self._records)
         self._loaded = True
+        self._has_run_once = True
+        self._needs_refresh = False
         self._series_i = 0
         self._group_i = 0
         self._hidden.clear()
         self._cursor_i = -1
-        self._mode = "chart" if len(self._groups) <= 1 else "table"
+        self._reset_bounds()
+        self._mode = "chart"
+        # First successful plot auto-promotes into the report set.
+        if not query.in_report and self.query_id is not None:
+            from ..ops.curation import promote_query
+            from ..ops.query_ops import patch_query_op
+
+            if not query.name:
+                from ..investigation.naming import suggest_query_name
+
+                labels = getattr(self.app, "labels", {}) or {}
+                suggested = suggest_query_name(
+                    query.metric, query.entity, labels=labels
+                )
+                if suggested:
+                    try:
+                        patch_query_op(
+                            int(self.query_id),
+                            name=suggested,
+                            **self._op_target(),
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+            try:
+                promote_query(int(self.query_id), **self._op_target())
+                self._resync_after_op()
+            except Exception as exc:  # noqa: BLE001
+                self.notify(str(exc), severity="error")
+            # Mint a fresh empty draft slot after auto-promote.
+            ensure = getattr(self.app, "ensure_draft_query", None)
+            if callable(ensure):
+                try:
+                    ensure(reset=True)
+                except Exception:  # noqa: BLE001
+                    pass
+            refresh = getattr(self.app, "refresh_shell_chrome", None)
+            if callable(refresh):
+                refresh()
         line = coverage_status(query, self._records)
-        status.update(line)
+        # Coverage lives once in the compose header; status is run/error only.
+        status.update("")
+        status.display = False
         if not self._records:
             self.notify("No series returned", severity="warning")
         elif "missing" in line:
             self.notify(line, severity="warning")
         self._fill_nav()
         self._show_selected()
+        self._paint_compose(coverage=line)
         self.refresh_footer()
 
     def _fill_nav(self) -> None:
         nav = self.query_one("#query-series", ListView)
+        legend = self.query_one("#query-legend", Horizontal)
+        meta = self.query_one("#query-series-meta", Label)
         nav.clear()
+        # Clear legend chips synchronously via remove_children worker-safe call.
+        for child in list(legend.children):
+            child.remove()
         group = self._selected_group()
         if self._mode == "chart" and group is not None:
             show = len(group.records) > 1
-            nav.display = show
+            nav.display = False
+            visible_n = sum(
+                1
+                for r in group.records
+                if str(r.get("id") or "") not in self._hidden
+            )
+            total = len(group.records)
+            collapse = total > 6 and not self._legend_expanded
+            meta.display = show and (collapse or total > 1)
+            if show:
+                meta.update(f"Series: {visible_n} of {total} visible")
+            else:
+                meta.update("")
+            legend.display = show and not collapse
             if not show:
                 return
-            for record in group.records:
+            if collapse:
+                return
+            chips: list[LegendChip] = []
+            for i, record in enumerate(group.records):
                 hidden = str(record.get("id") or "") in self._hidden
-                nav.append(LegendRow(record, hidden=hidden))
-            ids = [str(r.get("id") or "") for r in group.records]
-            current = self._selected_record()
-            cid = str(current.get("id") or "") if current else ""
-            nav.index = ids.index(cid) if cid in ids else 0
+                color = CHART_PALETTE[i % len(CHART_PALETTE)]
+                chips.append(LegendChip(record, hidden=hidden, color=color))
+            if chips:
+                legend.mount(*chips)
+                current = self._selected_record()
+                cid = str(current.get("id") or "") if current else ""
+                for chip in chips:
+                    if str(chip.record.get("id") or "") == cid:
+                        chip.focus()
+                        break
             return
+        legend.display = False
+        meta.display = False
+        meta.update("")
         show = len(self._records) > 1
         nav.display = show
         if not show:
@@ -1040,22 +2645,54 @@ class QueryScreen(BaseScreen):
             if str(rec.get("id") or "") not in self._hidden
         ]
 
-    def _cursor_day(self) -> Optional[datetime]:
-        dates = cursor_dates(self._visible_records())
+    def _all_cursor_dates(self) -> list[datetime]:
+        return cursor_dates(self._visible_records())
+
+    def _clamp_bounds(self) -> None:
+        dates = self._all_cursor_dates()
+        if not dates:
+            # Keep prior indices so re-showing a series restores the window.
+            return
+        n = len(dates)
+        self._bound_lo_i = max(0, min(self._bound_lo_i, n - 1))
+        self._bound_hi_i = max(0, min(self._bound_hi_i, n - 1))
+        if self._bound_lo_i > self._bound_hi_i:
+            self._bound_lo_i, self._bound_hi_i = self._bound_hi_i, self._bound_lo_i
+
+    def _reset_bounds(self) -> None:
+        dates = self._all_cursor_dates()
+        self._bound_lo_i = 0
+        self._bound_hi_i = max(0, len(dates) - 1)
+        self._bound_focus = "hi"
+        self._cursor_i = self._bound_hi_i
+
+    def _bound_lo_day(self) -> Optional[datetime]:
+        dates = self._all_cursor_dates()
         if not dates:
             return None
-        if self._cursor_i < 0 or self._cursor_i >= len(dates):
-            self._cursor_i = len(dates) - 1
-        return dates[self._cursor_i]
+        self._clamp_bounds()
+        return dates[self._bound_lo_i]
+
+    def _bound_hi_day(self) -> Optional[datetime]:
+        dates = self._all_cursor_dates()
+        if not dates:
+            return None
+        self._clamp_bounds()
+        return dates[self._bound_hi_i]
+
+    def _cursor_day(self) -> Optional[datetime]:
+        """Active bound date (the one Tab-focus moves with h/l)."""
+        if self._bound_focus == "lo":
+            return self._bound_lo_day()
+        return self._bound_hi_day()
 
     def _show_selected(self) -> None:
         record = self._selected_record()
         if record is None:
-            self.query_one("#query-summary").display = False
-            self.query_one("#query-cursor").display = False
+            self.query_one("#query-obs-strip").display = False
             self.query_one("#query-obs", ListView).clear()
             self.query_one("#query-chart", HistoryPlot).plot_records(None)
-            self.query_one("#query-raw-body", Static).update("{}")
+            self._paint_chart_title()
             self._apply_mode()
             return
         obs_list = self.query_one("#query-obs", ListView)
@@ -1068,68 +2705,59 @@ class QueryScreen(BaseScreen):
         )
         for obs in rows:
             obs_list.append(ObservationRow(record, obs))
-        self.query_one("#query-raw-body", Static).update(
-            json.dumps(record, indent=2, default=str)
-        )
-        self._render_summary()
         self._render_chart()
-        self._render_cursor()
+        self._render_obs_strip()
         self._apply_mode()
 
-    def _render_summary(self) -> None:
-        record = self._selected_record()
+    def _chart_title_text(self) -> str:
+        """Metric name for the chart headline (current plot group)."""
         group = self._selected_group()
-        panel = self.query_one("#query-summary")
-        if record is None:
-            panel.display = False
-            return
-        panel.display = True
-        title = record_title(record)
-        if self._mode == "chart" and group is not None and len(group.records) > 1:
-            title = plot_group_title(group)
-        self.query_one("#query-title", Label).update(title)
-        self.query_one("#sum-kicker", Label).update(title.upper())
-        last = record.get("last") or {}
-        freq = record.get("frequency") or ""
-        units = record.get("units") or ""
-        period = format_period(last.get("observation_timestamp"), freq)
-        self.query_one("#sum-latest-kicker", Label).update(
-            f"Latest · {period}" if period != "—" else "Latest"
+        if group is not None:
+            return plot_group_title(group)
+        try:
+            query = self._resolve_query()
+        except Exception:
+            return ""
+        labels = getattr(self.app, "labels", {}) or {}
+        if query.metric:
+            mid = query.metric[0]
+            return label_for(labels, mid) or mid
+        if self._records:
+            rec = self._records[0]
+            label = str(rec.get("label") or "")
+            if " for " in label:
+                return label.split(" for ", 1)[0].strip()
+            if rec.get("metric_id"):
+                return str(rec["metric_id"]).replace("-", " ").title()
+            return label
+        return ""
+
+    def _paint_chart_title(self) -> None:
+        title = self._chart_title_text()
+        label = self.query_one("#query-chart-title", Label)
+        # Hide when the chart title just repeats the query name.
+        try:
+            query = self._resolve_query()
+            qname = (query.name or "").strip()
+        except Exception:
+            qname = ""
+        redundant = bool(
+            title and qname and title.casefold() == qname.casefold()
         )
-        self.query_one("#sum-latest-value", Label).update(
-            format_value(last.get("value"))
-        )
-        bits = [p for p in (units, freq) if p]
-        self.query_one("#sum-units", Label).update(" · ".join(bits))
-        span_records = (
-            list(group.records)
-            if self._mode == "chart" and group is not None
-            else [record]
-        )
-        n = sum(int(r.get("n_observations") or 0) for r in span_records)
-        self.query_one("#sum-cov-value", Label).update(coverage_years(span_records))
-        self.query_one("#sum-cov-meta", Label).update(
-            f"{n} observation" + ("" if n == 1 else "s")
-        )
-        released = format_release(last.get("release_timestamp"), short=True)
-        sources = []
-        for rec in span_records:
-            src = str(rec.get("source") or "").strip()
-            if src and src not in sources:
-                sources.append(src)
-        source = sources[0] if len(sources) == 1 else " · ".join(sources[:2])
-        foot = []
-        if released != "—":
-            foot.append(f"Latest released {released}")
-        if source:
-            foot.append(f"Source: {source}")
-        if self._mode == "chart" and group is not None and len(self._groups) > 1:
-            foot.append(
-                f"Other units not overlaid ({len(self._groups) - 1} group"
-                + ("s" if len(self._groups) > 2 else "")
-                + ")"
-            )
-        self.query_one("#sum-foot", Label).update(" · ".join(foot))
+        units = ""
+        group = self._selected_group()
+        if group is not None and group.units:
+            units = group.units
+        elif self._visible_records():
+            units = str(self._visible_records()[0].get("units") or "")
+        _, currency = unit_scale(units)
+        unit_bit = "USD" if currency and unit_scale(units)[0] != 1.0 else units
+        if title and unit_bit and not redundant:
+            display = f"{title}  ·  {unit_bit}"
+        else:
+            display = "" if redundant else title
+        label.update(display)
+        label.set_class(not bool(display), "-empty")
 
     def _render_chart(self) -> None:
         visible = self._visible_records()
@@ -1141,87 +2769,134 @@ class QueryScreen(BaseScreen):
                 for rec in visible
                 if rec in group.records
             ]
-        self.query_one("#query-chart", HistoryPlot).plot_records(
-            visible, cursor_date=self._cursor_day(), colors=colors
+        self._paint_chart_title()
+        self._clamp_bounds()
+        dates = self._all_cursor_dates()
+        chart = self.query_one("#query-chart", HistoryPlot)
+        chart.set_drag_context(
+            n_dates=len(dates),
+            bound_lo_i=self._bound_lo_i,
+            bound_hi_i=self._bound_hi_i,
+            bound_focus=self._bound_focus,
+        )
+        chart.plot_records(
+            visible,
+            cursor_date=self._cursor_day(),
+            bound_lo=self._bound_lo_day(),
+            bound_hi=self._bound_hi_day(),
+            colors=colors,
         )
 
-    def _render_cursor(self) -> None:
-        strip = self.query_one("#query-cursor")
-        if self._mode != "chart" or not self._visible_records():
+    def _paint_bound_buttons(self) -> None:
+        try:
+            lo = self.query_one("#bound-lo-btn", ActionButton)
+            hi = self.query_one("#bound-hi-btn", ActionButton)
+        except Exception:  # noqa: BLE001
+            return
+        record = self._selected_record()
+        freq = (record or {}).get("frequency") if record else None
+        lo_day = self._bound_lo_day()
+        hi_day = self._bound_hi_day()
+        lo.set_label(format_period(lo_day, freq) if lo_day else "—")
+        hi.set_label(format_period(hi_day, freq) if hi_day else "—")
+        lo.set_class(self._bound_focus == "lo", "-active")
+        hi.set_class(self._bound_focus == "hi", "-active")
+
+    def _render_obs_strip(self) -> None:
+        strip = self.query_one("#query-obs-strip")
+        if self._mode != "chart" or not self._records:
             strip.display = False
             return
+        if not self._visible_records():
+            strip.display = True
+            self._paint_bound_buttons()
+            self.query_one("#strip-line1", Label).update(
+                "All series hidden"
+            )
+            self.query_one("#strip-line2", Label).update(
+                "Enter on a series chip to show it again"
+            )
+            self.query_one("#strip-line3", Label).update("")
+            return
         strip.display = True
+        self._paint_bound_buttons()
         day = self._cursor_day()
         record = self._selected_record()
         freq = (record or {}).get("frequency") if record else None
+        units = (record or {}).get("units") if record else None
         if day is None:
-            self.query_one("#cur-period", Label).update("No observations")
-            self.query_one("#cur-value", Label).update("—")
-            self.query_one("#cur-meta", Label).update("")
-            self.query_one("#cur-compare", Label).update("")
+            self.query_one("#strip-line1", Label).update("No observations")
+            self.query_one("#strip-line2", Label).update("")
+            self.query_one("#strip-line3", Label).update("")
             return
-        self.query_one("#cur-period", Label).update(format_period(day, freq))
-        primary = None
-        if record is not None:
-            primary = observation_on_date(record, day)
-        self.query_one("#cur-value", Label).update(
-            format_value(primary.get("value") if primary else None)
+        primary = (
+            observation_on_date(record, day) if record is not None else None
         )
-        self.query_one("#cur-meta", Label).update(
-            f"Observed {format_release(day)}"
-            + (
-                f"  ·  Released {format_release(primary.get('release_timestamp'))}"
-                if primary
-                else "  ·  missing for selected series"
-            )
+        exact = format_exact(
+            primary.get("value") if primary else None, units=units
         )
-        bits = []
-        for rec in self._visible_records():
-            obs = observation_on_date(rec, day)
-            bits.append(
-                f"{series_line_label(rec)} {format_value(obs.get('value') if obs else None)}"
+        entity = series_line_label(record) if record else "—"
+        period = format_period(day, freq)
+        # Elevated observation inspector: identity on line 1, fact on line 2.
+        self.query_one("#strip-line1", Label).update(
+            f"{escape(entity)} · {escape(period)}"
+        )
+        reported = ""
+        if primary:
+            reported = format_release(
+                primary.get("release_timestamp"), human=True
             )
-        self.query_one("#cur-compare", Label).update("  ·  ".join(bits))
+        if reported and reported != "—":
+            self.query_one("#strip-line2", Label).update(
+                f"[bold]{escape(exact)}[/]     [dim]Reported {escape(reported)}[/]"
+            )
+        else:
+            self.query_one("#strip-line2", Label).update(
+                f"[bold]{escape(exact)}[/]"
+            )
+        focus = "start date" if self._bound_focus == "lo" else "end date"
+        self.query_one("#strip-line3", Label).update(
+            f"Tab focuses {focus} · ←→ adjust date"
+        )
+
+    def _paint_view_tabs(self) -> None:
+        for key in ("chart", "table"):
+            btn = self.query_one(f"#query-tab-{key}", ActionButton)
+            btn.set_class(key == self._mode, "-active")
 
     def _apply_mode(self) -> None:
+        if self._mode not in MODES:
+            self._mode = "chart"
         table = self._mode == "table"
         chart = self._mode == "chart"
-        raw = self._mode == "raw"
         self.query_one("#query-obs-header").display = table
         self.query_one("#query-obs").display = table
         self.query_one("#query-chart").display = chart
-        self.query_one("#query-raw").display = raw
-        self.query_one("#query-cursor").display = (
+        self.query_one("#query-obs-strip").display = (
             chart and self._loaded and bool(self._visible_records())
         )
         order = "latest first" if self._newest_first else "oldest first"
         self.query_one("#query-obs-header", Label).update(
-            f"{'Period':<14}{'Value':>14}{'Released':>16}     {order}"
+            f"{'Period':<12}{'Value':>16}  {'Release date':<22}  {order}"
         )
-        if chart:
-            group = self._selected_group()
-            kicker = "CHART"
-            if group is not None:
-                extra = plot_group_label(group)
-                n = len(self._visible_records())
-                hidden = len(group.records) - n
-                if n > 1:
-                    extra += f"  ·  {n} series"
-                if hidden > 0:
-                    extra += f"  ·  {hidden} hidden"
-                kicker = f"CHART     {extra}"
-        else:
-            kicker = {
-                "table": f"OBSERVATIONS     {order}",
-                "raw": "RAW JSON",
-            }[self._mode]
-        self.query_one("#query-pane-kicker", Label).update(kicker)
+        self._paint_view_tabs()
+        self._paint_chart_title()
         if table:
             self.query_one("#query-obs", ListView).focus()
-        elif chart and self.query_one("#query-series").display:
-            self.query_one("#query-series", ListView).focus()
-        elif len(self._records) > 1:
-            self.query_one("#query-series", ListView).focus()
+        elif chart:
+            chips = self._legend_chips()
+            if chips:
+                chips[min(self._series_i, len(chips) - 1) % len(chips)].focus()
+            elif self.query_one("#query-series").display:
+                self.query_one("#query-series", ListView).focus()
+        self._paint_compose()
+        try:
+            refresh = getattr(self.app, "refresh_shell_chrome", None)
+            if callable(refresh):
+                refresh(self)
+        except Exception:  # noqa: BLE001
+            pass
+        self.refresh_footer()
 
     def action_mode_table(self) -> None:
         self._mode = "table"
@@ -1233,30 +2908,517 @@ class QueryScreen(BaseScreen):
         self._fill_nav()
         self._show_selected()
 
+    def action_mode_sources(self) -> None:
+        # Sources view retired — keep alias for older callers.
+        self.action_mode_table()
+
     def action_mode_raw(self) -> None:
-        self._mode = "raw"
-        self._fill_nav()
-        self._show_selected()
+        self.action_mode_table()
+
+    def action_mode_definition(self) -> None:
+        self.action_mode_table()
+
+    def _obs_mode_for(self, query: Query) -> str:
+        if query.tail is not None:
+            return "most_recent"
+        if query.head is not None:
+            return "earliest"
+        return "all"
+
+    def _freq_source_key_for(self, query: Query) -> tuple[str, ...]:
+        return (
+            *(f"m:{m}" for m in query.metric),
+            *(f"s:{s}" for s in query.series),
+        )
+
+    def _sync_frequency_options(self, query: Query) -> None:
+        """Refresh frequency tokens from metric variants / direct series."""
+        key = self._freq_source_key_for(query)
+        if key == self._freq_source_key:
+            return
+        self._freq_source_key = key
+        if not key:
+            self._freq_options = [None]
+            self._freq_auto_key = None
+            return
+        self.refresh_frequency_options(list(query.metric), list(query.series))
+
+    @work(exclusive=True, group="query-freq-options")
+    async def refresh_frequency_options(
+        self, metric_ids: list[str], series_ids: list[str]
+    ) -> None:
+        def _collect() -> set[str]:
+            found: set[str] = set()
+            for mid in metric_ids:
+                try:
+                    metric = self.client.get_metric(mid)
+                    for variant in getattr(metric, "variants", None) or []:
+                        found.add(
+                            normalize_variant_frequency(
+                                getattr(variant, "frequency", None)
+                            )
+                        )
+                except Exception:  # noqa: BLE001
+                    continue
+            for sid in series_ids:
+                try:
+                    series = self.client.get_series(sid)
+                    found.add(
+                        normalize_variant_frequency(
+                            getattr(series, "frequency", None)
+                        )
+                    )
+                except Exception:  # noqa: BLE001
+                    continue
+            return found
+
+        available = await asyncio.to_thread(_collect)
+        # Drop result if composition moved on while we were fetching.
+        try:
+            query = self._resolve_query()
+        except Exception:  # noqa: BLE001
+            return
+        if self._freq_source_key_for(query) != self._freq_source_key:
+            return
+        self._freq_options = frequency_options_for(available)
+        # Prefer the first real frequency over "Any" when unset for this composition.
+        preferred = default_frequency(self._freq_options)
+        if (
+            preferred is not None
+            and query.frequency is None
+            and self._freq_auto_key != self._freq_source_key
+        ):
+            self._freq_auto_key = self._freq_source_key
+            self._apply_default_frequency(preferred)
+            return
+        # Re-paint so the EnumSelect picks up the new option list.
+        self._paint_compose()
+
+    def _apply_default_frequency(self, frequency: str) -> None:
+        """Persist the first concrete frequency as the query default."""
+        if self.query_id is None:
+            try:
+                self._resolve_query().frequency = frequency
+            except Exception:  # noqa: BLE001
+                pass
+            self._paint_compose()
+            return
+        from ..ops.query_ops import patch_query_op
+
+        try:
+            patch_query_op(
+                int(self.query_id),
+                frequency=frequency,
+                **self._op_target(),
+            )
+            self._resync_after_op()
+        except Exception as exc:  # noqa: BLE001
+            self.notify(str(exc), severity="error")
+            self._paint_compose()
+            return
+        self._mark_composition_changed()
+        self._paint_compose()
+
+    def _sync_query_name(self, query: Query) -> None:
+        """Refresh auto-generated titles so they match live composition."""
+        from ..investigation.naming import sync_auto_query_name
+
+        labels = getattr(self.app, "labels", {}) or {}
+        updated = sync_auto_query_name(
+            query.name, query.metric, query.entity, labels=labels
+        )
+        if updated != (query.name or ""):
+            query.name = updated
+
+    def _paint_compose(self, *, coverage: str = "") -> None:
+        try:
+            query = self._resolve_query()
+        except Exception:
+            return
+        self._sync_frequency_options(query)
+        labels = getattr(self.app, "labels", {}) or {}
+        from ..investigation.naming import composition_subtitle
+
+        badge = "✓ Saved" if query.in_report else "Draft"
+        if self._needs_refresh:
+            badge = f"{badge} · pending refresh"
+        if self._busy:
+            badge = f"{badge} · running…"
+        header = self.query_one("#query-compose", QueryComposeHeader)
+        cov = coverage
+        if not cov and self._records:
+            cov = coverage_status(query, self._records)
+        header.paint(
+            title=query.name or f"Query {query.id}",
+            badge=badge,
+            entities=[(e, label_for(labels, e)) for e in query.entity],
+            metrics=[(m, label_for(labels, m)) for m in query.metric],
+            series=[(s, label_for(labels, s)) for s in query.series],
+            frequency=query.frequency,
+            obs_mode=self._obs_mode_for(query),
+            mode=self._mode,
+            needs_refresh=self._needs_refresh,
+            coverage=cov,
+            subtitle=composition_subtitle(
+                query.metric, query.entity, query.series
+            ),
+            available_frequencies=self._freq_options,
+        )
+
+    def _sync_auto_name_via_op(self) -> None:
+        """If auto-title should change, log a ``query.patch`` for the new name."""
+        if self.query_id is None:
+            return
+        try:
+            query = self._resolve_query()
+        except Exception:
+            return
+        before = query.name
+        self._sync_query_name(query)
+        if query.name == before:
+            return
+        from ..ops.query_ops import patch_query_op
+
+        try:
+            patch_query_op(
+                int(self.query_id),
+                name=query.name,
+                **self._op_target(),
+            )
+            self._resync_after_op()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _mark_composition_changed(self) -> None:
+        """After the first plot, further edits require an explicit refresh.
+
+        Composition mutations should already be logged via ``query.patch``;
+        this only refreshes chrome / chart state (and auto-title if needed).
+        """
+        self._sync_auto_name_via_op()
+        refresh = getattr(self.app, "refresh_shell_chrome", None)
+        if callable(refresh):
+            refresh()
+        try:
+            query = self._resolve_query()
+        except Exception:
+            return
+        if not self._has_run_once:
+            if self._is_executable(query):
+                self.action_load()
+            else:
+                self._paint_compose()
+            return
+        self._needs_refresh = True
+        self.notify("Composition changed — press r to refresh", timeout=4)
+        self._paint_compose()
+
+    def _append_query_resource(self, kind: str, result: dict) -> None:
+        """Persist a picked resource onto the active query via ``query.patch``."""
+        if self.query_id is None:
+            self.notify("Open a query first", severity="warning")
+            return
+        try:
+            query = self._resolve_query()
+        except Exception as exc:
+            self.notify(str(exc), severity="error")
+            return
+        rid = str(result.get("id") or "")
+        if not rid:
+            return
+        bag = (
+            query.entity
+            if kind == "entity"
+            else query.metric
+            if kind == "metric"
+            else query.series
+        )
+        if rid in bag:
+            self.notify(f"{rid} already in query", severity="warning")
+            return
+        from ..ops.query_ops import patch_query_op
+
+        try:
+            patch_query_op(
+                int(self.query_id),
+                **{f"add_{kind}": [rid], **self._op_target()},
+            )
+            self._resync_after_op()
+        except Exception as exc:  # noqa: BLE001
+            self.notify(str(exc), severity="error")
+            return
+        if result.get("label"):
+            remember = getattr(self.app, "remember_label", None)
+            if callable(remember):
+                remember(rid, str(result["label"]))
+        self._mark_composition_changed()
+
+    def _remove_query_resource(self, kind: str, resource_id: str) -> None:
+        if self.query_id is None:
+            return
+        try:
+            query = self._resolve_query()
+        except Exception as exc:
+            self.notify(str(exc), severity="error")
+            return
+        bag = (
+            query.entity
+            if kind == "entity"
+            else query.metric
+            if kind == "metric"
+            else query.series
+        )
+        if resource_id not in bag:
+            return
+        from ..ops.query_ops import patch_query_op
+
+        try:
+            patch_query_op(
+                int(self.query_id),
+                **{f"remove_{kind}": [resource_id], **self._op_target()},
+            )
+            self._resync_after_op()
+        except Exception as exc:  # noqa: BLE001
+            self.notify(str(exc), severity="error")
+            return
+        self._mark_composition_changed()
+
+    def _open_scoped_picker(self, kind: str) -> None:
+        """Pick entity/metric/series; scope when a seed resource exists."""
+        if self.query_id is None:
+            self.notify("Open a query first", severity="warning")
+            return
+        try:
+            query = self._resolve_query()
+        except Exception as exc:
+            self.notify(str(exc), severity="error")
+            return
+
+        from ..investigation.resource_picker import ResourcePickerModal
+
+        labels = getattr(self.app, "labels", {}) or {}
+        seed_metric = query.metric[0] if query.metric else None
+        seed_entity = query.entity[0] if query.entity else None
+        scope_metric = seed_metric if kind == "entity" and seed_metric else None
+        scope_entity = seed_entity if kind == "metric" and seed_entity else None
+        scope_label = None
+        if scope_metric:
+            scope_label = label_for(labels, scope_metric)
+        elif scope_entity:
+            scope_label = label_for(labels, scope_entity)
+        exclude = list(
+            query.entity
+            if kind == "entity"
+            else query.metric
+            if kind == "metric"
+            else query.series
+        )
+
+        def _done(result: object | None) -> None:
+            if isinstance(result, dict):
+                self._append_query_resource(kind, result)
+
+        client = getattr(self.app, "client", None)
+        if client is None:
+            return
+        active = getattr(self.app, "active", None)
+        self.app.push_screen(
+            ResourcePickerModal(
+                client,
+                kind,  # type: ignore[arg-type]
+                app_dir=getattr(self.app, "app_dir", None),
+                project_id=getattr(self.app, "project_id", None),
+                investigation_id=(
+                    getattr(active, "investigation", None) if active else None
+                ),
+                scope_metric=scope_metric,
+                scope_entity=scope_entity,
+                scope_label=scope_label,
+                exclude_ids=exclude,
+            ),
+            _done,
+        )
+
+    def action_add_entity(self) -> None:
+        self._open_scoped_picker("entity")
+
+    def action_add_metric(self) -> None:
+        self._open_scoped_picker("metric")
+
+    def action_add_series(self) -> None:
+        self._open_scoped_picker("series")
+
+    def action_add_compare(self) -> None:
+        self.action_add_entity()
+
+    @on(QueryComposeHeader.AddResource)
+    def _compose_add(self, event: QueryComposeHeader.AddResource) -> None:
+        event.stop()
+        self._open_scoped_picker(event.kind)
+
+    @on(QueryComposeHeader.RemoveResource)
+    def _compose_remove(self, event: QueryComposeHeader.RemoveResource) -> None:
+        event.stop()
+        self._remove_query_resource(event.kind, event.resource_id)
+
+    @on(QueryComposeHeader.ScopeChanged)
+    def _compose_scope(self, event: QueryComposeHeader.ScopeChanged) -> None:
+        event.stop()
+        if self.query_id is None:
+            return
+        from ..ops.query_ops import patch_query_op
+
+        kwargs: dict = {**self._op_target()}
+        if event.frequency:
+            kwargs["frequency"] = event.frequency
+        else:
+            kwargs["clear_frequency"] = True
+        if event.obs_mode == "all":
+            kwargs["clear_window"] = True
+        elif event.obs_mode == "earliest":
+            kwargs["head"] = 20
+        else:
+            kwargs["tail"] = 20
+        try:
+            patch_query_op(int(self.query_id), **kwargs)
+            self._resync_after_op()
+        except Exception as exc:  # noqa: BLE001
+            self.notify(str(exc), severity="error")
+            return
+        self._mark_composition_changed()
+
+    @on(QueryComposeHeader.Refresh)
+    def _compose_refresh(self, event: QueryComposeHeader.Refresh) -> None:
+        event.stop()
+        self.action_load()
+
+    @on(QueryComposeHeader.Rename)
+    def _compose_rename(self, event: QueryComposeHeader.Rename) -> None:
+        event.stop()
+        self.action_rename_query()
+
+    @on(HistoryPlot.BoundDrag)
+    def _on_bound_drag(self, event: HistoryPlot.BoundDrag) -> None:
+        """Mouse-drag of a chart time bound (start/end)."""
+        event.stop()
+        dates = self._all_cursor_dates()
+        if not dates:
+            return
+        self._clamp_bounds()
+        index = max(0, min(int(event.date_index), len(dates) - 1))
+        if event.which == "lo":
+            self._bound_lo_i = min(index, self._bound_hi_i)
+            self._bound_focus = "lo"
+        else:
+            self._bound_hi_i = max(index, self._bound_lo_i)
+            self._bound_focus = "hi"
+        self._cursor_i = (
+            self._bound_lo_i if self._bound_focus == "lo" else self._bound_hi_i
+        )
+        # Keep HistoryPlot hit-testing in sync mid-drag.
+        try:
+            chart = self.query_one("#query-chart", HistoryPlot)
+            chart._bound_lo_i = self._bound_lo_i
+            chart._bound_hi_i = self._bound_hi_i
+            chart._bound_focus = self._bound_focus
+        except Exception:  # noqa: BLE001
+            pass
+        self._render_chart()
+        self._render_obs_strip()
+
+    @on(ActionButton.Pressed)
+    def _action_button(self, event: ActionButton.Pressed) -> None:
+        event.stop()
+        if event.button_id == "mode_chart":
+            self.action_mode_chart()
+        elif event.button_id == "mode_table":
+            self.action_mode_table()
+        elif event.button_id == "annotate":
+            self.action_annotate()
+        elif event.button_id == "toggle_remarks":
+            self.action_toggle_remarks()
+        elif event.button_id == "save_remark":
+            self.action_save_remark()
+        elif event.button_id == "cancel_remark":
+            self.action_cancel_remark()
+        elif event.button_id == "bound_lo":
+            self._bound_focus = "lo"
+            self._render_chart()
+            self._render_obs_strip()
+        elif event.button_id == "bound_hi":
+            self._bound_focus = "hi"
+            self._render_chart()
+            self._render_obs_strip()
+        elif event.button_id == "reset_bounds":
+            self.action_reset_bounds()
 
     def action_obs_left(self) -> None:
-        dates = cursor_dates(self._visible_records())
+        dates = self._all_cursor_dates()
         if not dates:
             return
-        if self._cursor_i < 0:
-            self._cursor_i = len(dates) - 1
-        self._cursor_i = max(0, self._cursor_i - 1)
+        self._clamp_bounds()
+        if self._bound_focus == "lo":
+            self._bound_lo_i = max(0, self._bound_lo_i - 1)
+        else:
+            self._bound_hi_i = max(self._bound_lo_i, self._bound_hi_i - 1)
+        self._cursor_i = (
+            self._bound_lo_i if self._bound_focus == "lo" else self._bound_hi_i
+        )
         self._render_chart()
-        self._render_cursor()
+        self._render_obs_strip()
 
     def action_obs_right(self) -> None:
-        dates = cursor_dates(self._visible_records())
+        dates = self._all_cursor_dates()
         if not dates:
             return
-        if self._cursor_i < 0:
-            self._cursor_i = len(dates) - 1
-        self._cursor_i = min(len(dates) - 1, self._cursor_i + 1)
+        self._clamp_bounds()
+        last = len(dates) - 1
+        if self._bound_focus == "lo":
+            self._bound_lo_i = min(self._bound_hi_i, self._bound_lo_i + 1)
+        else:
+            self._bound_hi_i = min(last, self._bound_hi_i + 1)
+        self._cursor_i = (
+            self._bound_lo_i if self._bound_focus == "lo" else self._bound_hi_i
+        )
         self._render_chart()
-        self._render_cursor()
+        self._render_obs_strip()
+
+    def _cycle_remark_focus(self) -> None:
+        """Tab within the inline remark draft: name → text → cite → save."""
+        order = [
+            self.query_one("#remark-name", Input),
+            self.query_one("#remark-text", TextArea),
+            self.query_one("#remark-cite", Checkbox),
+            self.query_one("#remark-save", ActionButton),
+        ]
+        focused = self.focused
+        try:
+            idx = next(i for i, w in enumerate(order) if w is focused)
+        except StopIteration:
+            order[0].focus()
+            return
+        order[(idx + 1) % len(order)].focus()
+
+    def action_toggle_bound_focus(self) -> None:
+        # While drafting a remark, Tab stays inside that pane.
+        if self._remark_drafting:
+            self._cycle_remark_focus()
+            return
+        self._bound_focus = "hi" if self._bound_focus == "lo" else "lo"
+        self._cursor_i = (
+            self._bound_lo_i if self._bound_focus == "lo" else self._bound_hi_i
+        )
+        self._render_chart()
+        self._render_obs_strip()
+        which = "start date" if self._bound_focus == "lo" else "end date"
+        self.notify(f"Adjusting {which}", timeout=1)
+
+    def action_reset_bounds(self) -> None:
+        self._hidden.clear()
+        self._reset_bounds()
+        self._fill_nav()
+        self._show_selected()
+        self.notify("Reset period and series visibility", timeout=2)
 
     def action_toggle_series(self) -> None:
         if self._mode != "chart":
@@ -1270,9 +3432,6 @@ class QueryScreen(BaseScreen):
         if sid in self._hidden:
             self._hidden.discard(sid)
         else:
-            if len(self._visible_records()) <= 1:
-                self.notify("Keep at least one series visible", severity="warning")
-                return
             self._hidden.add(sid)
         self._fill_nav()
         self._show_selected()
@@ -1325,24 +3484,102 @@ class QueryScreen(BaseScreen):
         self._show_selected()
 
     def action_inspect(self) -> None:
-        if self._mode != "table":
-            record = self._selected_record()
-            if self._mode == "chart" and record is not None:
-                day = self._cursor_day()
-                obs = observation_on_date(record, day) if day else None
-                if obs:
-                    self.app.push_screen(ObservationDetail(record, obs))
-                    return
-            if record and record.get("last"):
-                self.app.push_screen(ObservationDetail(record, record["last"]))
+        # Remark draft: Enter submits.
+        if self._remark_drafting:
+            self.action_save_remark()
+            return
+        # Chart: Enter toggles the focused legend chip / selected series.
+        if self._mode == "chart":
+            focused = self.focused
+            if isinstance(focused, LegendChip):
+                try:
+                    self._series_i = self._records.index(focused.record)
+                except ValueError:
+                    pass
+            self.action_toggle_series()
             return
         child = self.query_one("#query-obs", ListView).highlighted_child
         if isinstance(child, ObservationRow):
-            self.app.push_screen(ObservationDetail(child.record, child.obs))
+            self._inspect_table_observation(child.record, child.obs)
             return
         self.notify("No observation highlighted", severity="warning")
 
+    def _inspect_table_observation(
+        self, record: dict[str, Any], obs: dict[str, Any]
+    ) -> None:
+        """Table Enter → release page when possible; else series|value|units."""
+        release_id = str(obs.get("release_id") or "").strip()
+        if release_id:
+            open_fn = getattr(self.app, "open_resource_view", None)
+            if callable(open_fn):
+                open_fn("release", release_id, label=release_id)
+                return
+        day = _parse_stamp(obs.get("observation_timestamp"))
+        freq = record.get("frequency")
+        title = format_period(day, freq) if day else "Observation"
+        rows: list[tuple[str, str, str]] = []
+        for rec in self._records or [record]:
+            match = (
+                observation_on_date(rec, day)
+                if day is not None
+                else (rec.get("last") if rec is record else None)
+            )
+            if match is None and rec is record:
+                match = obs
+            if match is None:
+                continue
+            name = series_line_label(rec)
+            units = str(rec.get("units") or "")
+            rows.append(
+                (
+                    name,
+                    format_exact(match.get("value"), units=units),
+                    units,
+                )
+            )
+        if not rows:
+            name = series_line_label(record)
+            units = str(record.get("units") or "")
+            rows.append(
+                (name, format_exact(obs.get("value"), units=units), units)
+            )
+        self.app.push_screen(SeriesValuesFallback(rows, title=title))
+
+    def _legend_chips(self) -> list[LegendChip]:
+        try:
+            legend = self.query_one("#query-legend", Horizontal)
+        except Exception:  # noqa: BLE001
+            return []
+        return [c for c in legend.children if isinstance(c, LegendChip)]
+
+    def _cycle_legend_focus(self, delta: int) -> bool:
+        chips = self._legend_chips()
+        if not chips:
+            return False
+        focused = self.focused
+        try:
+            idx = next(i for i, c in enumerate(chips) if c is focused)
+        except StopIteration:
+            idx = -1 if delta > 0 else 0
+        nxt = chips[(idx + delta) % len(chips)]
+        nxt.focus()
+        try:
+            self._series_i = self._records.index(nxt.record)
+        except ValueError:
+            pass
+        self._show_selected()
+        return True
+
     def action_cursor_down(self) -> None:
+        # On the chart, j/k walk the horizontal legend chips.
+        if self._mode == "chart" and not self._remark_drafting:
+            if self._cycle_legend_focus(1):
+                return
+            series = self.query_one("#query-series", ListView)
+            if series.display:
+                series.focus()
+                series.action_cursor_down()
+                return
         focused = self.focused
         if isinstance(focused, ListView) and hasattr(focused, "action_cursor_down"):
             focused.action_cursor_down()
@@ -1350,11 +3587,31 @@ class QueryScreen(BaseScreen):
         self.query_one("#query-obs", ListView).action_cursor_down()
 
     def action_cursor_up(self) -> None:
+        if self._mode == "chart" and not self._remark_drafting:
+            if self._cycle_legend_focus(-1):
+                return
+            series = self.query_one("#query-series", ListView)
+            if series.display:
+                series.focus()
+                series.action_cursor_up()
+                return
         focused = self.focused
         if isinstance(focused, ListView) and hasattr(focused, "action_cursor_up"):
             focused.action_cursor_up()
             return
         self.query_one("#query-obs", ListView).action_cursor_up()
+
+    def action_toggle_remarks(self) -> None:
+        self._remarks_collapsed = not self._remarks_collapsed
+        try:
+            query = self._resolve_query()
+        except Exception:
+            return
+        self._render_annotations(query)
+
+    def action_toggle_legend(self) -> None:
+        self._legend_expanded = not self._legend_expanded
+        self._fill_nav()
 
     def action_collect(self) -> None:
         record = self._selected_record()
@@ -1383,16 +3640,92 @@ class QueryScreen(BaseScreen):
             return
         self.notify("Collected " + ", ".join(added))
 
+    def on_key(self, event) -> None:  # noqa: ANN001
+        # Remark draft: Shift+Enter inserts a newline in the body.
+        if self._remark_drafting and event.key == "shift+enter":
+            focused = self.focused
+            if isinstance(focused, TextArea):
+                focused.insert("\n")
+                event.stop()
+                event.prevent_default()
+                return
+        # Shift+A pick mode: digit selects a remark.
+        if self._remark_pick_mode and event.key in "123456789":
+            if not isinstance(self.focused, (Input, TextArea)):
+                self._select_remark(int(event.key))
+                event.stop()
+                event.prevent_default()
+                return
+        # D then digit deletes a remark (D1…D9).
+        if getattr(self, "_pending_remark_delete", False):
+            self._pending_remark_delete = False
+            if event.key in "123456789":
+                self.action_delete_remark(int(event.key))
+                event.stop()
+                event.prevent_default()
+                return
+        if event.key == "D" and not isinstance(self.focused, (Input, TextArea)):
+            self._pending_remark_delete = True
+            self.notify("Delete remark: press 1–9", timeout=2)
+            event.stop()
+            event.prevent_default()
+
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if self._remark_pick_mode:
+            if action in {"cancel_remark", "pick_remark"}:
+                return True
+            if action in {
+                "add_entity",
+                "add_metric",
+                "add_series",
+                "annotate",
+                "obs_left",
+                "obs_right",
+                "toggle_bound_focus",
+            }:
+                return False
+        if self._remark_drafting:
+            # Tab cycles the draft; Enter submits; Esc cancels.
+            if action == "toggle_bound_focus":
+                return True
+            if action == "inspect":
+                return True
+            if action == "cancel_remark":
+                return True
+            if action in {
+                "add_entity",
+                "add_metric",
+                "add_series",
+                "obs_left",
+                "obs_right",
+                "annotate",
+                "pick_remark",
+                "cursor_down",
+                "cursor_up",
+            }:
+                return False
+        if isinstance(self.focused, (Input, TextArea, Checkbox)):
+            if action in {
+                "add_entity",
+                "add_metric",
+                "add_series",
+                "obs_left",
+                "obs_right",
+                "annotate",
+                "pick_remark",
+            }:
+                return False
+            if action == "cancel_remark":
+                return True
         loaded = {
-            "collect",
             "inspect",
             "mode_table",
             "mode_chart",
-            "mode_raw",
             "obs_left",
             "obs_right",
             "toggle_series",
+            "toggle_bound_focus",
+            "reset_bounds",
             "toggle_sort",
             "export_csv",
             "copy_python",
@@ -1419,6 +3752,27 @@ class QueryScreen(BaseScreen):
                 return
             self._show_selected()
 
+    @on(LegendChip.Toggled)
+    def on_legend_chip_toggled(self, event: LegendChip.Toggled) -> None:
+        event.stop()
+        sid = event.series_id
+        for i, rec in enumerate(self._records):
+            if str(rec.get("id") or "") == sid:
+                self._series_i = i
+                break
+        self.action_toggle_series()
+
+    def on_click(self, event) -> None:  # noqa: ANN001
+        # Collapsed legend summary expands the chip row.
+        widget = getattr(event, "widget", None) or getattr(event, "control", None)
+        if getattr(widget, "id", None) == "query-series-meta":
+            group = self._selected_group()
+            if group is not None and len(group.records) > 6:
+                self.action_toggle_legend()
+                event.stop()
+                return
+        # Fall through to BaseScreen / default.
+
     @on(ListView.Selected, "#query-obs")
     def on_obs_selected(self, event: ListView.Selected) -> None:
         self.action_inspect()
@@ -1435,8 +3789,9 @@ QUERY_VIEW = register(
         id="query",
         name="Query",
         description=(
-            "Run a saved cartesian query and inspect observations as a table, "
-            "chart, or raw JSON. Idle until r; space collects."
+            "Interactive query composition and chart workbench. "
+            "First executable plot runs automatically; further edits need r. "
+            "Remarks: R to add, Shift+A to pick/apply a source, dd to delete the selected remark; Tab switches start/end date."
         ),
         create_screen=create_query_screen,
         arguments=(
@@ -1447,19 +3802,25 @@ QUERY_VIEW = register(
             ),
         ),
         bindings=(
-            ActionBinding("r", "load", "Execute GET /query"),
-            ActionBinding("a", "annotate", "Edit query annotations"),
-            ActionBinding("t / c / v", "mode", "Table, chart, or raw JSON"),
-            ActionBinding("h / l", "obs", "Move the observation cursor (chart)"),
-            ActionBinding("x", "toggle_series", "Hide or show a series on the chart"),
+            ActionBinding("r", "load", "Refresh / run GET /query"),
+            ActionBinding("R", "annotate", "Add an inline remark"),
+            ActionBinding("A", "pick_remark", "Number remarks and apply a source cite"),
+            ActionBinding("c / t", "mode", "Chart or table"),
+            ActionBinding("E", "add_entity", "Add entity (scoped when possible)"),
+            ActionBinding("M", "add_metric", "Add metric (scoped when possible)"),
+            ActionBinding("S", "add_series", "Add direct series"),
+            ActionBinding("Tab", "bound", "Toggle start/end date"),
+            ActionBinding("h / l", "obs", "Adjust the focused date"),
+            ActionBinding("drag", "bound", "Drag start/end markers on the chart"),
+            ActionBinding("enter", "inspect", "Chart: show/hide series; table: open release"),
+            ActionBinding("x", "toggle_series", "Show or hide a series on the chart"),
+            ActionBinding("dd", "delete_remark", "Delete the selected remark"),
+            ActionBinding("D + digit", "delete_remark", "Delete remark 1–9"),
             ActionBinding("[ / ]", "group", "Cycle incompatible-unit chart groups"),
             ActionBinding("o", "sort", "Toggle observation table sort"),
-            ActionBinding("e", "export_csv", "Write observations to CSV"),
             ActionBinding("y", "copy_python", "Copy a Python query snippet"),
-            ActionBinding("j / k", "cursor", "Move series or observations"),
-            ActionBinding("enter", "inspect", "Inspect the highlighted observation"),
-            ActionBinding("space", "collect", "Collect metric/entity/series into workspace"),
+            ActionBinding("j / k", "cursor", "Move series legend or observations"),
         ),
-        example="jst action add query --args '{\"query_id\":1}'",
+        example=':add query --args \'{"query_id":1}\'',
     )
 )

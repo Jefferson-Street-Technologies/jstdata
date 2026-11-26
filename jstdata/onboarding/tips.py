@@ -17,93 +17,83 @@ _TYPING = (
 
 _HOME = {
     None: (
-        'New here? Press "2" to open Search and look up a company, country, or '
-        'metric. Press "1"–"5" (or "j"/"k" then "Enter") to open the other '
-        'destinations, and "t" for a guided tutorial.'
+        'Press "/" to search, "Q"/"w" to jump Queries or Workspace. '
+        '"t" opens tutorials.'
     ),
     "recent": (
         'These are the newest filings and data releases. Press "j"/"k" to move '
-        'and "Enter" to open one. Press "Esc" to go back to the menu.'
+        'and "Enter" to open one.'
     ),
     "search": (
-        'Press "Space" to add the highlighted result to your workspace, or '
-        '"Enter" to open it in its own view. Press "/" to search for something '
-        'else, or "f" to show only metrics, entities, or series.'
+        'Press "Space" to collect the highlighted result, or "Enter" to open it. '
+        'Press "/" to search again.'
     ),
     "actions": (
-        'Every view you\'ve opened in this investigation. Press "Enter" to jump '
-        'back into one, or "Esc" to go back to the menu.'
+        'Views in this investigation. Press "Enter" to reopen one.'
     ),
     "workspace": (
-        'Everything you\'ve collected. Press "j"/"k" to move, "Backspace" to '
-        'remove the highlighted item, or "Enter" to open it. Press "c" to turn '
-        'it all into a query (every metric × every entity) and see the numbers.'
+        'Collected resources. Press "Enter" to open one, or build a query '
+        'from the workspace.'
     ),
     "queries": (
-        'Press "Enter" on "Create from workspace" (or "c") to save a query of '
-        'every metric × every entity you\'ve collected. Press "Enter" on a saved '
-        'query to open and run it.'
+        'One draft lives in the sidebar. Press "s" to save it into the report.'
     ),
 }
 
 _SCREENS = {
+    "ResearchRootScreen": (
+        'Overview of this investigation. Click a sidebar query to open it, '
+        'or press "Q" then a digit to jump. "w" jumps workspace. "/" searches.'
+    ),
     "MetricScreen": (
-        'Press "r" to load what this metric means and who reports it. Then press '
-        '"/" to filter that list, "Space" to add an entry to your workspace, or '
-        '"Enter" to open it. Press "a" to add this metric itself.'
+        'Tab switches Entities / Definition. "Enter" on an entity opens a draft '
+        'chart. "f" filters; "a" adds this metric to the workspace.'
     ),
     "EntityScreen": (
-        'Press "r" to load this entity\'s metrics and relationships. "Tab" '
-        'switches between the two lists, "Space" adds the highlighted item, and '
-        '"Enter" opens a metric. Press "a" to add this entity itself.'
+        'Tab switches Metrics / Relationships. "Enter" on a metric opens a draft '
+        'chart. "f" filters metrics; "a" adds this entity to the workspace.'
     ),
     "MetricsScreen": (
-        'Press "r" to load the metrics your entities report. "m" switches between '
-        'metrics any of them report and ones all of them report. "Space" adds '
-        'one; "Enter" opens it.'
+        'Press "r" to load metrics. "Space" collects; "Enter" opens one.'
     ),
     "QueryScreen": (
-        'Press "r" to run this query. Then press "c" for a chart or "t" for a '
-        'table. "[" and "]" flip between charts, "y" copies Python, "e" exports '
-        'a CSV.'
+        'Current query is in the sidebar: "E"/"M"/"S" add; "r" refreshes. '
+        'Legend chips show or hide series ("j"/"k", Enter). Tabs switch '
+        'Chart/Table ("c"/"t"). Table Enter opens a release.'
+    ),
+    "SeriesScreen": (
+        '"Enter" or "p" plots this series. "m"/"e" open the parent metric or entity.'
     ),
     "TableScreen": (
-        'Press "r" to load the latest values. "Tab" switches between rows and '
-        'columns, and "Enter" on a cell opens the entity, metric, or release '
-        'behind it.'
+        'Press "r" to load values. "Enter" on a cell opens the entity or metric.'
     ),
     "ReleaseScreen": (
-        'Press "r" to load this release\'s details: filing label, date, and source.'
+        'Press "r" to load this release\'s details.'
     ),
     "WorkspaceScreen": (
-        'Press "/" and type to search. "Enter" jumps to the results; "Enter" '
-        'again adds the highlighted item to your workspace.'
+        'Press "/" to search and collect into the workspace.'
     ),
     "DiscoverScreen": (
-        'These are metrics your entities report. Press "Enter" to preview the '
-        'latest numbers, "Space" to add one to your workspace, or "/" to filter.'
+        '"Enter" previews numbers; "Space" collects; "/" filters.'
     ),
     "RankScreen": (
-        'Highlight a metric on the left to rank by it. Press "Enter" to move into '
-        'the ranking, then "Enter" on a row to add that entity to your workspace.'
+        'Highlight a metric to rank by it, then "Enter" on a row to collect.'
     ),
     "WorkspaceDrawer": (
-        'Your workspace. Press "j"/"k" to move, "Backspace" to remove an item, '
-        'and "Esc" to close.'
+        'Workspace drawer. "j"/"k" move; "Esc" closes.'
     ),
     "SearchDrawer": (
-        'Type to search. Press "Space" to add the highlighted result to your '
-        'workspace, or "Esc" to close.'
+        'Type to search. "Space" collects; "Esc" closes.'
     ),
     "CommandPalette": (
-        'Type a command and press "Enter": workspace, search, query, rename, '
-        'add, rm, tutorial, tips. "Tab" completes; "Esc" closes.'
+        'Type a command and press "Enter". "tips on" restores contextual tips. '
+        '"Esc" closes.'
     ),
 }
 
 _FALLBACK = (
-    'Press "?" to see this screen\'s keys, "g" to go Home, or ":" to type a '
-    'command.'
+    'Press "/" to search, "Q"/"w" to jump the sidebar, "Ctrl+o" to go back, '
+    '":" for commands, or "?" for keys.'
 )
 
 
@@ -149,13 +139,10 @@ def next_step_nudge(snap: CoachSnapshot) -> str | None:
             return f'{have} Press "c" to turn them into a query and see the numbers.'
         if snap.home_dest == "search":
             return (
-                f'{have} Keep adding with "Space", or press "Esc" then "4" to '
-                'review your workspace and "c" to turn it into a query.'
+                f'{have} Keep adding with "Space", or press "2" for Workspace '
+                "and build a query from there."
             )
-        return (
-            f'{have} Press "4" to review your workspace, then "c" to turn it '
-            "into a query and see the numbers."
-        )
+        return f'{have} Press "2" to review the workspace and build a query.'
     return None
 
 

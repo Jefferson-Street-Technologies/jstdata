@@ -234,11 +234,25 @@ class ReleaseScreen(BaseScreen):
             keys.append("[bold #e0e0e0]j[/]/[bold #e0e0e0]k[/] [#888]move[/]")
         return keys
 
+    def bug_report_snapshot(self) -> dict[str, Any]:
+        return {
+            "kind": "release",
+            "release_id": self._release_id,
+            "loaded": self._loaded,
+            "visible_metric_ids": [r.metric_id for r in self._rows],
+            "api": {"client.query": self._query_kwargs() if self._release_id else {}},
+        }
+
+    def bug_report_summary(self) -> str:
+        rid = self._release_id or "—"
+        return f"[dim]Release[/] [bold]{rid}[/] [dim]→ client.query(release_id=…)[/]"
+
     def action_load(self) -> None:
         if not self._release_id:
             self.notify("No release in Input Context", severity="warning")
             return
-        self.load_release()
+        # First load may hit disk cache; later ``r`` refreshes from the network.
+        self.load_release(refresh=self._loaded)
 
     def action_cursor_down(self) -> None:
         self.query_one("#release-list", ListView).action_cursor_down()
@@ -275,7 +289,7 @@ class ReleaseScreen(BaseScreen):
         list_view.focus()
 
     @work(exclusive=True, group="release-view")
-    async def load_release(self) -> None:
+    async def load_release(self, *, refresh: bool = False) -> None:
         release_id = self._release_id
         if not release_id:
             return
@@ -283,7 +297,13 @@ class ReleaseScreen(BaseScreen):
         status.update("Loading /query…")
         kwargs = self._query_kwargs()
         try:
-            results = await asyncio.to_thread(self.client.query, **kwargs)
+            def _fetch():
+                if refresh and hasattr(self.client, "uncached"):
+                    with self.client.uncached():
+                        return self.client.query(**kwargs)
+                return self.client.query(**kwargs)
+
+            results = await asyncio.to_thread(_fetch)
         except Exception as exc:
             status.update(f"Could not load release: {exc}")
             return
@@ -329,6 +349,6 @@ RELEASE_VIEW = register(
             ActionBinding("r", "load", "Load observations for this release_id"),
             ActionBinding("j / k", "cursor", "Move in the metric list"),
         ),
-        example="jst action add release",
+        example=":add release",
     )
 )

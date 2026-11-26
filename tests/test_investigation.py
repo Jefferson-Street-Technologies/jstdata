@@ -282,12 +282,16 @@ def test_ensure_bootstrap_and_active(tmp_path: Path):
     tutorial, ctx = ensure_bootstrap(app_dir=tmp_path)
     assert tutorial.id == TUTORIAL_ID
     assert ctx is None
-    assert (tmp_path / "investigations" / "tutorial.yaml").is_file()
-    assert (tmp_path / "investigations" / "plain-bagel.yaml").is_file()
+    assert (tmp_path / "projects" / "tutorial" / "project.yaml").is_file()
+    assert (tmp_path / "projects" / "plain-bagel" / "project.yaml").is_file()
+    assert (
+        tmp_path / "projects" / "tutorial" / "investigations" / "tutorial.yaml"
+    ).is_file()
     assert not (tmp_path / ".active.yaml").is_file()
     from jstdata.investigation import load_bundled_plain_bagel, PLAIN_BAGEL_ID
+    from jstdata.investigation.project_store import load_project_investigation
 
-    demo = load_investigation(PLAIN_BAGEL_ID, root=tmp_path / "investigations")
+    demo = load_project_investigation(PLAIN_BAGEL_ID, PLAIN_BAGEL_ID, app_dir=tmp_path)
     bundled = load_bundled_plain_bagel()
     assert demo.id == bundled.id
     assert any(a.type == "table" for a in demo.actions.values())
@@ -304,17 +308,20 @@ def test_ensure_bootstrap_and_active(tmp_path: Path):
 def test_resume_or_create_untitled(tmp_path: Path):
     inv = resume_or_create_investigation(app_dir=tmp_path)
     assert inv.title == "Untitled"
-    assert inv.id.startswith("inv-")
-    assert get_active(app_dir=tmp_path).investigation == inv.id
+    assert inv.id  # globally unique; matches project id for 1:1 untitled
+    active = get_active(app_dir=tmp_path)
+    assert active.investigation == inv.id
+    assert active.project == inv.id
     again = resume_or_create_investigation(app_dir=tmp_path)
     assert again.id == inv.id
+    assert get_active(app_dir=tmp_path).project == active.project
 
 
 def test_create_and_open_api(tmp_path: Path):
     ensure_bootstrap(app_dir=tmp_path)
     untitled = create_investigation(app_dir=tmp_path)
     assert untitled.title == "Untitled"
-    assert untitled.id.startswith("inv-")
+    assert untitled.id == get_active(app_dir=tmp_path).project
     inv = create_investigation("housing", title="Housing", app_dir=tmp_path)
     assert inv.title == "Housing"
     active = get_active(app_dir=tmp_path)
@@ -390,8 +397,14 @@ def test_investigation_and_query_annotations(tmp_path: Path):
     update_query(loaded, q.id, annotations="", app_dir=tmp_path)
     assert get_investigation("anno", app_dir=tmp_path).get_query(q.id).annotations is None
 
-    # Legacy query ``notes`` still loads as annotations.
+    # Legacy query ``notes`` still loads as annotations (flat YAML → project).
+    from jstdata.investigation.project_store import (
+        migrate_legacy_investigations,
+        project_investigations_dir,
+    )
+
     root = tmp_path / "investigations"
+    root.mkdir(parents=True, exist_ok=True)
     path = root / "legacy-notes.yaml"
     path.write_text(
         "id: legacy-notes\n"
@@ -414,10 +427,12 @@ def test_investigation_and_query_annotations(tmp_path: Path):
         "  args: {}\n",
         encoding="utf-8",
     )
+    migrate_legacy_investigations(app_dir=tmp_path)
     migrated = get_investigation("legacy-notes", app_dir=tmp_path)
     assert migrated.get_query(1).annotations == "from legacy notes"
-    save_investigation(migrated, root=root)
-    dumped = path.read_text(encoding="utf-8")
+    proj_root = project_investigations_dir("legacy-notes", app_dir=tmp_path)
+    save_investigation(migrated, root=proj_root)
+    dumped = (proj_root / "legacy-notes.yaml").read_text(encoding="utf-8")
     assert "annotations: from legacy notes" in dumped
     assert "notes:" not in dumped
 
@@ -574,6 +589,12 @@ def test_parse_action_args_json():
 def test_cli_ls_add_rm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from jstdata import investigation as inv_pkg
     from jstdata.investigation import api as api_mod
+    from jstdata.investigation import project_store as project_store_mod
+    import jstdata.client as client_mod
+    import jstdata.investigation.active as active_mod
+
+    monkeypatch.setattr(client_mod, "APP_DIR", tmp_path)
+    monkeypatch.setattr(active_mod, "APP_DIR", tmp_path)
 
     def with_tmp(fn):
         def wrapped(*args, **kwargs):
@@ -585,19 +606,6 @@ def test_cli_ls_add_rm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(inv_pkg, "ensure_bootstrap", with_tmp(api_mod.ensure_bootstrap))
     monkeypatch.setattr(inv_pkg, "get_active", with_tmp(api_mod.get_active))
     monkeypatch.setattr(
-        inv_pkg, "list_investigations",
-        lambda **kw: api_mod.list_investigations(root=tmp_path / "investigations"),
-    )
-    monkeypatch.setattr(
-        "jstdata.investigation.store.investigations_dir",
-        lambda **kw: tmp_path / "investigations",
-    )
-    monkeypatch.setattr(
-        inv_pkg,
-        "load_investigation",
-        lambda iid, root=None, **kw: api_mod.get_investigation(iid, app_dir=tmp_path),
-    )
-    monkeypatch.setattr(
         inv_pkg,
         "require_active_investigation",
         with_tmp(api_mod.require_active_investigation),
@@ -607,81 +615,79 @@ def test_cli_ls_add_rm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(inv_pkg, "remove_action", with_tmp(api_mod.remove_action))
     monkeypatch.setattr(inv_pkg, "parse_action_args_json", api_mod.parse_action_args_json)
 
+    _list_projects = project_store_mod.list_projects
+    _load_project = project_store_mod.load_project
+    _load_inv = project_store_mod.load_project_investigation
+    monkeypatch.setattr(
+        project_store_mod,
+        "list_projects",
+        lambda **kw: _list_projects(app_dir=tmp_path),
+    )
+    monkeypatch.setattr(
+        project_store_mod,
+        "load_project",
+        lambda pid, **kw: _load_project(pid, app_dir=tmp_path),
+    )
+    monkeypatch.setattr(
+        project_store_mod,
+        "load_project_investigation",
+        lambda pid, iid, **kw: _load_inv(pid, iid, app_dir=tmp_path),
+    )
+
     ensure_bootstrap(app_dir=tmp_path)
     create_investigation("alpha", title="Alpha", app_dir=tmp_path)
 
     runner = CliRunner()
-    result = runner.invoke(cli, ["ls"])
+    result = runner.invoke(cli, ["ls", "--plain"])
     assert result.exit_code == 0, result.output
-    assert "* alpha" in result.output
+    assert "alpha" in result.output
     assert "tutorial" in result.output
 
-    result = runner.invoke(
-        cli,
-        [
-            "action",
-            "add",
-            "console",
-            "--args",
-            '{"taxonomy":"country"}',
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    assert "Added action 1 type=console parent=0" in result.output
-    inv = get_investigation("alpha", app_dir=tmp_path)
-    assert inv.actions[1].args == {"taxonomy": "country"}
-    assert get_active(app_dir=tmp_path).action == ROOT_ACTION_ID
-
-    result = runner.invoke(cli, ["action", "add", "discover", "--activate"])
-    assert result.exit_code == 0, result.output
-    assert "(activated)" in result.output
-    assert get_active(app_dir=tmp_path).action == 2
-
-    result = runner.invoke(cli, ["action", "rm", "2"])
+    # Singular action/query CLIs are retired; mutations go through the API /
+    # actions layer (and eventually `jst actions …`).
+    result = runner.invoke(cli, ["action", "add", "console"])
     assert result.exit_code == 2
-    assert "--force" in result.output
-
-    result = runner.invoke(cli, ["action", "rm", "2", "--force"])
-    assert result.exit_code == 0, result.output
-    assert "Removed action 2" in result.output
-    assert get_active(app_dir=tmp_path).action == ROOT_ACTION_ID
-
-    result = runner.invoke(cli, ["action", "add", "not-a-step"])
-    assert result.exit_code == 2
-    assert "Unknown action" in result.output
-
-    result = runner.invoke(
-        cli,
-        [
-            "query",
-            "add",
-            "--metric",
-            "gdp",
-            "--entity",
-            "france",
-            "--entity",
-            "usa",
-            "--name",
-            "FR vs US",
-            "--tail",
-            "1",
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    assert "Added query 1" in result.output
-    stored = get_investigation("alpha", app_dir=tmp_path).get_query(1)
-    assert stored.metric == ["gdp"]
-    assert stored.entity == ["france", "usa"]
-    assert stored.expected_pairs() == [("gdp", "france"), ("gdp", "usa")]
+    assert "retired" in result.output.lower()
 
     result = runner.invoke(cli, ["query", "ls"])
+    assert result.exit_code == 2
+    assert "retired" in result.output.lower()
+
+    from jstdata.investigation import add_action, add_query
+
+    inv = get_investigation("alpha", app_dir=tmp_path)
+    add_action(
+        inv,
+        "console",
+        args={"taxonomy": "country"},
+        app_dir=tmp_path,
+    )
+    assert get_investigation("alpha", app_dir=tmp_path).actions[1].args == {
+        "taxonomy": "country"
+    }
+    add_query(
+        inv,
+        name="FR vs US",
+        metric=["gdp"],
+        entity=["france", "usa"],
+        tail=1,
+        app_dir=tmp_path,
+    )
+    result = runner.invoke(
+        cli,
+        [
+            "actions",
+            "query",
+            "ls",
+            "--project",
+            "alpha",
+            "--investigation",
+            "alpha",
+        ],
+    )
     assert result.exit_code == 0, result.output
     assert "FR vs US" in result.output
-
-    result = runner.invoke(cli, ["query", "show", "1"])
-    assert result.exit_code == 0, result.output
     assert "gdp" in result.output
-    assert "france" in result.output
 
 
 def test_home_step_registered():
@@ -690,9 +696,39 @@ def test_home_step_registered():
 
     spec = get_action("home")
     assert spec.id == "home"
-    assert spec.name == "Home"
+    assert spec.name == "Overview"
     query = get_action("query")
     assert query.id == "query"
+
+
+def test_auto_query_name_syncs_with_composition():
+    from jstdata.investigation.naming import (
+        composition_subtitle,
+        sync_auto_query_name,
+    )
+
+    labels = {
+        "adv": "Advertising Expense",
+        "e1": "AAON",
+        "e2": "Braemar",
+        "e3": "Intelligent",
+    }
+    stale = "Advertising Expense · 4 entities"
+    assert (
+        sync_auto_query_name(
+            stale, ["adv"], ["e1", "e2", "e3"], labels=labels
+        )
+        == "Advertising Expense · AAON, Braemar, Intelligent"
+    )
+    assert (
+        sync_auto_query_name(
+            "Hotel Ad Spend", ["adv"], ["e1"], labels=labels
+        )
+        == "Hotel Ad Spend"
+    )
+    assert composition_subtitle(["adv"], ["e1", "e2", "e3"]) == (
+        "3 entities · 1 metric"
+    )
 
 
 def test_home_destinations_are_five_in_order():
@@ -1005,6 +1041,23 @@ def test_query_formats_periods_and_values():
     assert format_release(datetime(2024, 8, 1), short=True) == "Aug 2024"
     assert format_value(71.5228842446577) == "71.52"
     assert format_value(None) == "—"
+    from jstdata.actions.query_view import (
+        format_compact,
+        format_exact,
+        format_pct_change,
+    )
+
+    assert format_compact(8_924_516_000) == "8.92B"
+    assert format_compact(8_924_516_000, units="USD") == "$8.92B"
+    assert format_compact(240_000_000, units="USD") == "$240M"
+    # Thousands of dollars: 14.34M raw → $14.34B actual.
+    assert (
+        format_compact(14_336_729, units="Thousands of Dollars") == "$14.34B"
+    )
+    assert format_exact(14_336_729, units="Thousands of Dollars") == "$14,336,729,000"
+    assert format_compact(4.25, units="Percent") == "4.25%"
+    assert format_pct_change(110, 100) == "+10.0%"
+    assert format_pct_change(90, 100) == "-10.0%"
     record = {
         "id": "HDTGPDUSQ163N",
         "label": "Household debt to GDP",
@@ -1107,8 +1160,9 @@ def test_query_groups_overlay_same_metric_units():
     assert plot_history(plt, overlay.records) is True
     plt.plotsize(60, 14)
     chart = plt.uncolorize(plt.build())
-    assert "France" in chart
-    assert "United States" in chart
+    # Series names live in the interactive legend; the plot shows axis units.
+    assert "Ratio" in chart
+    assert "2020" in chart
     lonely = group_plot_records(
         [
             rec("a", "", "Annual", "X", "France", [1.0]),
@@ -1185,8 +1239,40 @@ def test_query_chart_axis_export_and_cursor():
         Query(id=2, metric=["household-debt-to-gdp"], entity=["france", "united-states"]),
         [record],
     )
+    assert "1 of 2 requested series available" in status
     assert "missing" in status
     assert "france" in status
+
+    from jstdata.actions.query_view import history_segments
+
+    gapped = {
+        **record,
+        "frequency": "Annual",
+        "observations": [
+            {
+                "observation_timestamp": "2019-01-01T00:00:00",
+                "release_timestamp": "2019-08-01T00:00:00",
+                "value": 70,
+                "release_id": "r2019",
+            },
+            {
+                "observation_timestamp": "2020-01-01T00:00:00",
+                "release_timestamp": "2020-08-01T00:00:00",
+                "value": 71,
+                "release_id": "r2020",
+            },
+            {
+                "observation_timestamp": "2022-01-01T00:00:00",
+                "release_timestamp": "2022-08-01T00:00:00",
+                "value": 73,
+                "release_id": "r2022",
+            },
+        ],
+    }
+    segments = history_segments(gapped)
+    assert len(segments) == 2
+    assert segments[0][0] == ["2019-01-01", "2020-01-01"]
+    assert segments[1][0] == ["2022-01-01"]
 
 
 def test_series_to_record_is_json_not_frame():
@@ -1297,8 +1383,11 @@ def test_cli_create_load_without_tui(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert result.exit_code == 0, result.output
     assert "Created investigation 'alpha'" in result.output
     assert launched == ["run"]
-    assert (tmp_path / "investigations" / "alpha.yaml").is_file()
+    assert (
+        tmp_path / "projects" / "alpha" / "investigations" / "alpha.yaml"
+    ).is_file()
     assert load_active(app_dir=tmp_path).investigation == "alpha"
+    assert load_active(app_dir=tmp_path).project == "alpha"
 
     launched.clear()
     result = runner.invoke(cli, ["open", "alpha"])

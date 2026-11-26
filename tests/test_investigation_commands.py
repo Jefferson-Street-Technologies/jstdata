@@ -21,6 +21,7 @@ def test_list_suggestions_filters_prefix():
         "workspace",
         "search",
         "query",
+        "tab",
         "rename",
         "annotate",
         "add",
@@ -33,6 +34,7 @@ def test_complete_command_names():
         "workspace",
         "search",
         "query",
+        "tab",
         "rename",
         "annotate",
         "publish",
@@ -40,10 +42,12 @@ def test_complete_command_names():
         "rm",
         "tutorial",
         "tips",
+        "feedback",
+        "activity",
     ]
     assert complete_command_line("se") == ["search"]
     assert complete_command_line("tu") == ["tutorial"]
-    assert complete_command_line(":a") == ["annotate", "add"]
+    assert complete_command_line(":a") == ["annotate", "add", "activity"]
     # Exact command name offers next-token completions (action types for add).
     add_next = complete_command_line("add")
     assert "add console" in add_next

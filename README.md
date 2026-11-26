@@ -176,17 +176,17 @@ First `jst` / `jst new` / `jst open` also bootstraps the bundled `tutorial`
 ### Agents
 
 ```bash
-jst agent-guide
+jst agent guide
 jst agent install          # Codex, Claude Code, Cursor (~/.agents, ~/.claude, ~/.cursor)
 jst agent install cursor
 ```
 
-`jst agent-guide` is the versioned operating manual (hard rules, modes, recipes,
+`jst agent guide` is the versioned operating manual (hard rules, modes, recipes,
 and the live CLI/action reference). Prefer it over guessing command shapes or
-inventing ids. `jst agent install` copies a tiny pointer skill (`run jst
-agent-guide`) into user-level skill directories. Discovery is not guaranteed —
-if the agent does not pick it up, say: *Use the jst skill. Then run `jst
-agent-guide` and follow it.*
+inventing ids. `jst agent install` copies a tiny pointer skill (`run jst agent
+guide`) into user-level skill directories. Discovery is not guaranteed — if the
+agent does not pick it up, say: *Use the jst skill. Then run `jst agent guide`
+and follow it.* (`jst agent-guide` still works but is deprecated.)
 
 ## The Scriptable API CLI (`jst api`)
 

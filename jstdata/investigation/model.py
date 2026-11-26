@@ -72,7 +72,7 @@ class Workspace:
             kwargs["entity"] = list(self.entity)
         if self.series:
             kwargs["series"] = list(self.series)
-        if self.frequency is not None:
+        if self.frequency is not None and self.frequency != "?":
             kwargs["frequency"] = self.frequency
         if self.taxonomy is not None:
             kwargs["taxonomy"] = self.taxonomy
@@ -298,12 +298,10 @@ def _load_note_date(value: Any, *, label: str) -> Optional[str]:
 
 @dataclass
 class QueryNote:
-    """A note on one series and/or a period of a query's results (JEF-167).
+    """Legacy pointed note (JEF-167). Prefer :class:`QueryRemark`.
 
-    Needs ``text`` and at least one selector: ``series`` (a series id) or
-    ``from_`` / ``to`` (inclusive ``YYYY-MM-DD`` dates, either may be open).
-    Serialized as ``series`` / ``from`` / ``to`` / ``text``; absent keys are
-    omitted.
+    Kept for load/migrate of ``notes_on`` YAML. Needs ``text`` and at least
+    one of ``series`` / ``from_`` / ``to``.
     """
 
     text: str
@@ -349,6 +347,72 @@ class QueryNote:
         return cls(text=text, series=series, from_=start, to=end)
 
 
+@dataclass
+class QueryRemark:
+    """One research remark on a query (many per query).
+
+    Optional ``name`` is a short heading. ``series`` / ``from_`` / ``to`` are
+    set when the author cites the current chart cross-section.
+    """
+
+    text: str
+    name: Optional[str] = None
+    series: list[str] = field(default_factory=list)
+    from_: Optional[str] = None
+    to: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {}
+        if self.name:
+            data["name"] = self.name
+        data["text"] = self.text
+        if self.series:
+            data["series"] = list(self.series)
+        if self.from_ is not None:
+            data["from"] = self.from_
+        if self.to is not None:
+            data["to"] = self.to
+        return data
+
+    @classmethod
+    def from_dict(cls, data: Any, *, label: str) -> QueryRemark:
+        if not isinstance(data, Mapping):
+            raise InvestigationError(f"{label} must be a mapping.")
+        text = data.get("text")
+        if text is not None and not isinstance(text, str):
+            raise InvestigationError(f"{label} text must be a string.")
+        text = _normalize_text(text)
+        if text is None:
+            raise InvestigationError(f"{label} needs a non-empty 'text'.")
+        name = data.get("name")
+        if name is not None and not isinstance(name, str):
+            raise InvestigationError(f"{label} name must be a string.")
+        name = _normalize_text(name)
+        raw_series = data.get("series")
+        series: list[str] = []
+        if raw_series is None:
+            pass
+        elif isinstance(raw_series, str):
+            one = _normalize_text(raw_series)
+            if one:
+                series = [one]
+        elif isinstance(raw_series, list) and all(
+            isinstance(x, str) for x in raw_series
+        ):
+            series = [s for s in (_normalize_text(x) for x in raw_series) if s]
+        else:
+            raise InvestigationError(
+                f"{label} series must be a string or list of strings."
+            )
+        start = _load_note_date(data.get("from"), label=f"{label} 'from'")
+        end = _load_note_date(data.get("to"), label=f"{label} 'to'")
+        if start is not None and end is not None and start > end:
+            raise InvestigationError(
+                f"{label} 'from' {start} is after 'to' {end}."
+            )
+        return cls(text=text, name=name, series=series, from_=start, to=end)
+
+
 def _load_notes_on(data: Mapping[str, Any], *, qid: int) -> list[QueryNote]:
     raw = data.get("notes_on")
     if raw is None:
@@ -361,20 +425,69 @@ def _load_notes_on(data: Mapping[str, Any], *, qid: int) -> list[QueryNote]:
     ]
 
 
+def _remarks_from_legacy(
+    *,
+    annotations: Optional[str],
+    notes_on: list[QueryNote],
+) -> list[QueryRemark]:
+    """Build remarks from legacy ``annotations`` + ``notes_on``."""
+    out: list[QueryRemark] = []
+    if annotations and annotations.strip():
+        # Optional heading: first short line + blank line (same as pack/unpack).
+        raw = annotations.strip()
+        name: Optional[str] = None
+        body = raw
+        if "\n\n" in raw:
+            first, rest = raw.split("\n\n", 1)
+            if first and "\n" not in first and len(first) <= 80:
+                name = first.strip() or None
+                body = rest
+        body = body.strip()
+        if body or name:
+            out.append(QueryRemark(text=body or name or "", name=name if body else None))
+    for note in notes_on:
+        out.append(
+            QueryRemark(
+                text=note.text,
+                series=[note.series] if note.series else [],
+                from_=note.from_,
+                to=note.to,
+            )
+        )
+    return out
+
+
+def _load_remarks(data: Mapping[str, Any], *, qid: int) -> list[QueryRemark]:
+    """Prefer ``remarks``; else migrate legacy annotations + notes_on."""
+    raw = data.get("remarks", _MISSING)
+    if raw is not _MISSING:
+        if raw is None:
+            return []
+        if not isinstance(raw, list):
+            raise InvestigationError(f"Query {qid} remarks must be a list.")
+        return [
+            QueryRemark.from_dict(item, label=f"Query {qid} remark {n}")
+            for n, item in enumerate(raw, start=1)
+        ]
+    annotations = _load_annotations(data, label=f"Query {qid}")
+    notes_on = _load_notes_on(data, qid=qid)
+    return _remarks_from_legacy(annotations=annotations, notes_on=notes_on)
+
+
 @dataclass
 class Query:
     """A saved ``/query`` spec. Metric × entity is a cartesian product.
 
     Optional ``units`` / ``source`` / ``seasonal_adjustment`` are persisted for
     later filtering; ``execute`` currently forwards the fields ``GET /query``
-    already accepts. ``annotations`` is freeform researcher commentary
-    (YAML key ``annotations``; legacy ``notes`` still loads). ``notes_on``
-    annotates single series and/or periods of the results (``QueryNote``).
+    already accepts. ``remarks`` are multiple research notes (optional name,
+    required text, optional chart cross-section cite). Legacy ``annotations`` /
+    ``notes`` / ``notes_on`` still load into ``remarks``.
     """
 
     id: int
     name: Optional[str] = None
-    annotations: Optional[str] = None
+    annotations: Optional[str] = None  # legacy mirror; prefer remarks
     metric: list[str] = field(default_factory=list)
     entity: list[str] = field(default_factory=list)
     series: list[str] = field(default_factory=list)
@@ -388,7 +501,11 @@ class Query:
     as_of: Optional[str] = None
     sort_by: Optional[str] = None
     order_by: Optional[str] = None
-    notes_on: list[QueryNote] = field(default_factory=list)
+    notes_on: list[QueryNote] = field(default_factory=list)  # legacy mirror
+    remarks: list[QueryRemark] = field(default_factory=list)
+    # Report membership: False = exploratory (local only); True = in published report.
+    # Missing on load → True (legacy saved queries were always report members).
+    in_report: bool = True
 
     def is_empty(self) -> bool:
         return not (self.metric or self.entity or self.series)
@@ -402,7 +519,8 @@ class Query:
             kwargs["entity"] = list(self.entity)
         if self.series:
             kwargs["series"] = list(self.series)
-        if self.frequency is not None:
+        # ``?`` means null/blank frequency — not an API Frequency enum value.
+        if self.frequency is not None and self.frequency != "?":
             kwargs["frequency"] = self.frequency
         if self.taxonomy is not None:
             kwargs["taxonomy"] = self.taxonomy
@@ -419,13 +537,33 @@ class Query:
         return kwargs
 
     def execute(self, client: JSTDataClient, **overrides: Any) -> List[TimeSeries]:
+        refresh = bool(overrides.pop("refresh", False))
         kwargs = self.to_query_kwargs()
         kwargs.update(overrides)
-        return client.query(**kwargs)
+        # Honor explicit override of frequency, including clearing ``?`` handling.
+        want_null_freq = (overrides.get("frequency", self.frequency) == "?")
+        if want_null_freq:
+            kwargs.pop("frequency", None)
+        if refresh and hasattr(client, "uncached"):
+            with client.uncached():
+                results = client.query(**kwargs)
+        else:
+            results = client.query(**kwargs)
+        if want_null_freq:
+            results = [
+                ts
+                for ts in results
+                if not (getattr(ts.series, "frequency", None) or "").strip()
+            ]
+        return results
 
     def execute_df(self, client: JSTDataClient, **overrides: Any) -> pd.DataFrame:
+        refresh = bool(overrides.pop("refresh", False))
         kwargs = self.to_query_kwargs()
         kwargs.update(overrides)
+        if refresh and hasattr(client, "uncached"):
+            with client.uncached():
+                return client.query_df(**kwargs)
         return client.query_df(**kwargs)
 
     def expected_pairs(self) -> list[tuple[str, str]]:
@@ -518,10 +656,45 @@ class Query:
             order_by=workspace.order_by,
         )
 
+    def sync_legacy_annotation_fields(self) -> None:
+        """Refresh ``annotations`` / ``notes_on`` mirrors from ``remarks``.
+
+        When ``remarks`` is empty, leave any constructor-assigned legacy
+        fields alone so direct ``Query(annotations=…)`` / ``notes_on=…``
+        assignments still serialize.
+        """
+        if not self.remarks:
+            return
+        free = next(
+            (r for r in self.remarks if not r.series and not r.from_ and not r.to),
+            None,
+        )
+        if free is None:
+            self.annotations = None
+        elif free.name:
+            self.annotations = f"{free.name}\n\n{free.text}" if free.text else free.name
+        else:
+            self.annotations = free.text or None
+        pointed: list[QueryNote] = []
+        for r in self.remarks:
+            if not (r.series or r.from_ or r.to):
+                continue
+            # Legacy notes_on held a single series id.
+            sid = r.series[0] if r.series else None
+            pointed.append(
+                QueryNote(text=r.text, series=sid, from_=r.from_, to=r.to)
+            )
+        self.notes_on = pointed
+
     def to_dict(self) -> dict[str, Any]:
+        self.sync_legacy_annotation_fields()
         data = asdict(self)
+        data["remarks"] = [r.to_dict() for r in self.remarks]
         data["notes_on"] = [note.to_dict() for note in self.notes_on]
-        return {k: v for k, v in data.items() if v is not None and v != []}
+        # Always emit in_report so projection/adapters see membership explicitly.
+        out = {k: v for k, v in data.items() if v is not None and v != []}
+        out["in_report"] = bool(self.in_report)
+        return out
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Query:
@@ -540,7 +713,13 @@ class Query:
             raise InvestigationError(f"Query {qid} entity must be a list of strings.")
         if not isinstance(series, list) or not all(isinstance(x, str) for x in series):
             raise InvestigationError(f"Query {qid} series must be a list of strings.")
-        return cls(
+        in_report = data.get("in_report", True)
+        if not isinstance(in_report, bool):
+            raise InvestigationError(
+                f"Query {qid} 'in_report' must be a boolean when set."
+            )
+        remarks = _load_remarks(data, qid=qid)
+        query = cls(
             id=qid,
             name=data.get("name"),
             annotations=_load_annotations(data, label=f"Query {qid}"),
@@ -558,7 +737,11 @@ class Query:
             sort_by=data.get("sort_by"),
             order_by=data.get("order_by"),
             notes_on=_load_notes_on(data, qid=qid),
+            remarks=remarks,
+            in_report=in_report,
         )
+        query.sync_legacy_annotation_fields()
+        return query
 
 
 @dataclass
@@ -972,6 +1155,11 @@ class Investigation:
                 sort_by=sort_by,
                 order_by=order_by,
             )
+        query.remarks = _remarks_from_legacy(
+            annotations=query.annotations,
+            notes_on=list(query.notes_on),
+        )
+        query.sync_legacy_annotation_fields()
         if query.is_empty():
             raise InvestigationError(
                 "Query needs at least one metric, entity, or series."

@@ -458,7 +458,7 @@ class DiscoverScreen(BaseScreen):
             self.focused, Input
         ):
             return False
-        return True
+        return super().check_action(action, parameters)
 
     def _highlighted_metric(self) -> Optional[Metric]:
         child = self.query_one("#metrics-list", ListView).highlighted_child
@@ -651,6 +651,6 @@ DISCOVER = register(
             ActionBinding("j / k", "cursor", "Move metric highlight or scroll preview"),
             ActionBinding("escape", "leave_filter", "Leave the metric filter"),
         ),
-        example="jst action add discover --args '{\"mode\":\"union\"}'",
+        example=':add discover --args \'{"mode":"union"}\'',
     )
 )

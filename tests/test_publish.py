@@ -71,7 +71,9 @@ def test_publish_sends_definition_with_bearer_key(requests_mock, inv):
     assert "k123" not in req.url and "k123" not in req.text
     body = req.json()
     assert body["publisherName"] == "Nik"
-    assert body["investigation"]["id"] == "plain-bagel"
+    # Local investigation slugs stay local — never sent to the server.
+    assert "id" not in body["investigation"]
+    assert body["investigation"]["title"] == "Plain Bagel"
     assert body["investigation"]["queries"][0]["annotations"] == "Sorted by value."
 
 
@@ -112,7 +114,7 @@ def test_publish_surfaces_server_error(requests_mock, inv):
 
 
 def test_publish_refuses_investigation_without_queries():
-    with pytest.raises(PublishError, match="no queries"):
+    with pytest.raises(PublishError, match="no report queries"):
         publish_investigation(Investigation.new("empty"), api_key="k", site_url=SITE)
 
 
@@ -253,7 +255,7 @@ def test_unreachable_site_gets_a_short_message(requests_mock, inv):
         ({"text": "<html>oops</html>"}, {}),
         ({"json": {"no": "investigation"}}, {}),
         ({"json": {"investigation": ["a", "list"]}}, {}),
-        ({"json": {"investigation": {"title": "no id"}}}, {}),
+        ({"json": {"investigation": {"title": "no queries"}}}, {}),
         ({"json": {"investigation": {"id": 42}}}, {}),
     ],
 )
@@ -265,13 +267,17 @@ def test_clone_rejects_malformed_replies(requests_mock, tmp_path, body, kwargs):
 
 
 @pytest.mark.parametrize("bad_id", ["../evil", "a/b", "Housing", "abc\n"])
-def test_clone_refuses_unsafe_published_ids(requests_mock, tmp_path, inv, bad_id):
+def test_clone_ignores_unsafe_published_ids(requests_mock, tmp_path, inv, bad_id):
+    """Publisher-side investigation ids are ignored; local id comes from title."""
     definition = published_definition(inv)
     definition["id"] = bad_id
-    requests_mock.get(f"{SITE}/api/publications/{PUB_ID}/definition", json={"investigation": definition})
-    with pytest.raises(PublishError, match="--as"):
-        clone_publication(PUB_ID, site_url=SITE, root=tmp_path)
-    assert list(tmp_path.iterdir()) == []
+    requests_mock.get(
+        f"{SITE}/api/publications/{PUB_ID}/definition",
+        json={"investigation": definition},
+    )
+    cloned = clone_publication(PUB_ID, site_url=SITE, root=tmp_path)
+    assert cloned.id == "plain-bagel"
+    assert cloned.title == "Plain Bagel"
 
 
 def test_clone_refuses_unsafe_as_id(requests_mock, tmp_path, inv):
@@ -481,7 +487,6 @@ def _cli_setup(tmp_path, monkeypatch, inv):
 
 
 def test_cli_update_pulls_web_edits_first(requests_mock, tmp_path, monkeypatch, inv):
-    from jstdata.investigation import load_investigation
     from jstdata.publish import record_publication
     from jstdata.publish_sync import text_of
 
@@ -498,8 +503,13 @@ def test_cli_update_pulls_web_edits_first(requests_mock, tmp_path, monkeypatch, 
     result = CliRunner().invoke(cli_module.cli, ["publish", "plain-bagel", "--update", "--yes"])
     assert result.exit_code == 0, result.output
     assert "Pulled edits made on the page: title" in result.output
-    # Saved locally, and the update sent the web's title rather than the old one.
-    assert load_investigation("plain-bagel", root=tmp_path / "investigations").title == "Fixed on the page"
+    # Saved locally under the projects layout, and the update sent the web's title.
+    from jstdata.investigation.project_store import load_project_investigation
+
+    assert (
+        load_project_investigation("plain-bagel", "plain-bagel", app_dir=tmp_path).title
+        == "Fixed on the page"
+    )
     assert requests_mock.last_request.json()["investigation"]["title"] == "Fixed on the page"
 
 

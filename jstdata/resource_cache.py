@@ -128,6 +128,64 @@ class ResourceLabelCache:
             }
         self.save()
 
+    def hydrate_ids(
+        self,
+        client: JSTDataClient,
+        typed: list[tuple[str, str]],
+        labels: dict[str, str],
+        *,
+        now: Optional[datetime] = None,
+    ) -> None:
+        """Fill ``labels`` for ``(type, id)`` pairs, refreshing if needed."""
+        if not typed:
+            return
+        deduped: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for resource_type, rid in typed:
+            if not rid or rid in seen:
+                continue
+            seen.add(rid)
+            deduped.append((resource_type, rid))
+        if not deduped:
+            return
+
+        self.load()
+        clock = now or datetime.now(timezone.utc)
+        needs_refresh = False
+        for resource_type, rid in deduped:
+            entry = self._data.get(cache_key(resource_type, rid))
+            if entry is None or not _is_fresh(entry, now=clock):
+                needs_refresh = True
+                break
+
+        if needs_refresh:
+            ids = [rid for _, rid in deduped]
+            type_by_id = {rid: rtype for rtype, rid in deduped}
+            records: list[tuple[str, str, str]] = []
+            for resource in client.get_resources(ids):
+                rtype = type_by_id.get(resource.id, "series")
+                label = resource.label or resource.id
+                records.append((rtype, resource.id, label))
+                labels[resource.id] = label
+            # Ids the API omitted still get a fallback label and cache stamp
+            # so we do not hammer forever on permanently missing ids.
+            fetched = {r[1] for r in records}
+            for rtype, rid in deduped:
+                if rid not in fetched:
+                    labels.setdefault(rid, rid)
+                    records.append((rtype, rid, rid))
+            try:
+                self.put_many(records, pulled_at=clock)
+            except OSError:
+                # In-memory labels are already filled; a cache write race or
+                # permissions issue must not block the TUI.
+                pass
+            return
+
+        for resource_type, rid in deduped:
+            entry = self._data[cache_key(resource_type, rid)]
+            labels[rid] = entry.get("label") or rid
+
     def hydrate_workspace(
         self,
         client: JSTDataClient,
@@ -149,45 +207,7 @@ class ResourceLabelCache:
                 continue
             seen.add(rid)
             typed.append((_resource_type_for_id(workspace, rid), rid))
-        if not typed:
-            return
-
-        self.load()
-        clock = now or datetime.now(timezone.utc)
-        needs_refresh = False
-        for resource_type, rid in typed:
-            entry = self._data.get(cache_key(resource_type, rid))
-            if entry is None or not _is_fresh(entry, now=clock):
-                needs_refresh = True
-                break
-
-        if needs_refresh:
-            ids = [rid for _, rid in typed]
-            type_by_id = {rid: rtype for rtype, rid in typed}
-            records: list[tuple[str, str, str]] = []
-            for resource in client.get_resources(ids):
-                rtype = type_by_id.get(resource.id, "series")
-                label = resource.label or resource.id
-                records.append((rtype, resource.id, label))
-                labels[resource.id] = label
-            # Ids the API omitted still get a fallback label and cache stamp
-            # so we do not hammer forever on permanently missing ids.
-            fetched = {r[1] for r in records}
-            for rtype, rid in typed:
-                if rid not in fetched:
-                    labels.setdefault(rid, rid)
-                    records.append((rtype, rid, rid))
-            try:
-                self.put_many(records, pulled_at=clock)
-            except OSError:
-                # In-memory labels are already filled; a cache write race or
-                # permissions issue must not block the TUI.
-                pass
-            return
-
-        for resource_type, rid in typed:
-            entry = self._data[cache_key(resource_type, rid)]
-            labels[rid] = entry.get("label") or rid
+        self.hydrate_ids(client, typed, labels, now=now)
 
 
 _default_cache: Optional[ResourceLabelCache] = None

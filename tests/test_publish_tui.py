@@ -184,7 +184,7 @@ def test_markup_like_text_does_not_crash_the_tui(tmp_path, calls):
     """Cloned investigations are remote text; brackets must not break rendering."""
     from jstdata.actions.query_view import QueryScreen
     from jstdata.investigation import update_investigation
-    from jstdata.investigation.host import AnnotationModal, InvestigationHost
+    from jstdata.investigation.host import InvestigationHost
     from jstdata.investigation import resume_or_create_investigation
 
     mark_prompted(tmp_path)
@@ -206,9 +206,10 @@ def test_markup_like_text_does_not_crash_the_tui(tmp_path, calls):
             await _command(pilot, "query 1")
             await _wait_for(pilot, lambda: isinstance(app.screen, QueryScreen))
             assert isinstance(app.screen, QueryScreen)
+            # :annotate opens the query workbench remark draft (inline).
             await _command(pilot, "annotate 1")
-            await _wait_for(pilot, lambda: isinstance(app.screen, AnnotationModal))
-            assert isinstance(app.screen, AnnotationModal)
+            await _wait_for(pilot, lambda: isinstance(app.screen, QueryScreen))
+            assert isinstance(app.screen, QueryScreen)
             await pilot.press("escape")
             await pilot.pause(0.2)
             # Every Home section renders titles, notes and query names.
@@ -301,7 +302,9 @@ def test_bad_draft_reopens_with_the_text_and_error(tmp_path, calls):
             await pilot.press("ctrl+s")
             await _wait_for(pilot, lambda: app.screen.query("#draft-error"))
             assert isinstance(app.screen, PublishDraftScreen)
-            assert "Query 9" in str(app.screen.query_one("#draft-error").renderable)
+            err = app.screen.query_one("#draft-error")
+            err_text = str(getattr(err, "renderable", None) or err.render())
+            assert "Query 9" in err_text
             assert "my note" in app.screen.query_one("#draft-body").text
             assert calls == []
 

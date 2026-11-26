@@ -433,6 +433,56 @@ def test_search_entities_multiple_metrics(client, mock_url):
         assert qs["mode"] == ["union"]
 
 
+def test_search_entities_relation_direction_and_taxonomy(client, mock_url):
+    mock_data = {"records": [{"id": "cik:1045810", "label": "NVIDIA CORP"}]}
+    with requests_mock.Mocker() as m:
+        m.get(f"{mock_url}/search/entities", json=mock_data)
+        entities = client.search_entities(
+            relation="classified_as:sic:3674",
+            relation_direction="outgoing",
+            relation_taxonomy="standard-industrial-classification-sic",
+            limit=10,
+        )
+        assert entities[0].id == "cik:1045810"
+        qs = m.request_history[-1].qs
+        assert qs["relation"] == ["classified_as:sic:3674"]
+        assert qs["relation_direction"] == ["outgoing"]
+        assert qs["relation_taxonomy"] == [
+            "standard-industrial-classification-sic"
+        ]
+
+
+def test_get_entity_relations_filters(client, mock_url):
+    mock_data = {
+        "records": [
+            {
+                "id": "cik:320193",
+                "relationship": "classified_as",
+                "taxonomy": "sic",
+            }
+        ]
+    }
+    with requests_mock.Mocker() as m:
+        m.get(f"{mock_url}/entity/sic:3674/relations", json=mock_data)
+        rels = client.get_entity_relations(
+            "sic:3674",
+            direction="incoming",
+            relationship="classified_as",
+            relation_taxonomy="standard-industrial-classification-sic",
+            taxonomy="sec-central-index-key",
+            limit=25,
+        )
+        assert rels[0].id == "cik:320193"
+        qs = m.request_history[-1].qs
+        assert qs["direction"] == ["incoming"]
+        assert qs["relationship"] == ["classified_as"]
+        assert qs["relation_taxonomy"] == [
+            "standard-industrial-classification-sic"
+        ]
+        assert qs["taxonomy"] == ["sec-central-index-key"]
+        assert qs["limit"] == ["25"]
+
+
 def test_get_resources_batches_over_api_limit(client, mock_url):
     """``GET /resource`` caps at 30 ids; client must chunk larger sessions."""
     from jstdata.client import MAX_RESOURCE_IDS

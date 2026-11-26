@@ -96,18 +96,48 @@ def get_destination(dest_id: str) -> Destination:
         raise KeyError(f"Unknown destination {dest_id!r}") from exc
 
 
+def pack_annotation(name: str, body: str) -> str:
+    """Persist optional name + body. Empty name → body only."""
+    name = (name or "").strip()
+    body = (body or "").rstrip()
+    if name:
+        return f"{name}\n\n{body}" if body else name
+    return body
+
+
+def unpack_annotation(text: str | None) -> tuple[str, str]:
+    """Split stored annotations into ``(name, body)``.
+
+    A name is recognized only when the text starts with a single short line
+    followed by a blank line; otherwise the whole string is the body.
+    """
+    raw = text or ""
+    if "\n\n" not in raw:
+        return "", raw
+    first, rest = raw.split("\n\n", 1)
+    if first and "\n" not in first and len(first) <= 80:
+        return first.strip(), rest
+    return "", raw
+
+
 def annotations_panel(
     text: str | None,
     *,
     empty_hint: str = "Press a to add.",
 ) -> str:
     """Inspector block for investigation / query annotations."""
-    body = (text or "").strip()
-    if not body:
+    raw = (text or "").strip()
+    if not raw:
         return f"[#888]No annotations. {empty_hint}[/]"
+    name, body = unpack_annotation(raw)
     # Annotations are user (or, after `jst clone`, remote) text: escape it so
     # brackets like "[/]" show as typed instead of breaking the markup.
-    return f"[bold #888]ANNOTATIONS[/]\n{escape(body)}"
+    if name:
+        lines = [f"[bold #888]{escape(name)}[/]"]
+        if body.strip():
+            lines.append(escape(body.strip()))
+        return "\n".join(lines)
+    return f"[bold #888]ANNOTATIONS[/]\n{escape(raw)}"
 
 
 def workspace_counts_line(inv: Investigation) -> str:

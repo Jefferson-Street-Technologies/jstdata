@@ -17,9 +17,13 @@ def test_bundled_skill_is_a_pointer():
     text = bundled_skill_text()
     assert text.startswith("---\n")
     assert "name: jst" in text
-    assert "jst agent-guide" in text
-    assert "Do not edit investigation YAML" in text
-    assert "jst query add" in text
+    assert "jst agent guide" in text
+    # Pure pointer: no duplicated operating policy or retired commands.
+    assert "jst actions" not in text
+    assert "jst query add" not in text
+    assert "jst action add" not in text
+    assert "Do not edit" not in text
+    assert "Hard rules" not in text
 
 
 def test_install_skill_cursor_only(tmp_path: Path):
@@ -60,7 +64,7 @@ def test_agent_install_cli(tmp_path: Path, monkeypatch):
     assert dest.exists()
     assert str(dest) in result.output
     assert "Use the jst skill" in result.output
-    assert "jst agent-guide" in result.output
+    assert "jst agent guide" in result.output
 
 
 def test_agent_install_cli_defaults_to_all(tmp_path: Path, monkeypatch):
@@ -75,9 +79,13 @@ def test_agent_install_cli_defaults_to_all(tmp_path: Path, monkeypatch):
         assert (tmp_path / rel).exists(), rel
 
 
-def test_agent_guide_nested_alias():
+def test_agent_guide_deprecated_alias_still_prints_guide():
     runner = CliRunner()
     nested = runner.invoke(cli, ["agent", "guide"])
     top = runner.invoke(cli, ["agent-guide"])
     assert nested.exit_code == 0, nested.output
-    assert nested.output == top.output
+    assert top.exit_code == 0, top.output
+    assert nested.output.startswith("# jstdata agent guide (v")
+    # Soft deprecation: stderr warning, stdout still the guide.
+    assert "Deprecated" in top.output
+    assert top.output.rstrip().endswith(nested.output.rstrip()) or nested.output in top.output

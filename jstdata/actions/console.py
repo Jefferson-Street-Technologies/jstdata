@@ -148,6 +148,8 @@ class WorkspaceScreen(BaseScreen):
         taxonomy: str | None = None,
         resource_type: str | None = None,
         relation: str | list[str] | None = None,
+        relation_direction: str | None = None,
+        relation_taxonomy: str | None = None,
     ) -> None:
         super().__init__()
         self.client = client
@@ -156,6 +158,11 @@ class WorkspaceScreen(BaseScreen):
         self.taxonomy_name = taxonomy
         self.resource_type = (resource_type or "").strip().lower() or None
         self.relations = _normalize_relations(relation)
+        direction = (relation_direction or "outgoing").strip().lower()
+        self.relation_direction = (
+            "incoming" if direction == "incoming" else "outgoing"
+        )
+        self.relation_taxonomy = (relation_taxonomy or "").strip() or None
         if self.resource_type not in (None, "entity", "metric", "series"):
             self.resource_type = None
 
@@ -167,8 +174,24 @@ class WorkspaceScreen(BaseScreen):
         if not self.relations:
             return ""
         if len(self.relations) == 1:
-            return self.relations[0]
-        return f"{len(self.relations)} relations"
+            base = self.relations[0]
+        else:
+            base = f"{len(self.relations)} relations"
+        bits = [base, self.relation_direction]
+        if self.relation_taxonomy:
+            bits.append(f"edge:{self.relation_taxonomy}")
+        return " · ".join(bits)
+
+    def _entity_search_kwargs(self) -> dict:
+        kwargs: dict = {
+            "taxonomy": self.taxonomy,
+            "relation": self.relations,
+        }
+        if self.relations:
+            kwargs["relation_direction"] = self.relation_direction
+            if self.relation_taxonomy:
+                kwargs["relation_taxonomy"] = self.relation_taxonomy
+        return kwargs
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="workspace-body"):
@@ -199,18 +222,22 @@ class WorkspaceScreen(BaseScreen):
         tax = self.taxonomy_name or self.taxonomy or ""
         rtype = self.resource_type.upper() if self.resource_type else ""
         rel = self._relation_label()
-        if rel and rtype:
-            header = f"RESULTS // {rtype} // {rel}"
+        # Visually distinguish membership taxonomy from relationship filters.
+        if rel and tax:
+            header = f"RESULTS // REL {rel} // MEMBERS {tax}"
+            placeholder = f"/ search entities ({rel}) in membership {tax}…"
+        elif rel and rtype:
+            header = f"RESULTS // {rtype} // REL {rel}"
             placeholder = f"/ search {rtype.lower()} linked via {rel}…"
         elif rel:
-            header = f"RESULTS // ENTITY // {rel}"
+            header = f"RESULTS // ENTITY // REL {rel}"
             placeholder = f"/ search entities linked via {rel}…"
         elif tax and rtype:
-            header = f"RESULTS // {rtype} IN {tax}"
-            placeholder = f"/ search {rtype.lower()} in {tax}…"
+            header = f"RESULTS // {rtype} // MEMBERS {tax}"
+            placeholder = f"/ search {rtype.lower()} in membership {tax}…"
         elif tax:
-            header = f"RESULTS // TAXONOMY {tax}"
-            placeholder = f"/ search within {tax}…"
+            header = f"RESULTS // MEMBERS {tax}"
+            placeholder = f"/ search within membership {tax}…"
         elif rtype:
             header = f"RESULTS // {rtype}"
             placeholder = f"/ search {rtype.lower()}…"
@@ -223,11 +250,11 @@ class WorkspaceScreen(BaseScreen):
     def footer_status(self) -> list[str]:
         parts = super().footer_status()
         if self.taxonomy:
-            parts.append(f"tax {self.taxonomy}")
+            parts.append(f"members {self.taxonomy}")
         if self.relations:
             rel = self._relation_label()
-            if len(rel) > 28:
-                rel = rel[:25] + "…"
+            if len(rel) > 36:
+                rel = rel[:33] + "…"
             parts.append(f"rel {rel}")
         if self.resource_type:
             parts.append(self.resource_type)
@@ -288,13 +315,13 @@ class WorkspaceScreen(BaseScreen):
         rtype = self.resource_type
         tax = self.taxonomy
         rel = self.relations
+        entity_kwargs = self._entity_search_kwargs()
         if rtype == "entity":
             entities = await asyncio.to_thread(
                 self.client.search_entities,
                 None,
-                taxonomy=tax,
-                relation=rel,
                 limit=PREFETCH_LIMIT,
+                **entity_kwargs,
             )
             return list(entities), [], []
         if rtype == "metric":
@@ -314,9 +341,8 @@ class WorkspaceScreen(BaseScreen):
             entities = await asyncio.to_thread(
                 self.client.search_entities,
                 None,
-                taxonomy=tax,
-                relation=rel,
                 limit=PREFETCH_LIMIT,
+                **entity_kwargs,
             )
             if tax:
                 metrics = await asyncio.to_thread(
@@ -402,14 +428,14 @@ class WorkspaceScreen(BaseScreen):
         tax = self.taxonomy
         rel = self.relations
         rtype = self.resource_type
+        entity_kwargs = self._entity_search_kwargs()
         if rtype == "entity":
             return list(
                 await asyncio.to_thread(
                     self.client.search_entities,
                     query,
-                    taxonomy=tax,
-                    relation=rel,
                     limit=20,
+                    **entity_kwargs,
                 )
             )
         if rtype == "metric":
@@ -427,9 +453,8 @@ class WorkspaceScreen(BaseScreen):
                 await asyncio.to_thread(
                     self.client.search_entities,
                     query,
-                    taxonomy=tax,
-                    relation=rel,
                     limit=20,
+                    **entity_kwargs,
                 )
             )
             if tax:
@@ -443,7 +468,10 @@ class WorkspaceScreen(BaseScreen):
         if tax:
             entities, metrics = await asyncio.gather(
                 asyncio.to_thread(
-                    self.client.search_entities, query, taxonomy=tax, limit=15
+                    self.client.search_entities,
+                    query,
+                    limit=15,
+                    **entity_kwargs,
                 ),
                 asyncio.to_thread(
                     self.client.search_metrics, query, taxonomy=tax, limit=15
@@ -488,7 +516,14 @@ class WorkspaceScreen(BaseScreen):
 
 
 def create_console_screen(
-    client, workspace, taxonomy=None, resource_type=None, relation=None, **kwargs
+    client,
+    workspace,
+    taxonomy=None,
+    resource_type=None,
+    relation=None,
+    relation_direction=None,
+    relation_taxonomy=None,
+    **kwargs,
 ):
     return WorkspaceScreen(
         client,
@@ -496,6 +531,8 @@ def create_console_screen(
         taxonomy=taxonomy,
         resource_type=resource_type,
         relation=relation,
+        relation_direction=relation_direction,
+        relation_taxonomy=relation_taxonomy,
     )
 
 
@@ -504,7 +541,8 @@ CONSOLE = register(
         id="console",
         name="Console",
         description=(
-            "Search metrics, entities, and series, then stage them into the workspace."
+            "Search metrics, entities, and series, then stage them into the "
+            "workspace. Membership taxonomy and relationship filters are distinct."
         ),
         create_screen=create_console_screen,
         arguments=(
@@ -512,8 +550,8 @@ CONSOLE = register(
                 name="taxonomy",
                 type="string",
                 description=(
-                    "Restrict search to entities and metrics in this taxonomy "
-                    "(slug, e.g. sec-central-index-key)"
+                    "Membership taxonomy slug (who belongs in the population), "
+                    "e.g. sec-central-index-key — not a relationship filter"
                 ),
             ),
             ActionArgument(
@@ -521,9 +559,25 @@ CONSOLE = register(
                 type="string",
                 multiple=True,
                 description=(
-                    "Restrict entity search to those linked to an anchor via a typed "
-                    "relationship (<relationship_type>:<to_entity_id>, "
-                    "e.g. classified_as:sic:3674). Repeatable; OR'd."
+                    "Relationship filter type:anchor_id "
+                    "(e.g. classified_as:sic:3674). Not identity. Repeatable; OR'd."
+                ),
+            ),
+            ActionArgument(
+                name="relation_direction",
+                type="string",
+                description=(
+                    "Direction relative to the candidate entity "
+                    "(outgoing default; incoming = anchor → candidate)"
+                ),
+                choices=("outgoing", "incoming"),
+            ),
+            ActionArgument(
+                name="relation_taxonomy",
+                type="string",
+                description=(
+                    "Edge taxonomy slug (requires relation), e.g. "
+                    "standard-industrial-classification-sic"
                 ),
             ),
             ActionArgument(
@@ -540,9 +594,9 @@ CONSOLE = register(
             ActionBinding("escape", "leave_filter", "Leave the search field"),
         ),
         example=(
-            "jst action add console --args "
-            "'{\"relation\":[\"classified_as:sic:3674\"],"
-            "\"resource_type\":\"entity\"}'"
+            "jst actions search entities "
+            "--relation classified_as:sic:3674 "
+            "--relation-direction outgoing"
         ),
     )
 )

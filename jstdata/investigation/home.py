@@ -164,6 +164,7 @@ class HomeScreen(BaseScreen):
 
     FOOTER_CHROME: tuple[str, ...] = (
         "[bold #e0e0e0]:[/] [#888]commands[/]",
+        "[bold #e0e0e0]{[/]/[bold #e0e0e0]}[/] [#888]tabs[/]",
         "[bold #e0e0e0]t[/] [#888]tutorials[/]",
         "[bold #e0e0e0]?[/] [#888]help[/]",
         "[bold #e0e0e0]q[/] [#888]quit[/]",
@@ -277,10 +278,16 @@ class HomeScreen(BaseScreen):
         border-left: solid #0a0a0a;
         padding: 0 1 0 0;
     }
-    SearchResultRow, WorkspaceResourceRow, GroupHeader {
+    SearchResultRow, GroupHeader {
         height: 1;
         min-height: 1;
         max-height: 1;
+    }
+    WorkspaceResourceRow {
+        height: 4;
+        min-height: 4;
+        max-height: 4;
+        padding: 1 1;
     }
     ReleaseTile, EventTile {
         height: 5;
@@ -477,10 +484,19 @@ class HomeScreen(BaseScreen):
         return keys
 
     def footer_status(self) -> list[str]:
+        tab_fn = getattr(self.app, "investigation_tab_chips", None)
+        if callable(tab_fn):
+            chips = tab_fn()
+            if chips:
+                return [" ".join(chips)]
         return []
 
     def refresh_footer(self) -> None:
-        parts = [*self.footer_action_keys(), *self.FOOTER_CHROME]
+        parts = [
+            *self.footer_status(),
+            *self.footer_action_keys(),
+            *self.FOOTER_CHROME,
+        ]
         self.query_one("#help-hint", Label).update("    ".join(parts))
 
     def _investigation(self) -> Investigation:
@@ -1284,37 +1300,33 @@ class HomeScreen(BaseScreen):
 
 
 def create_home_screen(client, workspace, **kwargs):
-    """Factory used by InvestigationHost for ``type: home`` actions."""
-    title = kwargs.pop("title", "Investigation")
-    body = kwargs.pop("body", "")
-    kwargs.pop("meta", None)
-    kwargs.pop("input_context", None)
-    return HomeScreen(
-        client,
-        workspace,
-        title=title,
-        body=body,
-    )
+    """Factory used by InvestigationHost for ``type: home`` actions.
+
+    Chart-first redesign: land on :class:`ResearchRootScreen` instead of the
+    five-destination Home hub.
+    """
+    from .research_root import create_research_root_screen
+
+    return create_research_root_screen(client, workspace, **kwargs)
 
 
 HOME = register(
     ActionSpec(
         id="home",
-        name="Home",
+        name="Overview",
         description=(
-            "Investigation shell: destinations on the left, data on the right, "
-            "action tree along the bottom. g always returns here."
+            "Investigation / report overview with saved queries, notes, and "
+            "workspace summary. g / Home returns here; / search; n new query."
         ),
         create_screen=create_home_screen,
         arguments=(),
         bindings=(
-            ActionBinding("j / k", "cursor", "Move in the current options list"),
-            ActionBinding("enter", "confirm", "Open the highlighted option"),
-            ActionBinding("a", "annotate", "Edit investigation or query annotations"),
-            ActionBinding("1–5", "jump", "Jump to Recent / Search / Actions / Workspace / Queries"),
-            ActionBinding("esc", "back", "Previous navigation level"),
-            ActionBinding("g", "go_home", "Return to home"),
+            ActionBinding("/", "search", "Universal search"),
+            ActionBinding("n", "new_query", "New draft query"),
+            ActionBinding("H", "history", "Action history"),
+            ActionBinding("F", "feedback", "Feedback"),
+            ActionBinding("H", "go_home", "Return to Overview"),
         ),
-        example="jst open tutorial",
+        example="jst open",
     )
 )

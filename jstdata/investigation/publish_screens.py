@@ -116,24 +116,66 @@ class PublishConfirmModal(ModalScreen[str | None]):
 
 
 class PublishedModal(ModalScreen[None]):
-    """The new publication's link, with copy and open shortcuts."""
+    """Success screen after publish: link, copy, and open."""
 
     DEFAULT_CSS = """
     PublishedModal {
         align: center middle;
-        background: rgba(0, 0, 0, 0.35);
+        background: rgba(0, 0, 0, 0.45);
     }
     #published-box {
-        width: 72;
+        width: 76;
         height: auto;
         border: tall #4ade80;
-        background: #111111;
-        padding: 1 2;
+        background: #0e0e0e;
+        padding: 2 3;
     }
-    #published-kicker { color: #4ade80; text-style: bold; margin-bottom: 1; }
-    #published-url { color: #ffffff; text-style: bold; margin-bottom: 1; }
-    #published-body { color: #a3a3a3; height: auto; margin-bottom: 1; }
-    #published-hint { color: #888; }
+    #published-box.copied {
+        border: tall #bbf7d0;
+        background: #052e16;
+    }
+    #published-kicker {
+        color: #86efac;
+        text-style: bold;
+        margin-bottom: 0;
+    }
+    #published-headline {
+        color: #f5f5f5;
+        text-style: bold;
+        margin-bottom: 1;
+    }
+    #published-url {
+        color: #4ade80;
+        text-style: bold;
+        margin-bottom: 0;
+        padding: 1 1;
+        background: #101a14;
+    }
+    #published-url.copied {
+        color: #052e16;
+        background: #86efac;
+        text-style: bold;
+    }
+    #published-copy-status {
+        height: 1;
+        margin-bottom: 1;
+        color: #737373;
+    }
+    #published-copy-status.copied {
+        color: #bbf7d0;
+        text-style: bold;
+        background: #14532d;
+    }
+    #published-body {
+        color: #a3a3a3;
+        height: auto;
+        margin-bottom: 1;
+    }
+    #published-hint { color: #737373; }
+    #published-hint.copied {
+        color: #86efac;
+        text-style: bold;
+    }
     """
 
     BINDINGS = [
@@ -143,41 +185,77 @@ class PublishedModal(ModalScreen[None]):
         Binding("enter", "close", "Close", show=False),
     ]
 
-    def __init__(self, url: str, *, updated: bool = False) -> None:
+    _HINT = (
+        "[bold]c[/bold] copy link  ·  [bold]o[/bold] open in browser  ·  "
+        "[bold]esc[/bold] / [bold]enter[/bold] close"
+    )
+    _HINT_COPIED = (
+        "[bold]✓ COPIED TO CLIPBOARD[/bold]  ·  [bold]o[/bold] open  ·  "
+        "[bold]esc[/bold] / [bold]enter[/bold] close"
+    )
+
+    def __init__(
+        self,
+        url: str,
+        *,
+        updated: bool = False,
+        title: str | None = None,
+    ) -> None:
         super().__init__()
         self.url = url
         self.updated = updated
+        self.report_title = (title or "").strip() or None
+        self._copied = False
 
     def compose(self) -> ComposeResult:
         with Vertical(id="published-box"):
-            yield Label("UPDATED" if self.updated else "PUBLISHED", id="published-kicker")
+            yield Label(
+                "✓ UPDATED" if self.updated else "✓ PUBLISHED",
+                id="published-kicker",
+            )
+            headline = (
+                "Your page is live on the same link."
+                if self.updated
+                else "Your research page is ready to share."
+            )
+            if self.report_title:
+                headline = f"{escape(self.report_title)}\n{headline}"
+            yield Static(headline, id="published-headline", markup=True)
             yield Label(self.url, id="published-url", markup=False)
-            yield Static(
+            yield Label("Press [bold]c[/bold] to copy this link", id="published-copy-status", markup=True)
+            body = (
                 "The page's text is updated on the same link; its results are "
                 "unchanged."
                 if self.updated
-                else "Share this link. Publishing again makes a new link; this one "
-                "keeps the results as of now.",
-                id="published-body",
+                else "Anyone with this link can read the investigation — charts, "
+                "remarks, and the evidence trail. Publishing again makes a new "
+                "link; this one keeps results as of now."
             )
-            yield Label(
-                "[bold]c[/bold] copy link  ·  [bold]o[/bold] open in browser  ·  "
-                "[bold]esc[/bold] close",
-                id="published-hint",
-                markup=True,
-            )
+            yield Static(body, id="published-body", markup=True)
+            yield Label(self._HINT, id="published-hint", markup=True)
 
     def action_copy(self) -> None:
         # Terminal clipboard (OSC 52); unsupported terminals ignore it, and
         # the link stays on screen to select by hand.
         self.app.copy_to_clipboard(self.url)
-        self.notify("Link copied")
+        self._copied = True
+        box = self.query_one("#published-box")
+        box.add_class("copied")
+        url = self.query_one("#published-url", Label)
+        url.add_class("copied")
+        status = self.query_one("#published-copy-status", Label)
+        status.update("✓  COPIED TO CLIPBOARD")
+        status.add_class("copied")
+        hint = self.query_one("#published-hint", Label)
+        hint.update(self._HINT_COPIED)
+        hint.add_class("copied")
 
     def action_open(self) -> None:
         webbrowser.open(self.url)
 
     def action_close(self) -> None:
         self.dismiss(None)
+
 
 
 class PublishDraftScreen(Screen[str | None]):

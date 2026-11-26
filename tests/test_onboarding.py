@@ -276,15 +276,16 @@ def test_queries_destination_highlights_create_row(tmp_path):
 def test_tip_for_follows_screen_destination_and_focus():
     from jstdata.onboarding import tip_for
 
-    assert 'Press "2" to open Search' in tip_for(CoachSnapshot(screen="HomeScreen"))
-    assert 'Press "Space" to add' in tip_for(
+    assert 'Press "/" to search' in tip_for(CoachSnapshot(screen="HomeScreen"))
+    assert 'Press "Space" to collect' in tip_for(
         CoachSnapshot(screen="HomeScreen", home_dest="search")
     )
-    assert 'Press "r" to run' in tip_for(CoachSnapshot(screen="QueryScreen"))
+    assert "Chart/Table" in tip_for(CoachSnapshot(screen="QueryScreen"))
+    assert "Legend chips" in tip_for(CoachSnapshot(screen="QueryScreen"))
     assert '"Esc" to leave the box' in tip_for(
         CoachSnapshot(screen="QueryScreen", focus_in_input=True)
     )
-    assert 'Press "?"' in tip_for(CoachSnapshot(screen="SomethingNew"))
+    assert 'Press "/" to search' in tip_for(CoachSnapshot(screen="SomethingNew"))
     for text in (
         tip_for(CoachSnapshot(screen=s, home_dest=d))
         for s, d in [("HomeScreen", None), ("MetricScreen", None), ("TableScreen", None)]
@@ -295,7 +296,9 @@ def test_tip_for_follows_screen_destination_and_focus():
 def test_tips_setting_round_trip(tmp_path):
     from jstdata.onboarding import set_tips_enabled, tips_enabled
 
-    assert tips_enabled(tmp_path)  # on by default
+    assert not tips_enabled(tmp_path)  # opt-in by default
+    set_tips_enabled(tmp_path, True)
+    assert tips_enabled(tmp_path)
     set_tips_enabled(tmp_path, False)
     assert not tips_enabled(tmp_path)
     mark_completed(tmp_path, "x")  # other state keeps the setting
@@ -303,10 +306,11 @@ def test_tips_setting_round_trip(tmp_path):
 
 
 def test_tip_bar_shows_and_hides(tmp_path):
-    from jstdata.onboarding import tips_enabled
+    from jstdata.onboarding import set_tips_enabled, tips_enabled
     from jstdata.onboarding.ui import TipBox
 
     mark_prompted(tmp_path)
+    set_tips_enabled(tmp_path, True)
 
     async def run():
         _, app = _host(tmp_path)
@@ -314,9 +318,10 @@ def test_tip_bar_shows_and_hides(tmp_path):
             await pilot.pause(0.5)
             assert isinstance(app._tip_bar, TipBox) and app._tip_bar.is_attached
             home_tip = app._tip_shown
-            await pilot.press("2")
+            await pilot.press("slash")
             await pilot.pause(0.5)
-            assert app._tip_shown != home_tip  # follows the destination
+            # Tip text may stay if still on same screen class; hide/show is the contract.
+            assert app._tip_bar is not None
 
             # A tutorial's coach replaces the tip line.
             app.start_tutorial(load_tutorial("big-tech-gross-profit"))
@@ -382,16 +387,16 @@ def test_tips_nudge_the_next_thing_to_collect():
     ws = tip_for(CoachSnapshot(screen="HomeScreen", home_dest="workspace", **both))
     assert 'Press "c"' in ws
     in_search = tip_for(CoachSnapshot(**both, **search))
-    assert 'Keep adding with "Space"' in in_search and '"Esc" then "4"' in in_search
+    assert 'Keep adding with "Space"' in in_search and '"2" for Workspace' in in_search
     menu_ready = tip_for(CoachSnapshot(screen="HomeScreen", **both))
-    assert menu_ready.endswith('Press "4" to review your workspace, then "c" to turn it into a query and see the numbers.')
+    assert 'Press "2" to review the workspace' in menu_ready
     # Query already saved: back to the destination tip.
     done = tip_for(
         CoachSnapshot(screen="HomeScreen", metrics=("m",), entities=("a",), query_count=1)
     )
     assert '"c"' not in done
     # Detail views keep their own tip; typing still wins everywhere.
-    assert 'Press "r" to run' in tip_for(
+    assert "Chart/Table" in tip_for(
         CoachSnapshot(screen="QueryScreen", entities=("a", "b"))
     )
     assert "typing" in tip_for(

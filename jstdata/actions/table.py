@@ -785,6 +785,6 @@ TABLE = register(
                 "Collect focused entity and metric into the workspace",
             ),
         ),
-        example="jst action add table --args '{\"sort_by\":\"value\"}'",
+        example=':add table --args \'{"sort_by":"value"}\'',
     )
 )
