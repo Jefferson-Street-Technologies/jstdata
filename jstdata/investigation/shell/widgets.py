@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional, Union
 
+from rich.markup import escape
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.reactive import reactive
 from textual.timer import Timer
-from textual.widgets import Label, Static
+from textual.widgets import Input, Label, Static
 
 from ..ui_primitives import ActionButton
 
@@ -18,8 +19,13 @@ JumpKind = Literal["queries", "workspace"]
 ArmedRemove = Union[tuple[str, int], tuple[str, str, str]]
 
 
-class ProjectHeader(Static):
-    """Top project identity strip."""
+class ProjectHeader(Horizontal):
+    """Top report identity strip with inline rename (edit icon only)."""
+
+    class RenameCommitted(Message):
+        def __init__(self, title: str) -> None:
+            self.title = title
+            super().__init__()
 
     DEFAULT_CSS = """
     ProjectHeader {
@@ -27,18 +33,123 @@ class ProjectHeader(Static):
         width: 100%;
         background: #0f0f0f;
         color: #e0e0e0;
-        text-style: bold;
         padding: 0 1;
+        align: left middle;
+    }
+    #shell-header-title {
+        width: auto;
+        max-width: 80%;
+        height: 1;
+        color: #e0e0e0;
+        text-style: bold;
+        padding: 0 1 0 0;
+    }
+    #shell-header-edit {
+        width: auto;
+        height: 1;
+        color: #737373;
+        padding: 0 1;
+    }
+    #shell-header-edit:hover {
+        color: #86efac;
+    }
+    #shell-header-input {
+        display: none;
+        width: 1fr;
+        height: 1;
+        background: #141414;
+        color: #fafafa;
+        border: none;
+        padding: 0 1;
+    }
+    ProjectHeader.-editing #shell-header-title,
+    ProjectHeader.-editing #shell-header-edit {
+        display: none;
+    }
+    ProjectHeader.-editing #shell-header-input {
+        display: block;
     }
     """
 
-    def __init__(self, title: str = "JST", **kwargs: Any) -> None:
-        super().__init__(title, **kwargs)
+    def __init__(self, title: str = "", **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._title = title or ""
+        self._editing = False
+
+    def compose(self) -> ComposeResult:
+        yield Label(self._title or "Untitled", id="shell-header-title", markup=False)
+        yield Label("✎", id="shell-header-edit", markup=False)
+        yield Input(
+            value=self._title,
+            placeholder="Report name",
+            id="shell-header-input",
+        )
 
     def set_project(self, title: str, *, commands_hint: bool = False) -> None:
-        # Commands live on the pane bar chip; optional hint for non-shell UIs.
-        hint = "   [: commands]" if commands_hint else ""
-        self.update(f"JST / {title}{hint}")
+        del commands_hint  # Commands live on the pane bar chip.
+        self._title = (title or "").strip() or "Untitled"
+        if self._editing:
+            return
+        if self.is_mounted:
+            self.query_one("#shell-header-title", Label).update(self._title)
+            self.query_one("#shell-header-input", Input).value = self._title
+
+    def begin_edit(self) -> None:
+        """Swap the title for an inline Input (no modal)."""
+        if self._editing:
+            return
+        self._editing = True
+        self.add_class("-editing")
+        field = self.query_one("#shell-header-input", Input)
+        field.value = self._title if self._title != "Untitled" else ""
+        field.focus()
+        try:
+            field.action_end()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def cancel_edit(self) -> None:
+        if not self._editing:
+            return
+        self._editing = False
+        self.remove_class("-editing")
+        self.query_one("#shell-header-input", Input).value = self._title
+        self.query_one("#shell-header-title", Label).update(self._title)
+
+    def _commit_edit(self, value: str) -> None:
+        title = value.strip()
+        self._editing = False
+        self.remove_class("-editing")
+        if not title or title == self._title:
+            self.query_one("#shell-header-input", Input).value = self._title
+            self.query_one("#shell-header-title", Label).update(self._title)
+            return
+        self._title = title
+        self.query_one("#shell-header-title", Label).update(title)
+        self.query_one("#shell-header-input", Input).value = title
+        self.post_message(self.RenameCommitted(title))
+
+    def on_click(self, event) -> None:  # noqa: ANN001
+        widget = getattr(event, "widget", None)
+        while widget is not None:
+            if getattr(widget, "id", None) == "shell-header-edit":
+                event.stop()
+                self.begin_edit()
+                return
+            widget = getattr(widget, "parent", None)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id != "shell-header-input":
+            return
+        event.stop()
+        self._commit_edit(event.value)
+
+    def on_key(self, event) -> None:  # noqa: ANN001
+        if not self._editing:
+            return
+        if event.key == "escape":
+            event.stop()
+            self.cancel_edit()
 
 
 class _InvTabChip(Static):
@@ -433,22 +544,23 @@ class PaneBar(Static):
         for i, inv_id in enumerate(self._order, start=1):
             if i > 1:
                 gap(1)
-            label = self._labels.get(inv_id, inv_id)
-            mark = self._marks.get(inv_id, "")
+            label = str(self._labels.get(inv_id, inv_id))
+            mark = str(self._marks.get(inv_id, ""))
+            safe = escape(label) + escape(mark)
             active = inv_id == self._active
             if self._jumping and i <= 9:
                 core_plain = f"{i} {label}{mark}"
-                core_shown = f"[bold #fbbf24]{i}[/] {label}{mark}"
+                core_shown = f"[bold #fbbf24]{i}[/] {safe}"
             else:
                 core_plain = f"{label}{mark}"
-                core_shown = label + mark
+                core_shown = safe
 
             if active:
                 tab_plain = f" {core_plain} "
-                tab_shown = f"[bold #0a0a0a on #4ade80]{tab_plain}[/]"
+                tab_shown = f"[bold #0a0a0a on #4ade80] {core_shown} [/]"
             else:
                 tab_plain = f" {core_plain} "
-                tab_shown = f"[on #1a1a1a]{tab_plain}[/]"
+                tab_shown = f"[on #1a1a1a] {core_shown} [/]"
 
             emit(tab_plain, tab_shown, self._HIT_TAB, inv_id)
 
@@ -555,16 +667,21 @@ class _SidebarQueryRow(Static):
                     yield Label("DRAFT", classes="sidebar-q-kicker")
                     if self.empty or not self._label:
                         yield Label(
-                            "[dim]Empty · / search or n[/]",
+                            "[dim]Empty · / to search[/]",
                             classes="sidebar-q-title",
                             markup=True,
                         )
                     else:
-                        yield Label(self._label, classes="sidebar-q-title")
+                        yield Label(
+                            self._label,
+                            classes="sidebar-q-title",
+                            markup=False,
+                        )
                 else:
                     yield Label(
                         self._label or f"Query {self.query_id}",
                         classes="sidebar-q-title",
+                        markup=False,
                     )
             yield Label("✕", classes="sidebar-remove")
 
@@ -608,6 +725,159 @@ class _SidebarSectionHeader(Static):
         super().__init__(text, markup=True, classes=classes)
 
 
+class _SidebarActiveKindHeader(Static):
+    """Entities / Metrics / Series subheader with ``+ Add`` for the open query."""
+
+    DEFAULT_CSS = """
+    _SidebarActiveKindHeader {
+        height: 1;
+        width: 100%;
+        padding: 0 1 0 2;
+        background: #080808;
+        border-left: solid #27272a;
+    }
+    _SidebarActiveKindHeader .sqc-kind-row {
+        height: 1;
+        width: 100%;
+    }
+    _SidebarActiveKindHeader .sqc-kind-label {
+        width: 1fr;
+        color: #52525b;
+        text-style: bold;
+        height: 1;
+    }
+    _SidebarActiveKindHeader ActionButton.-ghost {
+        color: #86efac;
+        background: #080808;
+        text-style: none;
+        height: 1;
+    }
+    _SidebarActiveKindHeader ActionButton.-ghost:hover {
+        color: #bbf7d0;
+        text-style: bold;
+    }
+    """
+
+    def __init__(self, title: str, kind: str, *, query_id: int) -> None:
+        super().__init__()
+        self.kind = kind
+        self.query_id = query_id
+        self._title = title
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(classes="sqc-kind-row"):
+            yield Label(self._title.upper(), classes="sqc-kind-label")
+            yield ActionButton(
+                "+ Add",
+                action_id=f"add_{self.kind}",
+                shortcut={"entity": "E", "metric": "M", "series": "S"}[self.kind],
+                variant="ghost",
+            )
+
+    def on_action_button_pressed(self, event: ActionButton.Pressed) -> None:
+        if event.button_id != f"add_{self.kind}":
+            return
+        event.stop()
+        sidebar = _sidebar_owner(self)
+        if sidebar is not None:
+            sidebar.post_message(
+                ResearchSidebar.QueryAddResource(self.kind, self.query_id)
+            )
+
+
+class _SidebarActiveItem(Static):
+    """One active-query resource row (remove drops it from the query)."""
+
+    DEFAULT_CSS = """
+    _SidebarActiveItem {
+        height: 2;
+        min-height: 2;
+        max-height: 2;
+        width: 100%;
+        padding: 0 1 0 2;
+        background: #080808;
+        border-left: solid #27272a;
+    }
+    _SidebarActiveItem:hover {
+        background: #121212;
+    }
+    _SidebarActiveItem .sqc-item-row {
+        height: 100%;
+        width: 100%;
+    }
+    _SidebarActiveItem .sqc-item-mark {
+        width: 2;
+        height: 1;
+        color: #3f3f46;
+        content-align: left middle;
+    }
+    _SidebarActiveItem .sqc-item-label {
+        width: 1fr;
+        color: #a1a1aa;
+        height: 1;
+        content-align: left middle;
+    }
+    _SidebarActiveItem .sidebar-remove {
+        width: auto;
+        color: #3f3f46;
+        height: 1;
+        padding: 0 1;
+        content-align: right middle;
+    }
+    _SidebarActiveItem:hover .sqc-item-label {
+        color: #e4e4e7;
+    }
+    _SidebarActiveItem:hover .sidebar-remove {
+        color: #f87171;
+    }
+    """
+
+    def __init__(
+        self, kind: str, resource_id: str, label: str, *, query_id: int
+    ) -> None:
+        super().__init__()
+        self.kind = kind
+        self.resource_id = resource_id
+        self.query_id = query_id
+        self._label = label or resource_id
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(classes="sqc-item-row"):
+            yield Label("·", classes="sqc-item-mark", markup=False)
+            yield Label(self._label, classes="sqc-item-label", markup=False)
+            yield Label("✕", classes="sidebar-remove")
+
+    def on_click(self, event) -> None:  # noqa: ANN001
+        if not _clicked_remove(event):
+            return
+        event.stop()
+        sidebar = _sidebar_owner(self)
+        if sidebar is not None:
+            sidebar.post_message(
+                ResearchSidebar.QueryRemoveResource(
+                    self.kind, self.resource_id, self.query_id
+                )
+            )
+
+
+class _SidebarActiveEmpty(Static):
+    """Placeholder when a kind has no active resources."""
+
+    DEFAULT_CSS = """
+    _SidebarActiveEmpty {
+        height: 1;
+        width: 100%;
+        color: #3f3f46;
+        padding: 0 1 0 5;
+        background: #080808;
+        border-left: solid #27272a;
+    }
+    """
+
+    def __init__(self) -> None:
+        super().__init__("none", markup=False)
+
+
 class _SidebarResourceRow(Static):
     """Clickable flat workspace resource (entity / metric / series)."""
 
@@ -629,7 +899,7 @@ class _SidebarResourceRow(Static):
     def compose(self) -> ComposeResult:
         with Horizontal(classes="sidebar-row"):
             yield Label(" ", classes="sidebar-jump-num", markup=True)
-            yield Label(self._label, classes="sidebar-res-title")
+            yield Label(self._label, classes="sidebar-res-title", markup=False)
             if self.removable:
                 yield Label("✕", classes="sidebar-remove")
 
@@ -688,6 +958,19 @@ class ResearchSidebar(Static):
             self.resource_id = resource_id
             super().__init__()
 
+    class QueryAddResource(Message):
+        def __init__(self, kind: str, query_id: int) -> None:
+            self.kind = kind
+            self.query_id = query_id
+            super().__init__()
+
+    class QueryRemoveResource(Message):
+        def __init__(self, kind: str, resource_id: str, query_id: int) -> None:
+            self.kind = kind
+            self.resource_id = resource_id
+            self.query_id = query_id
+            super().__init__()
+
     sidebar_collapsed: reactive[bool] = reactive(False)
 
     DEFAULT_CSS = """
@@ -718,7 +1001,7 @@ class ResearchSidebar(Static):
     }
     #sidebar-query-list {
         height: 1fr;
-        max-height: 55%;
+        max-height: 60%;
         background: #0c0c0c;
         padding: 0 0 0 0;
     }
@@ -752,9 +1035,15 @@ class ResearchSidebar(Static):
         max-height: 3;
         width: 100%;
         padding: 0 1;
-        border-left: solid #0c0c0c;
+        background: #111111;
+        border-left: solid #111111;
+        margin-bottom: 0;
     }
-    _SidebarQueryRow:hover, _SidebarQueryRow.-active {
+    _SidebarQueryRow:hover {
+        background: #1a1a1a;
+        border-left: solid #525252;
+    }
+    _SidebarQueryRow.-active {
         background: #1a3a2a;
         border-left: solid #4ade80;
     }
@@ -776,7 +1065,7 @@ class ResearchSidebar(Static):
     }
     .sidebar-q-title {
         height: 1;
-        color: #e8e8e8;
+        color: #f4f4f5;
         text-style: bold;
     }
     .sidebar-section {
@@ -863,6 +1152,7 @@ class ResearchSidebar(Static):
                 list[tuple[str, str]],
                 list[tuple[str, str]],
                 list[tuple[str, str]],
+                Optional[int],
             ]
         ] = None
         self._queries_running = False
@@ -1157,12 +1447,19 @@ class ResearchSidebar(Static):
         active_entities: Optional[list[tuple[str, str]]] = None,
         active_metrics: Optional[list[tuple[str, str]]] = None,
         active_series: Optional[list[tuple[str, str]]] = None,
+        active_query_id: Optional[int] = None,
     ) -> None:
         self._pending_workspace = (entities, metrics, series)
         ae = list(active_entities or [])
         am = list(active_metrics or [])
         a_s = list(active_series or [])
-        self._pending_active = (ae, am, a_s) if (ae or am or a_s) else None
+        # Keep compose visible whenever a query is open (even if empty).
+        qid = (
+            int(active_query_id)
+            if active_query_id is not None
+            else self._active_query_id
+        )
+        self._pending_active = (ae, am, a_s, qid) if qid is not None else None
         self._workspace_token += 1
         total = len(entities) + len(metrics) + len(series)
         active_n = len(ae) + len(am) + len(a_s)
@@ -1170,12 +1467,12 @@ class ResearchSidebar(Static):
             kicker = f"Workspace  {total} · active {active_n}"
         elif total:
             kicker = f"Workspace  {total}"
-        elif active_n:
+        elif active_n or qid is not None:
             kicker = f"Workspace · active {active_n}"
         else:
             kicker = "Workspace"
         self.query_one("#sidebar-ws-kicker", Label).update(kicker)
-        self.set_class(total == 0 and active_n == 0, "-ws-empty")
+        self.set_class(total == 0 and active_n == 0 and qid is None, "-ws-empty")
         self.call_later(self._launch_refresh_workspace)
 
     def _launch_refresh_workspace(self) -> None:
@@ -1218,8 +1515,6 @@ class ResearchSidebar(Static):
                     title: str,
                     rows: list[tuple[str, str]],
                     kind: str,
-                    *,
-                    removable: bool = True,
                 ) -> None:
                     if not rows:
                         return
@@ -1230,23 +1525,42 @@ class ResearchSidebar(Static):
                                 kind,
                                 rid,
                                 label or rid,
-                                removable=removable,
+                                removable=True,
+                            )
+                        )
+
+                def _active_kind(
+                    title: str,
+                    kind: str,
+                    rows: list[tuple[str, str]],
+                    qid: int,
+                ) -> None:
+                    widgets.append(
+                        _SidebarActiveKindHeader(title, kind, query_id=qid)
+                    )
+                    if not rows:
+                        widgets.append(_SidebarActiveEmpty())
+                        return
+                    for rid, label in rows:
+                        widgets.append(
+                            _SidebarActiveItem(
+                                kind, rid, label or rid, query_id=qid
                             )
                         )
 
                 if active is not None:
-                    ae, am, a_s = active
-                    if ae or am or a_s:
+                    ae, am, a_s, qid = active
+                    assert qid is not None
+                    widgets.append(
+                        _SidebarSectionHeader("Active", emphasis=True)
+                    )
+                    _active_kind("Entities", "entity", ae, int(qid))
+                    _active_kind("Metrics", "metric", am, int(qid))
+                    _active_kind("Series", "series", a_s, int(qid))
+                    if entities or metrics or series:
                         widgets.append(
-                            _SidebarSectionHeader("Active", emphasis=True)
+                            _SidebarSectionHeader("Saved", emphasis=True)
                         )
-                        _section("Entities", ae, "entity", removable=False)
-                        _section("Metrics", am, "metric", removable=False)
-                        _section("Series", a_s, "series", removable=False)
-                        if entities or metrics or series:
-                            widgets.append(
-                                _SidebarSectionHeader("Saved", emphasis=True)
-                            )
 
                 _section("Entities", entities, "entity")
                 _section("Metrics", metrics, "metric")

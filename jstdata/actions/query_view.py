@@ -22,14 +22,13 @@ from typing import Any, Optional
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Input, Label, ListItem, ListView, Static
+from textual.widgets import Checkbox, Input, Label, ListItem, ListView, Static, TextArea
 from textual_plotext import PlotextPlot
 
 from ..client import JSTDataClient
-from ..investigation.model import Query, Workspace
-from ..investigation.nav import annotations_panel
+from ..investigation.model import Query, QueryRemark, Workspace
 from ..investigation.naming import label_for
 from ..investigation.query_compose import (
     OBS_MODES,
@@ -674,13 +673,16 @@ def plot_history(
     records: Optional[dict[str, Any] | Sequence[dict[str, Any]]] = None,
     *,
     cursor_date: Optional[datetime] = None,
+    bound_lo: Optional[datetime] = None,
+    bound_hi: Optional[datetime] = None,
     colors: Optional[Sequence[tuple[int, int, int]]] = None,
 ) -> bool:
     """Draw one or more series onto a plotext figure.
 
     Overlay series that share an axis (same units). Returns True when at
     least one line (or scatter) was drawn. X ticks are calendar years when
-    the span is long enough; a cursor date draws a vertical marker.
+    the span is long enough. ``bound_lo`` / ``bound_hi`` grey out the
+    outside; ``cursor_date`` marks the active bound.
     """
     if records is None:
         recs: list[dict[str, Any]] = []
@@ -696,6 +698,9 @@ def plot_history(
     units = ""
     all_values: list[float] = []
     cursor_point: tuple[str, float] | None = None
+    grey = (70, 70, 70)
+    lo_s = _naive(bound_lo).strftime("%Y-%m-%d") if bound_lo else None
+    hi_s = _naive(bound_hi).strftime("%Y-%m-%d") if bound_hi else None
     names = line_labels(recs)
     for i, (rec, name) in enumerate(zip(recs, names)):
         times, values = history_points(rec)
@@ -718,7 +723,26 @@ def plot_history(
             color = CHART_LINE_COLOR
         else:
             color = CHART_PALETTE[i % len(CHART_PALETTE)]
-        draw(times, scaled, marker="braille", label=name, color=color)
+        if lo_s or hi_s:
+            # Full series dimmed, then in-bound overlay in color.
+            draw(times, scaled, marker="braille", color=grey)
+            in_t: list[str] = []
+            in_v: list[float] = []
+            for t, v in zip(times, scaled):
+                if lo_s and t < lo_s:
+                    continue
+                if hi_s and t > hi_s:
+                    continue
+                in_t.append(t)
+                in_v.append(v)
+            if in_t:
+                draw_in = plt.scatter if len(in_v) == 1 else plt.plot
+                draw_in(in_t, in_v, marker="braille", label=name, color=color)
+            else:
+                # Keep legend even when the window is empty.
+                draw(times[:1], scaled[:1], marker="braille", label=name, color=color)
+        else:
+            draw(times, scaled, marker="braille", label=name, color=color)
         drawn += 1
         if cursor_date is not None and cursor_point is None:
             target = _naive(cursor_date).strftime("%Y-%m-%d")
@@ -744,6 +768,14 @@ def plot_history(
     ticks, labels = calendar_xticks(recs)
     if ticks:
         plt.xticks(ticks, labels)
+    for bound, dim in ((bound_lo, True), (bound_hi, True)):
+        if bound is None:
+            continue
+        day = _naive(bound).strftime("%Y-%m-%d")
+        try:
+            plt.vline(day)
+        except Exception:  # noqa: BLE001
+            pass
     if cursor_date is not None:
         day = _naive(cursor_date).strftime("%Y-%m-%d")
         try:
@@ -952,10 +984,17 @@ class HistoryPlot(PlotextPlot):
         records: Optional[Sequence[dict[str, Any]]] = None,
         *,
         cursor_date: Optional[datetime] = None,
+        bound_lo: Optional[datetime] = None,
+        bound_hi: Optional[datetime] = None,
         colors: Optional[Sequence[tuple[int, int, int]]] = None,
     ) -> None:
         plot_history(
-            self.plt, records, cursor_date=cursor_date, colors=colors
+            self.plt,
+            records,
+            cursor_date=cursor_date,
+            bound_lo=bound_lo,
+            bound_hi=bound_hi,
+            colors=colors,
         )
         self.refresh()
 
@@ -968,26 +1007,27 @@ class QueryScreen(BaseScreen):
 
     BINDINGS = [
         Binding("r", "load", "Refresh", key_display="r"),
-        Binding("a", "annotate", "Annotate", show=False),
+        Binding("a", "annotate", "Add remark", show=False),
         Binding("R", "rename_query", "Rename query", show=False),
         Binding("t", "mode_table", "Table", show=False),
         Binding("c", "mode_chart", "Chart", show=False),
         Binding("E", "add_entity", "Add entity", show=False),
         Binding("M", "add_metric", "Add metric", show=False),
         Binding("S", "add_series", "Add series", show=False),
-        Binding("space", "collect", "Collect into workspace", show=False),
         Binding("j", "cursor_down", "Cursor Down", show=False),
         Binding("k", "cursor_up", "Cursor Up", show=False),
-        Binding("h", "obs_left", "Older observation", show=False),
-        Binding("l", "obs_right", "Newer observation", show=False),
-        Binding("left", "obs_left", "Older observation", show=False),
-        Binding("right", "obs_right", "Newer observation", show=False),
+        Binding("h", "obs_left", "Nudge bound older", show=False),
+        Binding("l", "obs_right", "Nudge bound newer", show=False),
+        Binding("left", "obs_left", "Nudge bound older", show=False),
+        Binding("right", "obs_right", "Nudge bound newer", show=False),
         Binding("x", "toggle_series", "Hide or show series", show=False),
         Binding("o", "toggle_sort", "Sort observations", show=False),
         Binding("y", "copy_python", "Copy Python", show=False),
         Binding("[", "prev_group", "Previous chart group", show=False),
         Binding("]", "next_group", "Next chart group", show=False),
-        Binding("enter", "inspect", "Inspect", priority=True),
+        Binding("tab", "toggle_bound_focus", "Toggle lo/hi bound", show=False, priority=True),
+        Binding("enter", "inspect", "Toggle series / inspect", priority=True),
+        Binding("escape", "cancel_remark", "Cancel remark", show=False),
     ]
 
     FOOTER_CHROME: tuple[str, ...] = BaseScreen.FOOTER_CHROME
@@ -1006,7 +1046,7 @@ class QueryScreen(BaseScreen):
     }
     #query-view-tabs {
         height: 1;
-        margin: 1 0 0 0;
+        margin: 0 0 0 0;
         padding: 0;
         background: #0a0a0a;
     }
@@ -1055,19 +1095,24 @@ class QueryScreen(BaseScreen):
         background: #0a0a0a;
     }
     #query-obs-strip {
-        height: 2;
+        height: 3;
         margin-top: 0;
         display: none;
     }
     #strip-line1 { color: #e0e0e0; height: 1; }
     #strip-line2 { color: #888; height: 1; }
+    #strip-controls {
+        height: 1;
+        align: left middle;
+    }
     #query-notes {
         height: auto;
-        min-height: 5;
-        max-height: 10;
+        min-height: 6;
+        max-height: 28;
         margin-top: 1;
         border-top: solid #333;
         padding-top: 1;
+        overflow-y: auto;
     }
     #query-notes-header { height: 1; margin-bottom: 0; }
     #query-notes-kicker {
@@ -1076,12 +1121,69 @@ class QueryScreen(BaseScreen):
         text-style: bold;
         height: 1;
     }
-    #query-annotations {
+    #query-remarks-scroll {
+        height: auto;
+        min-height: 4;
+        max-height: 14;
+        overflow-y: auto;
+        background: #0a0a0a;
+    }
+    #query-remarks-list {
         color: #e8e8e8;
         height: auto;
-        min-height: 3;
-        max-height: 7;
-        overflow-y: auto;
+        width: 100%;
+    }
+    #query-remark-draft {
+        height: auto;
+        display: none;
+        margin-top: 1;
+        background: #111;
+        padding: 1;
+        border: solid #333;
+    }
+    #query-remark-draft.-open { display: block; }
+    #remark-name-row {
+        height: 3;
+        margin-bottom: 0;
+        align: left middle;
+    }
+    #remark-name {
+        width: 1fr;
+        height: 3;
+        background: #0a0a0a;
+        border: solid #333;
+        margin-right: 1;
+    }
+    #remark-cite {
+        width: auto;
+        color: #a3a3a3;
+        height: 3;
+        content-align: left middle;
+        padding: 0 1;
+    }
+    #remark-text {
+        background: #0a0a0a;
+        border: solid #333;
+        width: 100%;
+        height: 3;
+        margin-bottom: 0;
+    }
+    #remark-actions { height: 1; margin-top: 1; }
+    #remark-submit-hint {
+        color: #e5e5e5;
+        height: 1;
+        margin-top: 1;
+        text-style: bold;
+    }
+    #strip-controls ActionButton.-tab {
+        color: #e5e5e5;
+        background: #333333;
+        text-style: none;
+    }
+    #strip-controls ActionButton.-tab.-active {
+        color: #0a0a0a;
+        background: #86efac;
+        text-style: bold;
     }
     .obs-row { width: 100%; height: 1; color: #e0e0e0; }
     .obs-missing { color: #666; }
@@ -1143,12 +1245,17 @@ class QueryScreen(BaseScreen):
         self._series_i = 0
         self._group_i = 0
         self._hidden: set[str] = set()
-        self._cursor_i = -1
+        self._cursor_i = -1  # legacy single-cursor index; bounds prefer lo/hi
+        self._bound_lo_i: int = 0
+        self._bound_hi_i: int = 0
+        self._bound_focus: str = "hi"  # "lo" | "hi" — Tab toggles; h/l nudges
         self._newest_first = True
         self._busy = False
         self._has_run_once = False
         self._needs_refresh = False
         self._run_token = 0
+        self._remark_drafting = False
+        self._pending_remark_delete = False
         # Frequency selector options derived from metric variants / series.
         self._freq_options: list[Optional[str]] = [None]
         self._freq_source_key: tuple[str, ...] = ()
@@ -1185,17 +1292,63 @@ class QueryScreen(BaseScreen):
                     with Vertical(id="query-obs-strip"):
                         yield Label("", id="strip-line1")
                         yield Label("", id="strip-line2")
+                        with Horizontal(id="strip-controls"):
+                            yield ActionButton(
+                                "Lower",
+                                action_id="bound_lo",
+                                shortcut="Tab",
+                                variant="tab",
+                                id="bound-lo-btn",
+                            )
+                            yield ActionButton(
+                                "Upper",
+                                action_id="bound_hi",
+                                shortcut="Tab",
+                                variant="tab",
+                                id="bound-hi-btn",
+                            )
+                            yield ActionButton(
+                                "Reset",
+                                action_id="reset_bounds",
+                                variant="ghost",
+                                id="bound-reset-btn",
+                            )
             with Vertical(id="query-notes"):
                 with Horizontal(id="query-notes-header"):
-                    yield Label("Research notes", id="query-notes-kicker")
+                    yield Label("Remarks", id="query-notes-kicker")
                     yield ActionButton(
-                        "+ Annotate",
+                        "+ Remark",
                         action_id="annotate",
                         shortcut="a",
                         variant="ghost",
                         id="query-annotate",
                     )
-                yield Static("", id="query-annotations", markup=True)
+                with VerticalScroll(id="query-remarks-scroll"):
+                    yield Static("", id="query-remarks-list", markup=True)
+                with Vertical(id="query-remark-draft"):
+                    with Horizontal(id="remark-name-row"):
+                        yield Input(placeholder="Name (optional)", id="remark-name")
+                        yield Checkbox("Cite", id="remark-cite", value=False)
+                    yield Label("Remark", classes="remark-field-label")
+                    yield TextArea("", id="remark-text")
+                    yield Label(
+                        "Enter to add remark",
+                        id="remark-submit-hint",
+                        markup=False,
+                    )
+                    with Horizontal(id="remark-actions"):
+                        yield ActionButton(
+                            "Save",
+                            action_id="save_remark",
+                            variant="primary",
+                            id="remark-save",
+                        )
+                        yield ActionButton(
+                            "Cancel",
+                            action_id="cancel_remark",
+                            variant="ghost",
+                            id="remark-cancel",
+                        )
 
     def on_mount(self) -> None:
         super().on_mount()
@@ -1250,7 +1403,13 @@ class QueryScreen(BaseScreen):
         return f"[dim]Query[/] [bold]{escape(str(name))}[/] [dim]→ client.query(…)[/]"
 
     def footer_action_keys(self) -> list[str]:
-        return ["[bold]Shift+X[/bold] delete query"]
+        # BaseScreen.FOOTER_CHROME already has ``a remark``.
+        return [
+            "[bold]Tab[/bold] lo/hi bound",
+            "[bold]h/l[/bold] nudge",
+            "[bold]Enter[/bold] toggle series",
+            "[bold]Shift+X[/bold] delete query",
+        ]
 
     def shell_breadcrumb(self) -> str:
         try:
@@ -1290,66 +1449,169 @@ class QueryScreen(BaseScreen):
         self.query_one("#query-obs-strip").display = False
 
     def _render_annotations(self, query: Query) -> None:
-        from ..investigation.nav import unpack_annotation
-
-        panel = self.query_one("#query-annotations", Static)
+        panel = self.query_one("#query-remarks-list", Static)
         lines: list[str] = []
-        inv = getattr(self.app, "investigation", None)
-        inv_notes = (getattr(inv, "annotations", None) or "").strip() if inv else ""
-        if inv_notes:
-            inv_name, inv_body = unpack_annotation(inv_notes)
-            if inv_name:
-                lines.append(f"[bold]{escape(inv_name)}[/]")
-            if inv_body.strip():
-                lines.append(escape(inv_body.strip()))
-            elif not inv_name:
-                lines.append(escape(inv_notes))
-        if query.annotations:
-            if lines:
-                lines.append("")
-            q_name, q_body = unpack_annotation(query.annotations)
-            if q_name:
-                lines.append(f"[bold #86efac]{escape(q_name)}[/]")
-            if q_body.strip():
-                lines.append(escape(q_body.strip()))
-            elif not q_name:
-                lines.append(escape(query.annotations))
-        for i, note in enumerate(query.notes_on or [], start=1):
-            span = ""
-            if note.from_ or note.to:
-                span = f" · {note.from_ or '…'} – {note.to or '…'}"
-            series = f" · {note.series}" if note.series else ""
+        remarks = list(query.remarks or [])
+        for i, remark in enumerate(remarks, start=1):
+            head = f"[bold #86efac]{i:02d}[/]"
+            if remark.name:
+                head += f" [bold]{escape(remark.name)}[/]"
+            lines.append(head)
+            lines.append(f"   {escape(remark.text)}")
+            cite_bits: list[str] = []
+            if remark.series:
+                cite_bits.append(", ".join(remark.series[:3]) + (
+                    "…" if len(remark.series) > 3 else ""
+                ))
+            if remark.from_ or remark.to:
+                cite_bits.append(
+                    f"{remark.from_ or '…'} – {remark.to or '…'}"
+                )
+            if cite_bits:
+                lines.append(f"   [dim]cite · {' · '.join(escape(b) for b in cite_bits)}[/]")
             lines.append(
-                f"[bold #86efac]{i:02d}[/] {escape(note.text)}[dim]{series}{span}[/]"
+                f"   [dim]d{i}[/] [bold #f87171]delete[/]"
             )
         if not lines:
-            body = annotations_panel(query.annotations) if query.id else ""
-            if body:
-                lines.append(body)
-            else:
-                lines.append(
-                    "[dim]No research notes yet. Press a or click Annotate.[/]"
-                )
+            lines.append(
+                "[dim]No remarks yet. Press a to add one — optional name, "
+                "required text, optional cite of the chart cross section.[/]"
+            )
         panel.update("\n".join(lines))
 
     def refresh_annotations(self) -> None:
-        """Host hook after annotation edits."""
+        """Host hook after remark edits."""
         try:
             query = self._resolve_query()
         except Exception:
             return
         self._render_annotations(query)
 
-    def action_annotate(self) -> None:
+    def begin_add_remark(self) -> None:
+        """Open the inline remark draft (``a`` / host)."""
         if self.query_id is None:
             self.notify(
-                "Save as a query first to attach annotations",
+                "Save as a query first to attach remarks",
                 severity="warning",
             )
             return
-        edit = getattr(self.app, "edit_query_annotations", None)
-        if callable(edit):
-            edit(self.query_id)
+        self._remark_drafting = True
+        draft = self.query_one("#query-remark-draft")
+        draft.add_class("-open")
+        # Shrink the list so the draft (incl. Enter hint) stays on screen.
+        try:
+            self.query_one("#query-remarks-scroll").styles.max_height = 5
+        except Exception:  # noqa: BLE001
+            pass
+        self.query_one("#remark-name", Input).value = ""
+        self.query_one("#remark-text", TextArea).load_text("")
+        try:
+            self.query_one("#remark-cite", Checkbox).value = False
+        except Exception:  # noqa: BLE001
+            pass
+        self.query_one("#remark-name", Input).focus()
+
+    def action_annotate(self) -> None:
+        self.begin_add_remark()
+
+    def action_cancel_remark(self) -> None:
+        if self._remark_drafting:
+            self._remark_drafting = False
+            self.query_one("#query-remark-draft").remove_class("-open")
+            try:
+                self.query_one("#query-remarks-scroll").styles.max_height = 14
+            except Exception:  # noqa: BLE001
+                pass
+            self.notify("Remark cancelled", timeout=1)
+            return
+        # Esc still backs out of the shell when not drafting a remark.
+        self.action_shell_escape()
+
+    def _persist_remarks(self, remarks: list[QueryRemark]) -> None:
+        if self.query_id is None:
+            return
+        inv = getattr(self.app, "investigation", None)
+        if inv is None:
+            return
+        from ..investigation.api import update_query
+
+        try:
+            update_query(
+                inv,
+                int(self.query_id),
+                remarks=remarks,
+                app_dir=getattr(self.app, "app_dir", None),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.notify(str(exc), severity="error")
+            return
+        self._render_annotations(inv.get_query(int(self.query_id)))
+        refresh = getattr(self.app, "refresh_shell_chrome", None)
+        if callable(refresh):
+            refresh()
+
+    def action_save_remark(self) -> None:
+        if not self._remark_drafting or self.query_id is None:
+            return
+        name = self.query_one("#remark-name", Input).value.strip() or None
+        text = self.query_one("#remark-text", TextArea).text.strip()
+        if not text:
+            self.notify("Remark text is required", severity="warning")
+            return
+        cite = False
+        try:
+            cite = bool(self.query_one("#remark-cite", Checkbox).value)
+        except Exception:  # noqa: BLE001
+            pass
+        series: list[str] = []
+        date_from: Optional[str] = None
+        date_to: Optional[str] = None
+        if cite:
+            for rec in self._visible_records():
+                sid = str(rec.get("id") or "").strip()
+                if sid and sid not in series:
+                    series.append(sid)
+            lo = self._bound_lo_day()
+            hi = self._bound_hi_day()
+            date_from = lo.strftime("%Y-%m-%d") if lo else None
+            date_to = hi.strftime("%Y-%m-%d") if hi else None
+        try:
+            query = self._resolve_query()
+        except Exception as exc:  # noqa: BLE001
+            self.notify(str(exc), severity="error")
+            return
+        remarks = list(query.remarks or [])
+        remarks.append(
+            QueryRemark(
+                text=text,
+                name=name,
+                series=series,
+                from_=date_from,
+                to=date_to,
+            )
+        )
+        self._persist_remarks(remarks)
+        self._remark_drafting = False
+        self.query_one("#query-remark-draft").remove_class("-open")
+        try:
+            self.query_one("#query-remarks-scroll").styles.max_height = 14
+        except Exception:  # noqa: BLE001
+            pass
+        self.notify("Remark saved")
+
+    def action_delete_remark(self, index: int) -> None:
+        """Delete remark at 1-based index."""
+        try:
+            query = self._resolve_query()
+        except Exception:
+            return
+        remarks = list(query.remarks or [])
+        if index < 1 or index > len(remarks):
+            self.notify(f"No remark {index}", severity="warning")
+            return
+        del remarks[index - 1]
+        self._persist_remarks(remarks)
+        self.notify(f"Deleted remark {index}")
 
     def action_rename_query(self) -> None:
         if self.query_id is None:
@@ -1422,6 +1684,7 @@ class QueryScreen(BaseScreen):
         self._group_i = 0
         self._hidden.clear()
         self._cursor_i = -1
+        self._reset_bounds()
         self._mode = "chart"
         # First successful plot auto-promotes into the report set.
         if not query.in_report:
@@ -1508,13 +1771,47 @@ class QueryScreen(BaseScreen):
             if str(rec.get("id") or "") not in self._hidden
         ]
 
-    def _cursor_day(self) -> Optional[datetime]:
-        dates = cursor_dates(self._visible_records())
+    def _all_cursor_dates(self) -> list[datetime]:
+        return cursor_dates(self._visible_records())
+
+    def _clamp_bounds(self) -> None:
+        dates = self._all_cursor_dates()
+        if not dates:
+            self._bound_lo_i = 0
+            self._bound_hi_i = 0
+            return
+        n = len(dates)
+        self._bound_lo_i = max(0, min(self._bound_lo_i, n - 1))
+        self._bound_hi_i = max(0, min(self._bound_hi_i, n - 1))
+        if self._bound_lo_i > self._bound_hi_i:
+            self._bound_lo_i, self._bound_hi_i = self._bound_hi_i, self._bound_lo_i
+
+    def _reset_bounds(self) -> None:
+        dates = self._all_cursor_dates()
+        self._bound_lo_i = 0
+        self._bound_hi_i = max(0, len(dates) - 1)
+        self._bound_focus = "hi"
+        self._cursor_i = self._bound_hi_i
+
+    def _bound_lo_day(self) -> Optional[datetime]:
+        dates = self._all_cursor_dates()
         if not dates:
             return None
-        if self._cursor_i < 0 or self._cursor_i >= len(dates):
-            self._cursor_i = len(dates) - 1
-        return dates[self._cursor_i]
+        self._clamp_bounds()
+        return dates[self._bound_lo_i]
+
+    def _bound_hi_day(self) -> Optional[datetime]:
+        dates = self._all_cursor_dates()
+        if not dates:
+            return None
+        self._clamp_bounds()
+        return dates[self._bound_hi_i]
+
+    def _cursor_day(self) -> Optional[datetime]:
+        """Active bound date (the one Tab-focus moves with h/l)."""
+        if self._bound_focus == "lo":
+            return self._bound_lo_day()
+        return self._bound_hi_day()
 
     def _show_selected(self) -> None:
         record = self._selected_record()
@@ -1579,9 +1876,26 @@ class QueryScreen(BaseScreen):
                 if rec in group.records
             ]
         self._paint_chart_title()
+        self._clamp_bounds()
         self.query_one("#query-chart", HistoryPlot).plot_records(
-            visible, cursor_date=self._cursor_day(), colors=colors
+            visible,
+            cursor_date=self._cursor_day(),
+            bound_lo=self._bound_lo_day(),
+            bound_hi=self._bound_hi_day(),
+            colors=colors,
         )
+
+    def _paint_bound_buttons(self) -> None:
+        try:
+            lo = self.query_one("#bound-lo-btn", ActionButton)
+            hi = self.query_one("#bound-hi-btn", ActionButton)
+        except Exception:  # noqa: BLE001
+            return
+        # Both stay ``-tab`` always; only ``-active`` tracks focus (green).
+        lo.add_class("-tab")
+        hi.add_class("-tab")
+        lo.set_class(self._bound_focus == "lo", "-active")
+        hi.set_class(self._bound_focus == "hi", "-active")
 
     def _render_obs_strip(self) -> None:
         strip = self.query_one("#query-obs-strip")
@@ -1589,7 +1903,10 @@ class QueryScreen(BaseScreen):
             strip.display = False
             return
         strip.display = True
+        self._paint_bound_buttons()
         day = self._cursor_day()
+        lo = self._bound_lo_day()
+        hi = self._bound_hi_day()
         record = self._selected_record()
         freq = (record or {}).get("frequency") if record else None
         units = (record or {}).get("units") if record else None
@@ -1597,6 +1914,9 @@ class QueryScreen(BaseScreen):
             self.query_one("#strip-line1", Label).update("No observations")
             self.query_one("#strip-line2", Label).update("")
             return
+        focus = "LOWER" if self._bound_focus == "lo" else "UPPER"
+        lo_s = lo.strftime("%Y-%m-%d") if lo else "—"
+        hi_s = hi.strftime("%Y-%m-%d") if hi else "—"
         primary = (
             observation_on_date(record, day) if record is not None else None
         )
@@ -1604,16 +1924,17 @@ class QueryScreen(BaseScreen):
             primary.get("value") if primary else None, units=units
         )
         self.query_one("#strip-line1", Label).update(
-            f"◀ {format_period(day, freq)} ▶     {exact}"
+            f"Bounds {lo_s} → {hi_s}   ·   {focus} {format_period(day, freq)}   {exact}"
         )
-        meta = f"Observed {format_release(day)}"
+        meta = (
+            f"Tab switches bound · h/l nudges {focus.lower()} · "
+            f"Enter toggles series · Reset clears window"
+        )
         if primary:
             meta += (
-                f" · Reported "
+                f" · reported "
                 f"{format_release(primary.get('release_timestamp'))}"
             )
-        else:
-            meta += " · missing for selected series"
         self.query_one("#strip-line2", Label).update(meta)
 
     def _paint_view_tabs(self) -> None:
@@ -1957,26 +2278,88 @@ class QueryScreen(BaseScreen):
             self.action_mode_table()
         elif event.button_id == "annotate":
             self.action_annotate()
+        elif event.button_id == "save_remark":
+            self.action_save_remark()
+        elif event.button_id == "cancel_remark":
+            self.action_cancel_remark()
+        elif event.button_id == "bound_lo":
+            self._bound_focus = "lo"
+            self._render_chart()
+            self._render_obs_strip()
+        elif event.button_id == "bound_hi":
+            self._bound_focus = "hi"
+            self._render_chart()
+            self._render_obs_strip()
+        elif event.button_id == "reset_bounds":
+            self.action_reset_bounds()
 
     def action_obs_left(self) -> None:
-        dates = cursor_dates(self._visible_records())
+        dates = self._all_cursor_dates()
         if not dates:
             return
-        if self._cursor_i < 0:
-            self._cursor_i = len(dates) - 1
-        self._cursor_i = max(0, self._cursor_i - 1)
+        self._clamp_bounds()
+        if self._bound_focus == "lo":
+            self._bound_lo_i = max(0, self._bound_lo_i - 1)
+        else:
+            self._bound_hi_i = max(self._bound_lo_i, self._bound_hi_i - 1)
+        self._cursor_i = (
+            self._bound_lo_i if self._bound_focus == "lo" else self._bound_hi_i
+        )
         self._render_chart()
         self._render_obs_strip()
 
     def action_obs_right(self) -> None:
-        dates = cursor_dates(self._visible_records())
+        dates = self._all_cursor_dates()
         if not dates:
             return
-        if self._cursor_i < 0:
-            self._cursor_i = len(dates) - 1
-        self._cursor_i = min(len(dates) - 1, self._cursor_i + 1)
+        self._clamp_bounds()
+        last = len(dates) - 1
+        if self._bound_focus == "lo":
+            self._bound_lo_i = min(self._bound_hi_i, self._bound_lo_i + 1)
+        else:
+            self._bound_hi_i = min(last, self._bound_hi_i + 1)
+        self._cursor_i = (
+            self._bound_lo_i if self._bound_focus == "lo" else self._bound_hi_i
+        )
         self._render_chart()
         self._render_obs_strip()
+
+    def _cycle_remark_focus(self) -> None:
+        """Tab within the inline remark draft: name → text → cite → save."""
+        order = [
+            self.query_one("#remark-name", Input),
+            self.query_one("#remark-text", TextArea),
+            self.query_one("#remark-cite", Checkbox),
+            self.query_one("#remark-save", ActionButton),
+        ]
+        focused = self.focused
+        try:
+            idx = next(i for i, w in enumerate(order) if w is focused)
+        except StopIteration:
+            order[0].focus()
+            return
+        order[(idx + 1) % len(order)].focus()
+
+    def action_toggle_bound_focus(self) -> None:
+        # While drafting a remark, Tab stays inside that pane.
+        if self._remark_drafting:
+            self._cycle_remark_focus()
+            return
+        self._bound_focus = "hi" if self._bound_focus == "lo" else "lo"
+        self._cursor_i = (
+            self._bound_lo_i if self._bound_focus == "lo" else self._bound_hi_i
+        )
+        self._render_chart()
+        self._render_obs_strip()
+        which = "lower" if self._bound_focus == "lo" else "upper"
+        self.notify(f"Nudging {which} bound", timeout=1)
+
+    def action_reset_bounds(self) -> None:
+        self._hidden.clear()
+        self._reset_bounds()
+        self._fill_nav()
+        self._show_selected()
+        self.notify("Reset bounds and series visibility", timeout=2)
 
     def action_toggle_series(self) -> None:
         if self._mode != "chart":
@@ -2045,31 +2428,13 @@ class QueryScreen(BaseScreen):
         self._show_selected()
 
     def action_inspect(self) -> None:
-        # Series list / legend → series screen (not observation detail).
-        focused = self.focused
-        if isinstance(focused, ListView) and focused.id == "query-series":
-            item = focused.highlighted_child
-            record = getattr(item, "record", None) if item is not None else None
-            sid = str((record or {}).get("id") or "")
-            if sid:
-                open_fn = getattr(self.app, "open_resource_view", None)
-                if callable(open_fn):
-                    open_fn(
-                        "series",
-                        sid,
-                        label=(record or {}).get("label") or sid,
-                    )
-                    return
-        if self._mode != "table":
-            record = self._selected_record()
-            if self._mode == "chart" and record is not None:
-                day = self._cursor_day()
-                obs = observation_on_date(record, day) if day else None
-                if obs:
-                    self.app.push_screen(ObservationDetail(record, obs))
-                    return
-            if record and record.get("last"):
-                self.app.push_screen(ObservationDetail(record, record["last"]))
+        # Remark draft: Enter submits.
+        if self._remark_drafting:
+            self.action_save_remark()
+            return
+        # Chart: Enter toggles the highlighted series line (no entity jump).
+        if self._mode == "chart":
+            self.action_toggle_series()
             return
         child = self.query_one("#query-obs", ListView).highlighted_child
         if isinstance(child, ObservationRow):
@@ -2119,6 +2484,13 @@ class QueryScreen(BaseScreen):
         self.app.push_screen(SeriesValuesFallback(rows, title=title))
 
     def action_cursor_down(self) -> None:
+        # On the chart, j/k always walk the series legend (visibility picker).
+        if self._mode == "chart" and not self._remark_drafting:
+            series = self.query_one("#query-series", ListView)
+            if series.display:
+                series.focus()
+                series.action_cursor_down()
+                return
         focused = self.focused
         if isinstance(focused, ListView) and hasattr(focused, "action_cursor_down"):
             focused.action_cursor_down()
@@ -2126,6 +2498,12 @@ class QueryScreen(BaseScreen):
         self.query_one("#query-obs", ListView).action_cursor_down()
 
     def action_cursor_up(self) -> None:
+        if self._mode == "chart" and not self._remark_drafting:
+            series = self.query_one("#query-series", ListView)
+            if series.display:
+                series.focus()
+                series.action_cursor_up()
+                return
         focused = self.focused
         if isinstance(focused, ListView) and hasattr(focused, "action_cursor_up"):
             focused.action_cursor_up()
@@ -2159,23 +2537,70 @@ class QueryScreen(BaseScreen):
             return
         self.notify("Collected " + ", ".join(added))
 
+    def on_key(self, event) -> None:  # noqa: ANN001
+        # Remark draft: Shift+Enter inserts a newline in the body.
+        if self._remark_drafting and event.key == "shift+enter":
+            focused = self.focused
+            if isinstance(focused, TextArea):
+                focused.insert("\n")
+                event.stop()
+                event.prevent_default()
+                return
+        # D then digit deletes a remark (D1…D9).
+        if getattr(self, "_pending_remark_delete", False):
+            self._pending_remark_delete = False
+            if event.key in "123456789":
+                self.action_delete_remark(int(event.key))
+                event.stop()
+                event.prevent_default()
+                return
+        if event.key == "D" and not isinstance(self.focused, (Input, TextArea)):
+            self._pending_remark_delete = True
+            self.notify("Delete remark: press 1–9", timeout=2)
+            event.stop()
+            event.prevent_default()
+
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        if isinstance(self.focused, Input):
+        if self._remark_drafting:
+            # Tab cycles the draft; Enter submits; Esc cancels.
+            if action == "toggle_bound_focus":
+                return True
+            if action == "inspect":
+                return True
+            if action == "cancel_remark":
+                return True
             if action in {
                 "add_entity",
                 "add_metric",
                 "add_series",
-                "inspect",
+                "obs_left",
+                "obs_right",
+                "annotate",
+                "cursor_down",
+                "cursor_up",
             }:
                 return False
+        if isinstance(self.focused, (Input, TextArea, Checkbox)):
+            if action in {
+                "add_entity",
+                "add_metric",
+                "add_series",
+                "obs_left",
+                "obs_right",
+                "annotate",
+            }:
+                return False
+            if action == "cancel_remark":
+                return True
         loaded = {
-            "collect",
             "inspect",
             "mode_table",
             "mode_chart",
             "obs_left",
             "obs_right",
             "toggle_series",
+            "toggle_bound_focus",
+            "reset_bounds",
             "toggle_sort",
             "export_csv",
             "copy_python",
@@ -2220,8 +2645,7 @@ QUERY_VIEW = register(
         description=(
             "Interactive query composition and chart workbench. "
             "First executable plot runs automatically; further edits need r. "
-            "E/M/S add entity/metric/series; c/t switch chart/table. "
-            "Table Enter opens the release (or series values)."
+            "Remarks are inline (a); chart Tab switches lo/hi time bounds."
         ),
         create_screen=create_query_screen,
         arguments=(
@@ -2233,23 +2657,20 @@ QUERY_VIEW = register(
         ),
         bindings=(
             ActionBinding("r", "load", "Refresh / run GET /query"),
-            ActionBinding("a", "annotate", "Annotate research notes"),
+            ActionBinding("a", "annotate", "Add an inline remark"),
             ActionBinding("c / t", "mode", "Chart or table"),
             ActionBinding("E", "add_entity", "Add entity (scoped when possible)"),
             ActionBinding("M", "add_metric", "Add metric (scoped when possible)"),
             ActionBinding("S", "add_series", "Add direct series"),
-            ActionBinding("h / l", "obs", "Move the observation cursor (chart)"),
+            ActionBinding("Tab", "bound", "Toggle lower/upper time bound"),
+            ActionBinding("h / l", "obs", "Nudge the focused time bound"),
+            ActionBinding("enter", "inspect", "Chart: toggle series; table: open release"),
             ActionBinding("x", "toggle_series", "Hide or show a series on the chart"),
+            ActionBinding("D + digit", "delete_remark", "Delete remark 1–9"),
             ActionBinding("[ / ]", "group", "Cycle incompatible-unit chart groups"),
             ActionBinding("o", "sort", "Toggle observation table sort"),
             ActionBinding("y", "copy_python", "Copy a Python query snippet"),
             ActionBinding("j / k", "cursor", "Move series or observations"),
-            ActionBinding(
-                "enter",
-                "inspect",
-                "Table → release page; chart → observation; series list → series",
-            ),
-            ActionBinding("space", "collect", "Collect metric/entity/series into workspace"),
         ),
         example=':add query --args \'{"query_id":1}\'',
     )

@@ -27,7 +27,7 @@ class BaseScreen(Screen):
     # Keep the footer minimal — Home / Search live on the pane bar.
     FOOTER_SHOW_HOME: bool = False
     FOOTER_CHROME: tuple[str, ...] = (
-        "[bold]a[/bold] annotate",
+        "[bold]a[/bold] remark",
     )
 
     # Shell-level bindings (host also owns some; these help when focus is here).
@@ -268,8 +268,15 @@ class BaseScreen(Screen):
         self.action_shell_escape()
 
     def action_shell_escape(self) -> None:
-        """Esc: close bug form → cancel tab/Q/w jump → host back."""
+        """Esc: close bug form → cancel header rename / tab/Q/w jump → host back."""
         if self.cancel_bug_report():
+            return
+        try:
+            header = self.query_one("#shell-header", ProjectHeader)
+        except Exception:  # noqa: BLE001
+            header = None
+        if header is not None and getattr(header, "_editing", False):
+            header.cancel_edit()
             return
         try:
             pane = self.query_one("#shell-pane-bar", PaneBar)
@@ -519,6 +526,14 @@ class BaseScreen(Screen):
         except Exception:  # noqa: BLE001
             pass
 
+    def on_project_header_rename_committed(
+        self, event: ProjectHeader.RenameCommitted
+    ) -> None:
+        event.stop()
+        fn = getattr(self.app, "_apply_rename", None)
+        if callable(fn):
+            fn(title=event.title, notes=None)
+
     def on_research_sidebar_query_selected(
         self, event: ResearchSidebar.QuerySelected
     ) -> None:
@@ -546,6 +561,22 @@ class BaseScreen(Screen):
         fn = getattr(self.app, "remove_workspace_resource", None)
         if callable(fn):
             fn(event.resource_type, event.resource_id, confirmed=True)
+
+    def on_research_sidebar_query_add_resource(
+        self, event: ResearchSidebar.QueryAddResource
+    ) -> None:
+        event.stop()
+        fn = getattr(self.app, "query_compose_add_resource", None)
+        if callable(fn):
+            fn(event.kind, event.query_id)
+
+    def on_research_sidebar_query_remove_resource(
+        self, event: ResearchSidebar.QueryRemoveResource
+    ) -> None:
+        event.stop()
+        fn = getattr(self.app, "query_compose_remove_resource", None)
+        if callable(fn):
+            fn(event.kind, event.resource_id, event.query_id)
 
     def on_pane_bar_home(self, event: PaneBar.Home) -> None:
         event.stop()

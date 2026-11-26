@@ -184,7 +184,10 @@ def test_markup_like_text_does_not_crash_the_tui(tmp_path, calls):
     """Cloned investigations are remote text; brackets must not break rendering."""
     from jstdata.actions.query_view import QueryScreen
     from jstdata.investigation import update_investigation
-    from jstdata.investigation.host import AnnotationModal, InvestigationHost
+    from jstdata.investigation.host import (
+        InvestigationHost,
+        QueryAnnotationModal,
+    )
     from jstdata.investigation import resume_or_create_investigation
 
     mark_prompted(tmp_path)
@@ -207,8 +210,10 @@ def test_markup_like_text_does_not_crash_the_tui(tmp_path, calls):
             await _wait_for(pilot, lambda: isinstance(app.screen, QueryScreen))
             assert isinstance(app.screen, QueryScreen)
             await _command(pilot, "annotate 1")
-            await _wait_for(pilot, lambda: isinstance(app.screen, AnnotationModal))
-            assert isinstance(app.screen, AnnotationModal)
+            await _wait_for(
+                pilot, lambda: isinstance(app.screen, QueryAnnotationModal)
+            )
+            assert isinstance(app.screen, QueryAnnotationModal)
             await pilot.press("escape")
             await pilot.pause(0.2)
             # Every Home section renders titles, notes and query names.

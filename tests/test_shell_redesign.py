@@ -50,7 +50,7 @@ def test_sidebar_refresh_splits_drafts_and_saved():
     # validate TabBar / Header text helpers instead.
     header = ProjectHeader()
     header.set_project("Homebuilders")
-    assert "Homebuilders" in str(header.render())
+    assert header._title == "Homebuilders"
 
     tabs = TabBar()
     tabs.set_tabs(

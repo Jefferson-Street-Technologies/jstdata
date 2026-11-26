@@ -1,15 +1,15 @@
-"""Compact query composition header — chips, scope, refresh, tabs."""
+"""Compact query composition header — title, scope, refresh."""
 
 from __future__ import annotations
 
-from typing import Any, Optional, Sequence
+from typing import Optional, Sequence
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.widgets import Label, Static
 
-from .ui_primitives import ActionButton, ChipRow, EnumSelect
+from .ui_primitives import ActionButton, EnumSelect
 
 FREQUENCIES: tuple[Optional[str], ...] = (
     None,
@@ -60,12 +60,12 @@ def frequency_options_for(available: set[str]) -> list[Optional[str]]:
 
 
 class QueryComposeHeader(Vertical):
-    """Interactive composition strip above the results pane."""
+    """Title / scope strip above the results pane (composition lives in sidebar)."""
 
     DEFAULT_CSS = """
     QueryComposeHeader {
         height: auto;
-        max-height: 10;
+        max-height: 6;
         width: 100%;
         background: #0a0a0a;
         padding: 0 0 0 0;
@@ -75,7 +75,7 @@ class QueryComposeHeader(Vertical):
     /* Query name is the page's largest type (2-row presence + bold). */
     #qc-title-row {
         height: 2;
-        margin-bottom: 1;
+        margin-bottom: 0;
         align: left middle;
     }
     #qc-title {
@@ -97,25 +97,9 @@ class QueryComposeHeader(Vertical):
         height: 2;
         content-align: right middle;
     }
-    #qc-entities-label, #qc-metrics-label, #qc-series-label {
-        color: #737373;
-        width: 13;
-        height: 1;
-        content-align: left middle;
-    }
-    #qc-entities-row, #qc-metrics-row, #qc-series-row {
-        height: 1;
-        width: 100%;
-        margin-bottom: 0;
-        background: #0a0a0a;
-    }
-    #qc-entities, #qc-metrics, #qc-series {
-        width: 1fr;
-        background: #0a0a0a;
-    }
     #qc-scope-row {
         height: 1;
-        margin-top: 1;
+        margin-top: 0;
         background: #0a0a0a;
     }
     #qc-scope-row EnumSelect {
@@ -141,7 +125,7 @@ class QueryComposeHeader(Vertical):
     #qc-coverage {
         height: 1;
         color: #737373;
-        margin-top: 1;
+        margin-top: 0;
         background: #0a0a0a;
     }
     """
@@ -180,30 +164,6 @@ class QueryComposeHeader(Vertical):
                 variant="ghost",
                 id="qc-rename",
             )
-        with Horizontal(id="qc-entities-row"):
-            yield Label("Entities", id="qc-entities-label")
-            yield ChipRow(
-                "entity",
-                add_label="+ Add",
-                add_shortcut="E",
-                id="qc-entities",
-            )
-        with Horizontal(id="qc-metrics-row"):
-            yield Label("Metrics", id="qc-metrics-label")
-            yield ChipRow(
-                "metric",
-                add_label="+ Add",
-                add_shortcut="M",
-                id="qc-metrics",
-            )
-        with Horizontal(id="qc-series-row"):
-            yield Label("Direct series", id="qc-series-label")
-            yield ChipRow(
-                "series",
-                add_label="+ Add",
-                add_shortcut="S",
-                id="qc-series",
-            )
         with Horizontal(id="qc-scope-row"):
             yield EnumSelect(
                 [None],
@@ -233,9 +193,9 @@ class QueryComposeHeader(Vertical):
         *,
         title: str,
         badge: str,
-        entities: Sequence[tuple[str, str]],
-        metrics: Sequence[tuple[str, str]],
-        series: Sequence[tuple[str, str]],
+        entities: Sequence[tuple[str, str]] = (),
+        metrics: Sequence[tuple[str, str]] = (),
+        series: Sequence[tuple[str, str]] = (),
         frequency: Optional[str],
         obs_mode: str,
         mode: str = "chart",
@@ -243,12 +203,13 @@ class QueryComposeHeader(Vertical):
         coverage: str = "",
         available_frequencies: Optional[Sequence[Optional[str]]] = None,
     ) -> None:
-        del mode  # View tabs live above the chart pane, not here.
-        self.query_one("#qc-title", Label).update(title or "Untitled query")
-        self.query_one("#qc-badge", Label).update(badge)
-        self.query_one("#qc-entities", ChipRow).set_items(entities)
-        self.query_one("#qc-metrics", ChipRow).set_items(metrics)
-        self.query_one("#qc-series", ChipRow).set_items(series)
+        from rich.markup import escape
+
+        del mode, entities, metrics, series  # Composition lives in the sidebar.
+        self.query_one("#qc-title", Label).update(
+            escape(title or "Untitled query")
+        )
+        self.query_one("#qc-badge", Label).update(escape(badge))
         freq = self.query_one("#qc-freq", EnumSelect)
         if available_frequencies is not None:
             options = list(available_frequencies) or [None]
@@ -276,14 +237,6 @@ class QueryComposeHeader(Vertical):
             banner.update("")
             row.remove_class("-show")
         self.query_one("#qc-coverage", Static).update(coverage)
-
-    def on_chip_row_add(self, event: ChipRow.Add) -> None:
-        event.stop()
-        self.post_message(self.AddResource(event.kind))
-
-    def on_chip_row_removed(self, event: ChipRow.Removed) -> None:
-        event.stop()
-        self.post_message(self.RemoveResource(event.kind, event.resource_id))
 
     def on_enum_select_changed(self, event: EnumSelect.Changed) -> None:
         event.stop()

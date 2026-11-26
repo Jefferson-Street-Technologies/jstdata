@@ -178,6 +178,10 @@ class ChipRow(Horizontal):
         background: #0a0a0a;
         color: #86efac;
     }
+    ChipRow.-empty {
+        display: none;
+        height: 0;
+    }
     """
 
     MAX_VISIBLE = 3
@@ -197,14 +201,16 @@ class ChipRow(Horizontal):
         self,
         kind: str,
         *,
-        add_label: str,
+        add_label: str = "+ Add",
         add_shortcut: str = "",
+        show_add: bool = True,
         id: Optional[str] = None,
     ) -> None:
         super().__init__(id=id)
         self.kind = kind
         self._add_label = add_label
         self._add_shortcut = add_shortcut
+        self._show_add = show_add
         self._items: list[tuple[str, str]] = []
         self._rebuild_token = 0
         self._rebuild_running = False
@@ -257,17 +263,20 @@ class ChipRow(Horizontal):
                     widgets.append(ResourceChip(self.kind, rid, label))
                 if overflow > 0:
                     widgets.append(Label(f"[dim]+{overflow} more[/]", markup=True))
-                # No fixed widget id — action_id is enough; avoids DuplicateIds.
-                widgets.append(
-                    ActionButton(
-                        self._add_label,
-                        action_id=f"add_{self.kind}",
-                        shortcut=self._add_shortcut,
-                        variant="ghost",
+                if self._show_add:
+                    # No fixed widget id — action_id is enough; avoids DuplicateIds.
+                    widgets.append(
+                        ActionButton(
+                            self._add_label,
+                            action_id=f"add_{self.kind}",
+                            shortcut=self._add_shortcut,
+                            variant="ghost",
+                        )
                     )
-                )
                 if widgets:
                     await self.mount(*widgets)
+                # Collapse when nothing to show (sidebar headers own the Add control).
+                self.set_class(not widgets, "-empty")
                 if token == self._rebuild_token:
                     return
         finally:

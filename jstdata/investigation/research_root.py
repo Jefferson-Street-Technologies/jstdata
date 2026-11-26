@@ -55,7 +55,7 @@ class ResearchRootScreen(BaseScreen):
     BINDINGS = [
         Binding("slash", "shell_search", "Search", show=False),
         Binding("a", "add_note", "Add note", show=False),
-        Binding("R", "rename", "Rename", show=False, priority=True),
+        # Report rename is header ✎ or `:rename --title …` — no keyboard chord.
         Binding("D", "edit_description", "Edit description", show=False, priority=True),
         Binding("P", "publish", "Publish", show=False, priority=True),
         Binding("r", "load_releases", "Load releases", show=False),
@@ -414,12 +414,17 @@ class ResearchRootScreen(BaseScreen):
         if self._editing:
             return
         inv = getattr(self.app, "investigation", None)
+        from rich.markup import escape
+
         title = (inv.title if inv else None) or self._title or "Investigation"
-        self.query_one("#root-title", Label).update(title)
-        desc = (inv.notes if inv else None) or self._body or (
-            "[dim]No description yet. Add context for this investigation.[/]"
-        )
-        self.query_one("#root-desc", Static).update(desc)
+        self.query_one("#root-title", Label).update(escape(title))
+        desc = (inv.notes if inv else None) or self._body
+        if desc:
+            self.query_one("#root-desc", Static).update(escape(desc))
+        else:
+            self.query_one("#root-desc", Static).update(
+                "[dim]No description yet. Add context for this investigation.[/]"
+            )
         ws = self.workspace
         queries = list(inv.queries.values()) if inv else []
         saved = sum(1 for q in queries if q.in_report)
@@ -432,7 +437,9 @@ class ResearchRootScreen(BaseScreen):
         )
         notes = (inv.annotations if inv else None) or ""
         self.query_one("#root-notes", Static).update(
-            notes if notes else "[dim]  No research notes yet. Press a to add.[/]"
+            escape(notes)
+            if notes
+            else "[dim]  No research notes yet. Press a to add.[/]"
         )
         self.refresh_footer()
 

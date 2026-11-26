@@ -10,12 +10,13 @@ import copy
 import threading
 import time
 from pathlib import Path
-from typing import NamedTuple, Optional
+from dataclasses import dataclass, field
+from typing import NamedTuple, Optional, Sequence
 
 from textual import events, on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen, Screen
 from textual.timer import Timer
 from textual.widgets import Input, Label, Static, TextArea
@@ -42,11 +43,13 @@ from .model import (
     DEFAULT_WORKSPACE_ID,
     Investigation,
     InvestigationError,
+    QueryNote,
     ResearchContext,
     ROOT_ACTION_ID,
     Workspace,
     resolve_input_context,
 )
+from .ui_primitives import ActionButton
 from .browsers import DestinationScreen, WorkspaceBrowser
 from .home import HomeScreen
 from .nav import DEST_IDS, parse_goto
@@ -257,7 +260,7 @@ class QueryRenameModal(ModalScreen[str | None]):
 
 
 class AnnotationModal(ModalScreen[str | None]):
-    """Edit freeform annotations (investigation or query)."""
+    """Edit freeform investigation-level annotations (name + body)."""
 
     DEFAULT_CSS = """
     AnnotationModal {
@@ -271,7 +274,12 @@ class AnnotationModal(ModalScreen[str | None]):
         background: #111111;
         padding: 1 2;
     }
-    #anno-kicker { color: #4ade80; text-style: bold; height: 1; margin-bottom: 1; }
+    #anno-kicker { color: #4ade80; text-style: bold; height: 1; margin-bottom: 0; }
+    #anno-scope {
+        color: #888;
+        height: 1;
+        margin-bottom: 1;
+    }
     #anno-name-label { color: #888; height: 1; }
     #anno-name {
         width: 100%;
@@ -302,19 +310,24 @@ class AnnotationModal(ModalScreen[str | None]):
 
         super().__init__()
         self._title = title
-        self._name, self._body = unpack_annotation(text)
+        # Avoid Textual Widget._name — use dedicated annotation fields.
+        self._anno_name, self._anno_body = unpack_annotation(text)
 
     def compose(self) -> ComposeResult:
         with Vertical(id="anno-box"):
             yield Label(self._title, id="anno-kicker")
+            yield Label(
+                "Investigation commentary (whole tab — not tied to a series)",
+                id="anno-scope",
+            )
             yield Label("Name (optional)", id="anno-name-label")
             yield Input(
-                value=self._name,
+                value=self._anno_name,
                 placeholder="Shown as a heading when set…",
                 id="anno-name",
             )
             yield Label("Notes", id="anno-body-label")
-            yield TextArea(self._body, id="anno-body")
+            yield TextArea(self._anno_body, id="anno-body")
             yield Label(
                 "[bold]enter[/bold] save  ·  [bold]shift+enter[/bold] newline  ·  "
                 "[bold]esc[/bold] cancel",
@@ -323,7 +336,7 @@ class AnnotationModal(ModalScreen[str | None]):
             )
 
     def on_mount(self) -> None:
-        if self._name:
+        if self._anno_name:
             self.query_one("#anno-body", TextArea).focus()
         else:
             self.query_one("#anno-name", Input).focus()
@@ -348,6 +361,301 @@ class AnnotationModal(ModalScreen[str | None]):
         name = self.query_one("#anno-name", Input).value
         body = self.query_one("#anno-body", TextArea).text
         self.dismiss(pack_annotation(name, body))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+@dataclass
+class QueryAnnotationEdit:
+    """Result of the query annotation editor (commentary + notes_on)."""
+
+    annotations: str
+    notes_on: list[QueryNote] = field(default_factory=list)
+
+
+class QueryAnnotationModal(ModalScreen[QueryAnnotationEdit | None]):
+    """Edit all query annotation forms: freeform commentary and notes_on."""
+
+    DEFAULT_CSS = """
+    QueryAnnotationModal {
+        align: center middle;
+        background: rgba(0, 0, 0, 0.45);
+    }
+    #qanno-box {
+        width: 84;
+        height: 36;
+        max-height: 90%;
+        border: tall #4ade80;
+        background: #111111;
+        padding: 1 2;
+    }
+    #qanno-kicker {
+        color: #4ade80;
+        text-style: bold;
+        height: 1;
+    }
+    #qanno-scope {
+        color: #888;
+        height: 2;
+        margin-bottom: 1;
+    }
+    #qanno-section-commentary, #qanno-section-notes {
+        color: #e5e5e5;
+        text-style: bold;
+        height: 1;
+        margin-top: 0;
+        margin-bottom: 0;
+    }
+    #qanno-name-label, #qanno-body-label, #qanno-add-label {
+        color: #888;
+        height: 1;
+    }
+    #qanno-name, #qanno-note-text, #qanno-note-series,
+    #qanno-note-from, #qanno-note-to {
+        width: 100%;
+        background: #0a0a0a;
+        border: solid #333;
+    }
+    #qanno-name { height: 3; margin-bottom: 0; }
+    #qanno-body {
+        width: 100%;
+        height: 6;
+        background: #0a0a0a;
+        border: solid #333;
+        margin-bottom: 1;
+    }
+    #qanno-notes-list {
+        height: auto;
+        min-height: 3;
+        max-height: 8;
+        background: #0a0a0a;
+        border: solid #333;
+        padding: 0 1;
+        margin-bottom: 1;
+        color: #e0e0e0;
+    }
+    #qanno-add-row {
+        height: 1;
+        margin-bottom: 0;
+    }
+    #qanno-note-text { width: 1fr; height: 3; }
+    #qanno-note-series { width: 1fr; height: 3; }
+    #qanno-dates { height: 3; }
+    #qanno-note-from, #qanno-note-to { width: 1fr; height: 3; }
+    #qanno-add-btn { margin-top: 0; }
+    #qanno-error {
+        color: #f87171;
+        height: 1;
+        margin-top: 0;
+    }
+    #qanno-hint { color: #888; height: 1; margin-top: 1; }
+    #qanno-series-hint {
+        color: #666;
+        height: 1;
+        margin-bottom: 0;
+    }
+    """
+
+    BINDINGS = [
+        Binding("ctrl+s", "save", "Save", show=False),
+        Binding("escape", "cancel", "Cancel", show=False),
+    ]
+
+    def __init__(
+        self,
+        *,
+        title: str,
+        text: str = "",
+        notes_on: Sequence[QueryNote] | None = None,
+        series_choices: Sequence[str] | None = None,
+    ) -> None:
+        from .nav import unpack_annotation
+
+        super().__init__()
+        self._title = title
+        # Avoid Textual Widget._name — use dedicated annotation fields.
+        self._anno_name, self._anno_body = unpack_annotation(text)
+        self._notes: list[QueryNote] = [
+            QueryNote(
+                text=n.text,
+                series=n.series,
+                from_=n.from_,
+                to=n.to,
+            )
+            for n in (notes_on or [])
+        ]
+        self._series_choices = [s for s in (series_choices or []) if s]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="qanno-box"):
+            yield Label(self._title, id="qanno-kicker")
+            yield Label(
+                "Two kinds: freeform commentary on the query, and notes pinned "
+                "to a series and/or date range (notes_on).",
+                id="qanno-scope",
+            )
+            yield Label("1 · Query commentary", id="qanno-section-commentary")
+            yield Label("Name (optional heading)", id="qanno-name-label")
+            yield Input(
+                value=self._anno_name,
+                placeholder="e.g. Takeaway, Risk, Open question…",
+                id="qanno-name",
+            )
+            yield Label("Body", id="qanno-body-label")
+            yield TextArea(self._anno_body, id="qanno-body")
+            yield Label("2 · Notes on series / periods", id="qanno-section-notes")
+            yield Static("", id="qanno-notes-list", markup=True)
+            if self._series_choices:
+                preview = ", ".join(self._series_choices[:4])
+                more = "…" if len(self._series_choices) > 4 else ""
+                yield Label(
+                    f"Series on this query: {preview}{more}",
+                    id="qanno-series-hint",
+                )
+            yield Label(
+                "Add note (needs text + series and/or from/to)",
+                id="qanno-add-label",
+            )
+            yield Input(
+                placeholder="Note text…",
+                id="qanno-note-text",
+            )
+            yield Input(
+                placeholder="Series id (optional)",
+                id="qanno-note-series",
+            )
+            with Horizontal(id="qanno-dates"):
+                yield Input(placeholder="From YYYY-MM-DD", id="qanno-note-from")
+                yield Input(placeholder="To YYYY-MM-DD", id="qanno-note-to")
+            with Horizontal(id="qanno-add-row"):
+                yield ActionButton(
+                    "+ Add note",
+                    action_id="add_note",
+                    variant="secondary",
+                    id="qanno-add-btn",
+                )
+                yield ActionButton(
+                    "Remove last",
+                    action_id="rm_last_note",
+                    variant="ghost",
+                    id="qanno-rm-btn",
+                )
+            yield Label("", id="qanno-error")
+            yield Label(
+                "[bold]ctrl+s[/bold] save all  ·  "
+                "[bold]shift+enter[/bold] newline in body  ·  "
+                "[bold]esc[/bold] cancel",
+                id="qanno-hint",
+                markup=True,
+            )
+
+    def on_mount(self) -> None:
+        self._rebuild_notes_list()
+        self.query_one("#qanno-name", Input).focus()
+
+    def _rebuild_notes_list(self) -> None:
+        listing = self.query_one("#qanno-notes-list", Static)
+        if not self._notes:
+            listing.update("[dim]No series/period notes yet.[/]")
+            return
+        lines: list[str] = []
+        for i, note in enumerate(self._notes):
+            span = ""
+            if note.from_ or note.to:
+                span = f" · {note.from_ or '…'}–{note.to or '…'}"
+            series = f" · {note.series}" if note.series else ""
+            text = note.text.replace("\n", " ")
+            if len(text) > 56:
+                text = text[:55] + "…"
+            lines.append(
+                f"[bold #86efac]{i + 1:02d}[/] {escape(text)}"
+                f"[dim]{escape(series + span)}[/]"
+            )
+        listing.update("\n".join(lines))
+
+    def _set_error(self, message: str = "") -> None:
+        self.query_one("#qanno-error", Label).update(message)
+
+    def _add_note_from_form(self) -> None:
+        text = self.query_one("#qanno-note-text", Input).value
+        series = self.query_one("#qanno-note-series", Input).value
+        date_from = self.query_one("#qanno-note-from", Input).value
+        date_to = self.query_one("#qanno-note-to", Input).value
+        payload = {
+            "text": text,
+            "series": series.strip() or None,
+            "from": date_from.strip() or None,
+            "to": date_to.strip() or None,
+        }
+        # Drop nulls so from_dict validation matches CLI annotate.
+        payload = {k: v for k, v in payload.items() if v is not None}
+        try:
+            note = QueryNote.from_dict(payload, label="note")
+        except InvestigationError as exc:
+            self._set_error(str(exc))
+            return
+        self._notes.append(note)
+        self._set_error("")
+        self.query_one("#qanno-note-text", Input).value = ""
+        self.query_one("#qanno-note-series", Input).value = ""
+        self.query_one("#qanno-note-from", Input).value = ""
+        self.query_one("#qanno-note-to", Input).value = ""
+        self._rebuild_notes_list()
+        self.query_one("#qanno-note-text", Input).focus()
+
+    def on_action_button_pressed(self, event: ActionButton.Pressed) -> None:
+        event.stop()
+        if event.button_id == "add_note":
+            self._add_note_from_form()
+            return
+        if event.button_id == "rm_last_note":
+            if self._notes:
+                self._notes.pop()
+                self._rebuild_notes_list()
+                self._set_error("")
+            else:
+                self._set_error("No series/period notes to remove")
+
+    def on_key(self, event) -> None:  # noqa: ANN001
+        if event.key == "shift+enter":
+            focused = self.focused
+            if isinstance(focused, TextArea):
+                focused.insert("\n")
+                event.stop()
+                event.prevent_default()
+            return
+        if event.key == "enter":
+            focused = self.focused
+            # Enter in the add-note fields appends; elsewhere saves.
+            if isinstance(focused, Input) and focused.id in {
+                "qanno-note-text",
+                "qanno-note-series",
+                "qanno-note-from",
+                "qanno-note-to",
+            }:
+                self._add_note_from_form()
+                event.stop()
+                event.prevent_default()
+                return
+            if isinstance(focused, TextArea) and focused.id == "qanno-body":
+                # Don't save on Enter in body — use ctrl+s (shift+enter = newline).
+                return
+            self.action_save()
+            event.stop()
+            event.prevent_default()
+
+    def action_save(self) -> None:
+        from .nav import pack_annotation
+
+        name = self.query_one("#qanno-name", Input).value
+        body = self.query_one("#qanno-body", TextArea).text
+        self.dismiss(
+            QueryAnnotationEdit(
+                annotations=pack_annotation(name, body),
+                notes_on=list(self._notes),
+            )
+        )
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -1661,7 +1969,6 @@ class InvestigationHost(App):
                         "empty": q.is_empty(),
                     }
                 )
-            # Detect active query view.
             try:
                 action = self.investigation.get_action(self.active.action)
                 if action.type == "query":
@@ -1692,7 +1999,7 @@ class InvestigationHost(App):
                 aq = self.investigation.get_query(int(active_qid))
             except Exception:  # noqa: BLE001
                 aq = None
-            if aq is not None and not aq.is_empty():
+            if aq is not None:
                 for rid in aq.metric:
                     if rid not in labels:
                         missing_typed.append(("metric", rid))
@@ -1713,6 +2020,7 @@ class InvestigationHost(App):
             active_entities=active_entities,
             active_metrics=active_metrics,
             active_series=active_series,
+            active_query_id=int(active_qid) if active_qid is not None else None,
         )
         if missing_typed:
             self._hydrate_missing_labels(missing_typed)
@@ -1798,6 +2106,57 @@ class InvestigationHost(App):
             self.notify(f"Collected {resource_id}")
         else:
             self.notify(f"{resource_id} already in workspace")
+
+    def query_compose_add_resource(self, kind: str, query_id: int) -> None:
+        """Sidebar ``+ Add`` under the active query — open scoped picker."""
+        if not self.investigation:
+            self.notify("No investigation loaded", severity="error")
+            return
+        try:
+            self.investigation.get_query(int(query_id))
+        except InvestigationError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        screen = getattr(self, "screen", None)
+        if getattr(screen, "query_id", None) != int(query_id):
+            self.open_query_view(int(query_id))
+            screen = getattr(self, "screen", None)
+        opener = getattr(screen, "_open_scoped_picker", None)
+        if callable(opener):
+            opener(kind)
+        else:
+            self.notify("Open the query to add resources", severity="warning")
+
+    def query_compose_remove_resource(
+        self, kind: str, resource_id: str, query_id: int
+    ) -> None:
+        """Sidebar chip remove under the active query composition."""
+        if not self.investigation:
+            self.notify("No investigation loaded", severity="error")
+            return
+        screen = getattr(self, "screen", None)
+        if getattr(screen, "query_id", None) != int(query_id):
+            self.open_query_view(int(query_id))
+            screen = getattr(self, "screen", None)
+        remover = getattr(screen, "_remove_query_resource", None)
+        if callable(remover):
+            remover(kind, resource_id)
+            return
+        try:
+            query = self.investigation.get_query(int(query_id))
+        except InvestigationError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        if kind == "entity" and resource_id in query.entity:
+            query.entity = [x for x in query.entity if x != resource_id]
+        elif kind == "metric" and resource_id in query.metric:
+            query.metric = [x for x in query.metric if x != resource_id]
+        elif kind == "series" and resource_id in query.series:
+            query.series = [x for x in query.series if x != resource_id]
+        else:
+            return
+        persist_investigation(self.investigation, app_dir=self.app_dir)
+        self.refresh_shell_chrome()
 
     def _add_resource_to_active_query(
         self, resource_type: str, resource_id: str
@@ -2702,12 +3061,21 @@ class InvestigationHost(App):
         self.notify("Renamed: " + ", ".join(bits) if bits else "Saved")
 
     def edit_investigation_description(self, *, focus: str = "title") -> None:
-        """Inline-edit title or description on the research home screen."""
+        """Rename via the shell header; description still edits on research home."""
         if not self.investigation or not self.active:
             self.notify("No investigation loaded", severity="error")
             return
         if focus not in ("title", "description"):
             focus = "title"
+        if focus == "title":
+            try:
+                from .shell import ProjectHeader
+
+                header = self.screen.query_one("#shell-header", ProjectHeader)
+                header.begin_edit()
+                return
+            except Exception:  # noqa: BLE001
+                pass
         begin = getattr(self.screen, "begin_inline_edit", None)
         if callable(begin):
             begin(focus=focus)
@@ -2829,57 +3197,31 @@ class InvestigationHost(App):
             else "Investigation annotations saved"
         )
 
-    def edit_query_annotations(self, query_id: int) -> None:
-        """Open the annotation editor for a saved query."""
+    def edit_query_annotations(
+        self,
+        query_id: int,
+        *,
+        series_choices: Sequence[str] | None = None,
+    ) -> None:
+        """Open the query view and start an inline remark draft."""
+        del series_choices  # Inline form cites the live chart cross-section.
         if not self.investigation:
             self.notify("No investigation loaded", severity="error")
             return
         try:
-            query = self.investigation.get_query(query_id)
+            self.investigation.get_query(query_id)
         except InvestigationError as exc:
             self.notify(str(exc), severity="error")
             return
-        label = escape(query.name or f"Q{query.id}")
-        self.push_screen(
-            AnnotationModal(
-                title=f"QUERY ANNOTATIONS · {label.upper()}",
-                text=query.annotations or "",
-            ),
-            lambda result, qid=query_id: self._on_query_annotations_submitted(
-                qid, result
-            ),
-        )
+        self.open_query_view(int(query_id))
 
-    def _on_query_annotations_submitted(
-        self, query_id: int, result: str | None
-    ) -> None:
-        if result is None or not self.investigation:
-            return
-        self._suppress_poll = True
-        try:
-            try:
-                update_query(
-                    self.investigation,
-                    query_id,
-                    annotations=result,
-                    app_dir=self.app_dir,
-                )
-            except InvestigationError as exc:
-                self.notify(str(exc), severity="error")
-                return
-            try:
-                self._inv_mtime = self._inv_file().stat().st_mtime
-            except OSError:
-                pass
-        finally:
-            self._suppress_poll = False
-        self._refresh_annotation_surfaces()
-        cleared = not result.strip()
-        self.notify(
-            f"Q{query_id} annotations cleared"
-            if cleared
-            else f"Q{query_id} annotations saved"
-        )
+        def _start() -> None:
+            screen = self.screen
+            begin = getattr(screen, "begin_add_remark", None)
+            if callable(begin):
+                begin()
+
+        self.call_later(_start)
 
     def _refresh_annotation_surfaces(self) -> None:
         """Repaint Home / query browsers after annotation edits."""

@@ -264,20 +264,40 @@ def update_query(
     *,
     name: Optional[str] = None,
     annotations: Optional[str] = None,
+    remarks: Optional[list] = None,
     app_dir: Optional[Path] = None,
     persist: bool = True,
 ) -> Query:
-    """Patch a saved query's display name and/or annotations.
+    """Patch a saved query's display name and/or remarks.
 
-    ``annotations=""`` clears; ``annotations=None`` leaves unchanged.
+    ``remarks`` replaces the full list when provided. ``annotations=""``
+    clears freeform remarks (keeps cross-section cites); ``None`` leaves
+    unchanged. Prefer ``remarks`` for new callers.
     """
+    from .model import QueryRemark, _remarks_from_legacy
+
     query = inv.get_query(query_id)
     if name is not None:
         stripped = name.strip()
         query.name = stripped or None
-    if annotations is not None:
+    if remarks is not None:
+        query.remarks = [
+            r if isinstance(r, QueryRemark) else QueryRemark.from_dict(r, label="remark")
+            for r in remarks
+        ]
+        query.sync_legacy_annotation_fields()
+    elif annotations is not None:
         stripped = annotations.strip()
-        query.annotations = stripped or None
+        cited = [
+            r for r in query.remarks if r.series or r.from_ or r.to
+        ]
+        free = (
+            _remarks_from_legacy(annotations=stripped, notes_on=[])
+            if stripped
+            else []
+        )
+        query.remarks = free + cited
+        query.sync_legacy_annotation_fields()
     if persist:
         persist_investigation(inv, app_dir=app_dir)
     return query
