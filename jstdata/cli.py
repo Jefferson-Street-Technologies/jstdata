@@ -1180,12 +1180,15 @@ def clone_cmd(url: str, new_id: str | None) -> None:
     help="Write the HTML file without opening a browser",
 )
 def preview_cmd(investigation_id: str | None, no_open: bool) -> None:
-    """Render a static HTML preview of an investigation (Bokeh).
+    """Render a static HTML preview of a project or investigation.
 
-    Defaults to the most recently modified investigation.
+    Defaults to the active project (``.active.yaml``), else the most recently
+    modified investigation. Pass a project id for multi-tab report queries,
+    remarks (click cited remarks to filter charts), and investigation chrome.
 
     \b
     jst preview
+    jst preview my-project
     jst preview inv-1794531175
     """
     from .investigation import InvestigationError

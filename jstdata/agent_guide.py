@@ -256,11 +256,14 @@ actor filters (`all` → `tui` → `cli` → `agent`).
 ### Local multi-tab preview
 
 ```bash
-jst preview   # project with in_report queries only; excludes action history
+jst preview              # active project (tabs + remarks) or latest investigation
+jst preview my-project   # explicit project id
 ```
 
-Remote multi-tab publish awaits Workstream C; `jst publish` on a multi-tab project
-notifies and refuses to silently flatten.
+Includes report queries across investigation tabs, remarks (with citations), and
+investigation chrome. Excludes the action log. Remote multi-tab publish awaits
+Workstream C; `jst publish` on a multi-tab project notifies and refuses to
+silently flatten.
 
 ### Prepare a human project
 

@@ -11,7 +11,11 @@ import pytest
 from click.testing import CliRunner
 
 from jstdata.cli import cli
-from jstdata.investigation.model import Investigation, InvestigationError
+from jstdata.investigation.model import (
+    Investigation,
+    InvestigationError,
+    QueryRemark,
+)
 from jstdata.investigation.store import save_investigation
 from jstdata.models import Entity, Metric, Observation, Series
 from jstdata.preview.data import (
@@ -20,6 +24,7 @@ from jstdata.preview.data import (
     QueryPanel,
     SeriesLine,
     build_preview_model,
+    build_project_preview_model,
     most_recent_investigation_id,
     pick_primary_query,
     resolve_investigation_id,
@@ -206,19 +211,24 @@ def test_build_preview_model_and_render(inv_root: Path):
     assert "Refresh data" in html
     assert "Clone" in html
     assert "Details" in html
-    assert "Provenance" in html
+    assert "Provenance" not in html
+    assert "Show data table" in html
+    assert "chart-table" in html
+    assert "chart-tooltip" in html
+    assert "chart-cite-band" in html
     assert "<h3>Summary</h3>" not in html
     assert ">Summary<" not in html
     assert "massive values" in html
     assert "Percentage of Foreign Bank Assets Among Total Bank Assets" in html
     assert "Albania" in html
-    assert "bk-root" in html or "bokeh" in html.lower()
+    assert "data-chart=" in html
+    assert "chart-svg" in html or "jstPreviewCharts" in html
     assert 'id="panel-' in html
     assert "Jefferson Street" not in html
 
 
 def test_render_html_legend_sorted_by_value():
-    chart = _chart()
+    chart = _chart(frequencies=["Annual", "Quarterly"])
     model = PreviewModel(
         investigation_id="x",
         title="T",
@@ -245,15 +255,21 @@ def test_render_html_legend_sorted_by_value():
     assert "World Bank (S1)" in html
     assert 'data-detail="units"' in html
     assert "Percent" in html
-    assert "Author observation" in html
-    assert "chart-q1-m0" in html
-    assert "chart-plot-night" in html
-    assert "chart-plot-light" in html
+    assert "Remarks" in html
+    assert "chart-inv-q1-m0" in html
+    assert "data-chart=" in html
     assert "legend-night" in html
     assert "legend-light" in html
     assert "query-tab" in html
     assert "query-list" in html
     assert "Light mode" in html
+    assert "jstPreviewCharts" in html
+    assert "freq-filter" in html
+    assert "Any frequency" in html
+    assert "Quarterly" in html
+    assert "Show data table" in html
+    assert "chart-table-wrap" in html
+    assert '"frequency"' in html or "frequencies" in html
 
 
 def test_aligned_series_leaves_gaps_as_nan():
@@ -376,3 +392,117 @@ def test_preview_investigation_reports_progress(tmp_path: Path, monkeypatch):
     assert "Resolving investigation" in joined
     assert "Building query" in joined
     assert "Rendering HTML" in joined
+
+
+def _mock_client_for_metric(metric_id: str = "m1", entity_id: str = "e1"):
+    series = _series("S1", entity_id, "Entity One", metric_id=metric_id)
+    client = MagicMock()
+    client.preview.return_value = []
+    client.query.return_value = [MagicMock(series=series)]
+    client.get_metric.return_value = Metric(id=metric_id, name="Metric One")
+    client.get_series.return_value = series
+    client.get_series_observations.return_value = [
+        _obs("S1", 2010, 1.0),
+        _obs("S1", 2020, 2.0),
+    ]
+    return client
+
+
+def test_preview_renders_remarks_with_citations(inv_root: Path):
+    inv = Investigation.new("remarks-demo", title="Remarks Demo")
+    q = inv.add_query(
+        metric=["m1"],
+        entity=["e1"],
+        name="Revenue",
+    )
+    q.remarks = [
+        QueryRemark(text="Broad context for the chart."),
+        QueryRemark(
+            text="Spike around the IPO window.",
+            name="IPO",
+            series=["S1"],
+            from_="2019-01-01",
+            to="2021-12-31",
+        ),
+    ]
+    q.sync_legacy_annotation_fields()
+    save_investigation(inv, root=inv_root)
+
+    model = build_preview_model(
+        _mock_client_for_metric(), "remarks-demo", root=inv_root
+    )
+    assert len(model.panels) == 1
+    remarks = model.panels[0].remarks
+    assert len(remarks) == 2
+    assert remarks[0].text.startswith("Broad context")
+    assert remarks[1].name == "IPO"
+    assert remarks[1].citation is not None
+    assert "2019" in remarks[1].citation
+    assert "Entity One" in remarks[1].citation or "S1" in remarks[1].citation
+
+    html = render_html(model)
+    assert "Remarks" in html
+    assert "Broad context" in html
+    assert "IPO" in html
+    assert "Spike around the IPO" in html
+    assert "remark-cite" in html
+    assert "remark-toggle" in html
+    assert 'data-from="2019-01-01"' in html
+    assert 'data-to="2021-12-31"' in html
+    assert "data-series=" in html
+    assert "Click to highlight cite" in html
+    assert "Show data table" in html
+    assert "freq-chip" in html or "freq-filter" in html
+
+
+def test_project_preview_has_investigation_tabs(tmp_path: Path):
+    from jstdata.investigation import (
+        add_investigation_to_project,
+        create_project_with_investigation,
+        persist_investigation,
+    )
+    from jstdata.investigation.project_store import load_project_investigation
+
+    create_project_with_investigation(
+        project_id="ftai",
+        title="FTAI Aviation",
+        investigation_id="fundamentals",
+        investigation_title="Fundamentals",
+        app_dir=tmp_path,
+    )
+    add_investigation_to_project(
+        "ftai",
+        investigation_id="peers",
+        title="Peers",
+        app_dir=tmp_path,
+    )
+    fund = load_project_investigation(
+        "ftai", "fundamentals", app_dir=tmp_path
+    )
+    peers = load_project_investigation("ftai", "peers", app_dir=tmp_path)
+    fund.add_query(metric=["m1"], entity=["e1"], name="Fund revenue")
+    peers.add_query(metric=["m1"], entity=["e1"], name="Peer revenue")
+    persist_investigation(fund, app_dir=tmp_path)
+    persist_investigation(peers, app_dir=tmp_path)
+
+    model = build_project_preview_model(
+        _mock_client_for_metric(), "ftai", app_dir=tmp_path
+    )
+    assert model.project_id == "ftai"
+    assert model.is_project
+    assert [t.id for t in model.tabs] == ["fundamentals", "peers"]
+    assert len(model.panels) == 2
+    assert {p.key for p in model.panels} == {
+        "fundamentals-q1",
+        "peers-q1",
+    }
+    assert model.panels[0].label == "Fund revenue"
+
+    html = render_html(model)
+    assert "Project" in html
+    assert "inv-tabs" in html
+    assert "Fundamentals" in html
+    assert "Peers" in html
+    assert 'data-inv-tab="fundamentals"' in html
+    assert "Fund revenue" in html
+    assert "Peer revenue" in html

@@ -7,7 +7,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional, Sequence
 
-from ..investigation.model import Investigation, InvestigationError, Query
+from ..investigation.model import (
+    Investigation,
+    InvestigationError,
+    Query,
+    QueryRemark,
+)
+from ..investigation.query_compose import frequency_options_for
 from ..investigation.store import (
     investigation_path,
     investigations_dir,
@@ -30,6 +36,12 @@ HISTORY_START = "2000-01-01"
 OBS_PAGE = 500
 
 
+def _panel_key(investigation_id: str, query_id: int) -> str:
+    """Stable unique id for HTML/JS (safe across multi-tab projects)."""
+    inv = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in investigation_id)
+    return f"{inv}-q{int(query_id)}"
+
+
 @dataclass
 class SeriesLine:
     """One entity line on the preview chart."""
@@ -38,6 +50,7 @@ class SeriesLine:
     entity_label: str
     series_id: str
     observations: list[tuple[datetime, float]] = field(default_factory=list)
+    frequency: Optional[str] = None
 
     @property
     def latest(self) -> Optional[tuple[datetime, float]]:
@@ -58,6 +71,7 @@ class ChartModel:
     entity_count: int
     units: Optional[str] = None
     lines: list[SeriesLine] = field(default_factory=list)
+    frequencies: list[str] = field(default_factory=list)
 
     @property
     def period_label(self) -> str:
@@ -83,6 +97,46 @@ class ChartModel:
 
 
 @dataclass
+class RemarkView:
+    """One research remark ready for the static preview page."""
+
+    text: str
+    name: Optional[str] = None
+    series: list[str] = field(default_factory=list)
+    series_labels: list[str] = field(default_factory=list)
+    from_: Optional[str] = None
+    to: Optional[str] = None
+
+    @property
+    def cited(self) -> bool:
+        return bool(self.series or self.from_ or self.to)
+
+    @property
+    def citation(self) -> Optional[str]:
+        """Human citation line, e.g. ``Albania · 2020–2024``."""
+        who = ", ".join(self.series_labels or self.series)
+        span = ""
+        if self.from_ or self.to:
+
+            def _year(raw: Optional[str]) -> str:
+                text = (raw or "").strip()
+                return text[:4] if len(text) >= 4 and text[:4].isdigit() else text or "…"
+
+            span = f"{_year(self.from_)}–{_year(self.to)}"
+        parts = [p for p in (who, span) if p]
+        return " · ".join(parts) if parts else None
+
+
+@dataclass
+class InvestigationTab:
+    """One investigation in a multi-tab project preview."""
+
+    id: str
+    title: str
+    panel_keys: list[str] = field(default_factory=list)
+
+
+@dataclass
 class QueryPanel:
     """One saved query as a preview tab/panel."""
 
@@ -90,6 +144,15 @@ class QueryPanel:
     label: str
     observation: Optional[str]
     charts: list[ChartModel] = field(default_factory=list)
+    key: str = ""
+    investigation_id: str = ""
+    investigation_title: str = ""
+    remarks: list[RemarkView] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.key:
+            inv = self.investigation_id or "inv"
+            self.key = _panel_key(inv, self.query_id)
 
     @property
     def entity_count(self) -> int:
@@ -112,9 +175,19 @@ class PreviewModel:
     published: datetime
     query_count: int
     panels: list[QueryPanel] = field(default_factory=list)
-    # Multi-investigation local preview (Workstream B; remote awaits C).
+    # Multi-investigation local preview (remote publish awaits Workstream C).
     project_id: Optional[str] = None
+    tabs: list[InvestigationTab] = field(default_factory=list)
+    # Backward-compatible alias populated from ``tabs``.
     tab_labels: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.tabs and not self.tab_labels:
+            self.tab_labels = [t.title for t in self.tabs]
+
+    @property
+    def is_project(self) -> bool:
+        return bool(self.project_id) or len(self.tabs) > 1
 
     @property
     def active_panel(self) -> Optional[QueryPanel]:
@@ -150,6 +223,9 @@ class PreviewModel:
         for panel in self.panels:
             if panel.observation:
                 return panel.observation
+            for remark in panel.remarks:
+                if remark.text:
+                    return remark.text
         return None
 
     @property
@@ -217,15 +293,64 @@ def pick_primary_query(inv: Investigation) -> Optional[Query]:
 
 
 def list_previewable_queries(inv: Investigation) -> list[Query]:
-    """Report-membership queries that have both metric and entity selectors."""
+    """Report-membership queries that can produce charts.
+
+    Prefer metric×entity cartesian queries; also include series-only queries
+    (explicit series ids) so report charts that cite series stay previewable.
+    """
     return sorted(
         (
             q
             for q in inv.queries.values()
-            if q.in_report and q.metric and q.entity
+            if q.in_report
+            and ((q.metric and q.entity) or q.series)
         ),
         key=lambda q: q.id,
     )
+
+
+def _series_label_map(charts: Sequence[ChartModel]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for chart in charts:
+        for line in chart.lines:
+            if line.series_id and line.entity_label:
+                out[line.series_id] = line.entity_label
+    return out
+
+
+def _remark_views(
+    remarks: Sequence[QueryRemark],
+    *,
+    series_labels: Optional[dict[str, str]] = None,
+) -> list[RemarkView]:
+    labels = series_labels or {}
+    views: list[RemarkView] = []
+    for remark in remarks:
+        if not (remark.text or "").strip():
+            continue
+        sids = list(remark.series or [])
+        views.append(
+            RemarkView(
+                text=remark.text.strip(),
+                name=(remark.name or None),
+                series=sids,
+                series_labels=[labels.get(sid, sid) for sid in sids],
+                from_=remark.from_,
+                to=remark.to,
+            )
+        )
+    return views
+
+
+def _observation_from_remarks(remarks: Sequence[RemarkView]) -> Optional[str]:
+    """Legacy single-blob observation: first freeform remark text."""
+    for remark in remarks:
+        if not remark.cited and remark.text:
+            return remark.text
+    for remark in remarks:
+        if remark.text:
+            return remark.text
+    return None
 
 
 def _query_label(query: Query) -> str:
@@ -389,12 +514,14 @@ def _build_chart_model(
             for o in obs
             if o.value is not None
         ]
+        freq = (series.frequency or "").strip() or None
         lines.append(
             SeriesLine(
                 entity_id=entity_id,
                 entity_label=entity_label,
                 series_id=series.id,
                 observations=points,
+                frequency=freq,
             )
         )
 
@@ -405,6 +532,12 @@ def _build_chart_model(
     )
     source = display_record.source
     units = (display_record.units or "").strip() or None
+    available = {
+        (ln.frequency or "").strip()
+        for ln in lines
+        if (ln.frequency or "").strip()
+    }
+    freqs = [f for f in frequency_options_for(available) if f]
     return ChartModel(
         metric_id=metric_id,
         metric_name=metric_name,
@@ -414,7 +547,42 @@ def _build_chart_model(
         entity_count=len(entities) if entities else len(lines),
         units=units,
         lines=lines,
+        frequencies=freqs,
     )
+
+
+def _build_series_only_charts(
+    client: JSTDataClient,
+    *,
+    series_ids: Sequence[str],
+    obs_cache: dict[str, list[Observation]],
+    metric_name_cache: dict[str, str],
+    progress: Optional[ProgressFn] = None,
+) -> list[ChartModel]:
+    """One chart per metric among explicit series ids."""
+    records = _resolve_series_records(
+        client, metric=[], entity=[], series=list(series_ids)
+    )
+    if not records:
+        return []
+    by_metric: dict[str, list[Series]] = {}
+    for series in records:
+        mid = series.metric_id or series.id
+        by_metric.setdefault(mid, []).append(series)
+    charts: list[ChartModel] = []
+    for metric_id, group in by_metric.items():
+        chart = _build_chart_model(
+            client,
+            metric_id=metric_id,
+            entities=[],
+            series_ids=[s.id for s in group],
+            obs_cache=obs_cache,
+            metric_name_cache=metric_name_cache,
+            progress=progress,
+        )
+        if chart is not None:
+            charts.append(chart)
+    return charts
 
 
 def _build_query_panel(
@@ -424,29 +592,51 @@ def _build_query_panel(
     fallback_series: Sequence[str],
     obs_cache: dict[str, list[Observation]],
     metric_name_cache: dict[str, str],
+    investigation_id: str,
+    investigation_title: str,
     progress: Optional[ProgressFn] = None,
 ) -> Optional[QueryPanel]:
     series_ids = list(query.series) or list(fallback_series)
     charts: list[ChartModel] = []
-    for metric_id in query.metric:
-        chart = _build_chart_model(
-            client,
-            metric_id=metric_id,
-            entities=query.entity,
-            series_ids=series_ids,
-            obs_cache=obs_cache,
-            metric_name_cache=metric_name_cache,
-            progress=progress,
+    if query.metric:
+        for metric_id in query.metric:
+            chart = _build_chart_model(
+                client,
+                metric_id=metric_id,
+                entities=query.entity,
+                series_ids=series_ids,
+                obs_cache=obs_cache,
+                metric_name_cache=metric_name_cache,
+                progress=progress,
+            )
+            if chart is not None:
+                charts.append(chart)
+    elif series_ids:
+        charts.extend(
+            _build_series_only_charts(
+                client,
+                series_ids=series_ids,
+                obs_cache=obs_cache,
+                metric_name_cache=metric_name_cache,
+                progress=progress,
+            )
         )
-        if chart is not None:
-            charts.append(chart)
     if not charts:
         return None
+    remarks = _remark_views(
+        query.remarks or [],
+        series_labels=_series_label_map(charts),
+    )
+    observation = _observation_from_remarks(remarks) or query.annotations
     return QueryPanel(
         query_id=query.id,
         label=_query_label(query),
-        observation=query.annotations,
+        observation=observation,
         charts=charts,
+        key=_panel_key(investigation_id, query.id),
+        investigation_id=investigation_id,
+        investigation_title=investigation_title,
+        remarks=remarks,
     )
 
 
@@ -481,6 +671,10 @@ def _workspace_panel(
         label="Workspace",
         observation=inv.annotations,
         charts=charts,
+        key=_panel_key(inv.id, 0),
+        investigation_id=inv.id,
+        investigation_title=inv.title or inv.id,
+        remarks=[],
     )
 
 
@@ -529,6 +723,8 @@ def build_preview_model(
             fallback_series=inv.workspace.series,
             obs_cache=obs_cache,
             metric_name_cache=metric_name_cache,
+            investigation_id=inv.id,
+            investigation_title=inv.title or inv.id,
             progress=progress,
         )
         if panel is not None:
@@ -549,9 +745,14 @@ def build_preview_model(
     if not panels:
         raise InvestigationError(
             f"Investigation {inv_id!r} has nothing to preview "
-            "(need metric×entity queries or a workspace basket)."
+            "(need metric×entity queries, series queries, or a workspace basket)."
         )
 
+    tab = InvestigationTab(
+        id=inv.id,
+        title=inv.title or inv.id,
+        panel_keys=[p.key for p in panels],
+    )
     return PreviewModel(
         investigation_id=inv.id,
         title=inv.title,
@@ -559,6 +760,8 @@ def build_preview_model(
         published=published,
         query_count=len([q for q in inv.queries.values() if q.in_report]),
         panels=panels,
+        tabs=[tab],
+        tab_labels=[tab.title],
     )
 
 
@@ -581,31 +784,44 @@ def build_project_preview_model(
     obs_cache: dict[str, list[Observation]] = {}
     metric_name_cache: dict[str, str] = {}
     panels: list[QueryPanel] = []
-    tab_labels: list[str] = []
+    tabs: list[InvestigationTab] = []
     total_queries = 0
 
     for inv_id in project.investigations:
         inv = load_project_investigation(
             project_id, inv_id, app_dir=app_dir
         )
-        tab_labels.append(inv.title or inv_id)
+        inv_title = inv.title or inv_id
         queries = list_previewable_queries(inv)
-        total_queries += len(queries)
+        total_queries += len(
+            [q for q in inv.queries.values() if q.in_report]
+        )
+        tab_keys: list[str] = []
         for query in queries:
-            label = f"{inv.title or inv_id} · {_query_label(query)}"
-            _emit(progress, f"Building {label}…")
+            _emit(
+                progress,
+                f"Building {inv_title} · {_query_label(query)}…",
+            )
             panel = _build_query_panel(
                 client,
                 query,
                 fallback_series=inv.workspace.series,
                 obs_cache=obs_cache,
                 metric_name_cache=metric_name_cache,
+                investigation_id=inv.id,
+                investigation_title=inv_title,
                 progress=progress,
             )
             if panel is not None:
-                # Preserve query id uniqueness across tabs in the panel label.
-                panel.label = label
+                # Query label stays short; investigation chrome is the tab bar.
                 panels.append(panel)
+                tab_keys.append(panel.key)
+        if tab_keys:
+            tabs.append(
+                InvestigationTab(
+                    id=inv.id, title=inv_title, panel_keys=tab_keys
+                )
+            )
 
     if not panels:
         raise InvestigationError(
@@ -615,14 +831,17 @@ def build_project_preview_model(
     published = datetime.fromtimestamp(
         project_dir(project_id, app_dir=app_dir).stat().st_mtime
     )
+    subtitle = project.notes
+    if not subtitle and len(tabs) > 1:
+        subtitle = "Local multi-tab preview (remote publish awaits Workstream C)"
     return PreviewModel(
         investigation_id=project.id,
         title=project.title,
-        subtitle=project.notes
-        or "Local multi-tab preview (remote publish awaits Workstream C)",
+        subtitle=subtitle,
         published=published,
         query_count=total_queries,
         panels=panels,
         project_id=project.id,
-        tab_labels=tab_labels,
+        tabs=tabs,
+        tab_labels=[t.title for t in tabs],
     )
