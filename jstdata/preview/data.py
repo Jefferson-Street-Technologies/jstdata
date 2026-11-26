@@ -130,11 +130,17 @@ class RemarkView:
 
 @dataclass
 class InvestigationTab:
-    """One investigation in a multi-tab project preview."""
+    """One investigation in a multi-tab project preview.
+
+    ``notes`` is the short description; ``annotations`` is the longer overview
+    from the investigation YAML.
+    """
 
     id: str
     title: str
     panel_keys: list[str] = field(default_factory=list)
+    notes: Optional[str] = None
+    annotations: Optional[str] = None
 
 
 @dataclass
@@ -757,6 +763,8 @@ def build_preview_model(
         id=inv.id,
         title=inv.title or inv.id,
         panel_keys=[p.key for p in panels],
+        notes=inv.notes,
+        annotations=inv.annotations,
     )
     return PreviewModel(
         investigation_id=inv.id,
@@ -824,7 +832,11 @@ def build_project_preview_model(
         if tab_keys:
             tabs.append(
                 InvestigationTab(
-                    id=inv.id, title=inv_title, panel_keys=tab_keys
+                    id=inv.id,
+                    title=inv_title,
+                    panel_keys=tab_keys,
+                    notes=inv.notes,
+                    annotations=inv.annotations,
                 )
             )
 
@@ -837,8 +849,6 @@ def build_project_preview_model(
         project_dir(project_id, app_dir=app_dir).stat().st_mtime
     )
     subtitle = project.notes
-    if not subtitle and len(tabs) > 1:
-        subtitle = "Local multi-tab preview"
     return PreviewModel(
         investigation_id=project.id,
         title=project.title,

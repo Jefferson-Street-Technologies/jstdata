@@ -470,6 +470,52 @@ def _inv_tabs_html(tabs: list[InvestigationTab], *, active_id: str) -> str:
     """
 
 
+def _multiline_esc(value: Optional[str]) -> str:
+    """Escape text and preserve newlines for investigation blurbs."""
+    if not value:
+        return ""
+    return html.escape(value, quote=False).replace("\n", "<br />\n")
+
+
+def _inv_blurb_inner(
+    tab: Optional[InvestigationTab],
+    *,
+    report_notes: Optional[str],
+) -> str:
+    """Short notes + longer annotations for one investigation tab.
+
+    Skips notes when they duplicate the report-level subtitle already shown
+    under the title.
+    """
+    if tab is None:
+        return ""
+    parts: list[str] = []
+    notes = (tab.notes or "").strip() or None
+    annotations = (tab.annotations or "").strip() or None
+    report = (report_notes or "").strip() or None
+    if notes and notes != report:
+        parts.append(f'<p class="inv-notes">{_multiline_esc(notes)}</p>')
+    if annotations:
+        parts.append(
+            f'<div class="inv-annotations">{_multiline_esc(annotations)}</div>'
+        )
+    return "".join(parts)
+
+
+def _inv_blurb_html(
+    tabs: list[InvestigationTab],
+    *,
+    active_id: str,
+    report_notes: Optional[str],
+) -> str:
+    active = next((t for t in tabs if t.id == active_id), None)
+    if active is None and tabs:
+        active = tabs[0]
+    inner = _inv_blurb_inner(active, report_notes=report_notes)
+    hidden = "" if inner else " hidden"
+    return f'<div id="inv-blurb" class="inv-blurb"{hidden}>{inner}</div>'
+
+
 def _entity_labels(chart: Optional[ChartModel]) -> list[str]:
     if chart is None:
         return []
@@ -1110,6 +1156,11 @@ def render_html(model: PreviewModel) -> str:
         filter_inv=multi_inv,
     )
     inv_tabs_html = _inv_tabs_html(model.tabs, active_id=active_inv)
+    inv_blurb_html = _inv_blurb_html(
+        model.tabs,
+        active_id=active_inv,
+        report_notes=model.subtitle,
+    )
     details_html = _details_html(active.primary_chart)
 
     entity_count = active.entity_count
@@ -1141,7 +1192,12 @@ def render_html(model: PreviewModel) -> str:
     tabs_json = html.escape(
         json.dumps(
             {
-                t.id: {"title": t.title, "keys": list(t.panel_keys)}
+                t.id: {
+                    "title": t.title,
+                    "keys": list(t.panel_keys),
+                    "notes": t.notes or "",
+                    "annotations": t.annotations or "",
+                }
                 for t in model.tabs
             }
         ),
@@ -1253,6 +1309,23 @@ def render_html(model: PreviewModel) -> str:
     }}
     .inv-tab-label {{ font-weight: 600; font-size: 13px; }}
     .inv-tab-meta {{ font-size: 11px; opacity: 0.75; }}
+    .inv-blurb {{
+      margin: 0 0 28px;
+      max-width: 52rem;
+    }}
+    .inv-blurb[hidden] {{ display: none !important; }}
+    .inv-notes {{
+      margin: 0 0 10px;
+      color: var(--muted);
+      font-size: 14px;
+    }}
+    .inv-annotations {{
+      margin: 0;
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.55;
+      opacity: 0.9;
+    }}
     .query-panel {{
       margin: 0 0 40px;
       padding: 0 0 36px;
@@ -1684,6 +1757,7 @@ def render_html(model: PreviewModel) -> str:
         <span id="meta-entities">{entity_count} {entity_noun}</span>
       </div>
       {inv_tabs_html}
+      {inv_blurb_html}
       <div id="panels">
         {panels_html}
       </div>
@@ -1783,12 +1857,37 @@ def render_html(model: PreviewModel) -> str:
         }}
       }}
 
+      var reportNotes = {json.dumps(model.subtitle or "")};
+
+      function multilineEsc(s) {{
+        return escText(s).replace(/\\n/g, "<br />\\n");
+      }}
+
+      function renderInvBlurb(invId) {{
+        var blurb = document.getElementById("inv-blurb");
+        if (!blurb) return;
+        var info = invTabs[invId] || {{}};
+        var notes = String(info.notes || "").trim();
+        var annotations = String(info.annotations || "").trim();
+        var report = String(reportNotes || "").trim();
+        var html = "";
+        if (notes && notes !== report) {{
+          html += '<p class="inv-notes">' + multilineEsc(notes) + "</p>";
+        }}
+        if (annotations) {{
+          html += '<div class="inv-annotations">' + multilineEsc(annotations) + "</div>";
+        }}
+        blurb.innerHTML = html;
+        blurb.hidden = !html;
+      }}
+
       function setActiveInv(invId) {{
         activeInv = invId || "";
         document.body.setAttribute("data-active-inv", activeInv);
         document.querySelectorAll(".inv-tab").forEach(function (tab) {{
           tab.classList.toggle("is-active", tab.getAttribute("data-inv-tab") === activeInv);
         }});
+        renderInvBlurb(activeInv);
         var keys = (invTabs[activeInv] && invTabs[activeInv].keys) || null;
         var firstVisible = null;
         document.querySelectorAll(".query-tab").forEach(function (tab) {{
