@@ -75,13 +75,13 @@ def _chart(**kwargs) -> ChartModel:
                 entity_id="b",
                 entity_label="Bangladesh",
                 series_id="Sb",
-                observations=[(datetime(2024, 1, 1), 5.1)],
+                observations=[(datetime(2024, 1, 1), 5.1, "rel-b")],
             ),
             SeriesLine(
                 entity_id="a",
                 entity_label="Albania",
                 series_id="Sa",
-                observations=[(datetime(2024, 1, 1), 89.4)],
+                observations=[(datetime(2024, 1, 1), 89.4, "rel-a")],
             ),
         ],
     )
@@ -212,10 +212,15 @@ def test_build_preview_model_and_render(inv_root: Path):
     assert "Clone" in html
     assert "Details" in html
     assert "Provenance" not in html
+    assert 'data-detail="period"' not in html
+    assert 'data-detail="entities"' in html
+    assert "detail-entities" in html
     assert "Show data table" in html
     assert "chart-table" in html
     assert "chart-tooltip" in html
     assert "chart-cite-band" in html
+    assert "jstPreviewDetails" in html
+    assert "selectObservation" in html
     assert "<h3>Summary</h3>" not in html
     assert ">Summary<" not in html
     assert "massive values" in html
@@ -254,6 +259,10 @@ def test_render_html_legend_sorted_by_value():
     assert "chart-source" in html
     assert "World Bank (S1)" in html
     assert 'data-detail="units"' in html
+    assert 'data-detail="release"' in html
+    assert 'data-detail="entities"' in html
+    assert 'data-detail="period"' not in html
+    assert "rel-a" in html or "rel-b" in html
     assert "Percent" in html
     assert "Remarks" in html
     assert "chart-inv-q1-m0" in html
@@ -267,6 +276,9 @@ def test_render_html_legend_sorted_by_value():
     assert "freq-filter" in html
     assert "Any frequency" in html
     assert "Quarterly" in html
+    assert 'value="Annual" selected' in html
+    assert "panel-header" in html
+    assert "panel-title" in html
     assert "Show data table" in html
     assert "chart-table-wrap" in html
     assert '"frequency"' in html or "frequencies" in html
@@ -280,8 +292,8 @@ def test_aligned_series_leaves_gaps_as_nan():
         entity_label="A",
         series_id="Sa",
         observations=[
-            (datetime(2004, 1, 1), 10.0),
-            (datetime(2006, 1, 1), 20.0),
+            (datetime(2004, 1, 1), 10.0, "r1"),
+            (datetime(2006, 1, 1), 20.0, "r2"),
         ],
     )
     xs, ys = _aligned_series(line, [2004, 2005, 2006])

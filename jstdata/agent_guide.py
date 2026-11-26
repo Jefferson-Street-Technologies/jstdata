@@ -41,6 +41,8 @@ _HARD_RULES = """\
   a project.
 - **Mutate through logged ops.** Prefer `workspace add|rm`, `query run|patch`,
   `remark add|rm`, `promote`, `copy`, `annotate` over any other write path.
+- **Name your remarks.** Always pass `--name` on `remark add` so humans can tell
+  agent notes apart in the TUI and preview. Default nickname: `Agent`.
 - **Default JSON.** `jst actions` defaults to `--format json`. Prefer JSON for anything
   you parse.
 - **Do not launch interactive TUIs** (`jst` / `jst new` / `jst open`) unless the user
@@ -200,10 +202,14 @@ jst actions --actor agent query run --metric <metric-id> --entity <e1> --tail 1 
   --save --name "Peer revenue" --project PROJ --investigation INV
 jst actions --actor agent query patch 1 --add-metric <other-metric> \\
   --project PROJ --investigation INV
-jst actions --actor agent remark add 1 --text "Margins widened in Q1" \\
+jst actions --actor agent remark add 1 --name Agent \\
+  --text "Margins widened in Q1" \\
   --series <series-id> --from 2024-01-01 --to 2024-03-31 \\
   --project PROJ --investigation INV
 ```
+
+Remark `--name` is a short nickname shown above the note (use `Agent` unless you
+have a clearer label). Always include it when adding remarks.
 
 ### Exploratory latest values (triage)
 
@@ -344,8 +350,9 @@ _AUDITED_WORKFLOW = """\
 2. **Resolve** — `jst actions search entities|metrics` (+ relation / taxonomy filters).
 3. **Act** — metadata, relationships, taxonomy; stage with `workspace add`; pull
    values with `query run` (`--save` for drafts); refine with `query patch` /
-   `remark add`. Every call returns `event_id` + `actor` and may mint an immutable
-   artifact (results or mutator after-state).
+   `remark add` (always `--name Agent` or another nickname). Every call returns
+   `event_id` + `actor` and may mint an immutable artifact (results or mutator
+   after-state).
 4. **Inspect** — `jst actions log --actor-filter agent` / `jst actions inspect
    <event-id>` reopens the historical payload without another Data API request.
    Humans use Shift+L in the TUI for the same store.

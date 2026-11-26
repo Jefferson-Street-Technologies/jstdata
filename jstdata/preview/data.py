@@ -49,11 +49,12 @@ class SeriesLine:
     entity_id: str
     entity_label: str
     series_id: str
-    observations: list[tuple[datetime, float]] = field(default_factory=list)
+    # (observation_timestamp, value, release_id)
+    observations: list[tuple[datetime, float, str]] = field(default_factory=list)
     frequency: Optional[str] = None
 
     @property
-    def latest(self) -> Optional[tuple[datetime, float]]:
+    def latest(self) -> Optional[tuple[datetime, float, str]]:
         if not self.observations:
             return None
         return self.observations[-1]
@@ -77,7 +78,7 @@ class ChartModel:
     def period_label(self) -> str:
         years: list[int] = []
         for line in self.lines:
-            for ts, _ in line.observations:
+            for ts, *_ in line.observations:
                 years.append(ts.year)
         if not years:
             return "—"
@@ -510,7 +511,11 @@ def _build_chart_model(
             )
         obs = _fetch_observations(client, series.id, cache=obs_cache)
         points = [
-            (o.observation_timestamp, float(o.value))
+            (
+                o.observation_timestamp,
+                float(o.value),
+                (o.release_id or "").strip(),
+            )
             for o in obs
             if o.value is not None
         ]

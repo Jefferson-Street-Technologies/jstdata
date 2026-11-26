@@ -11,7 +11,7 @@ import json
 import math
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Optional, Sequence, Union
 
 from .data import (
     ChartModel,
@@ -92,7 +92,7 @@ def _legend_items(
         if latest is None:
             rows.append((-math.inf, color, line.entity_label, "—", ""))
             continue
-        ts, value = latest
+        ts, value = latest[0], latest[1]
         rows.append(
             (
                 value,
@@ -109,7 +109,7 @@ def _legend_items(
 def _observation_years(lines: list[SeriesLine]) -> list[int]:
     years: set[int] = set()
     for line in lines:
-        for ts, _ in line.observations:
+        for ts, *_ in line.observations:
             years.add(ts.year)
     return sorted(years)
 
@@ -118,7 +118,7 @@ def _aligned_series(
     line: SeriesLine, years: list[int]
 ) -> tuple[list[datetime], list[float]]:
     """Map a series onto the shared year axis; missing years become NaN."""
-    by_year = {ts.year: float(val) for ts, val in line.observations}
+    by_year = {ts.year: float(val) for ts, val, *_ in line.observations}
     xs: list[datetime] = []
     ys: list[float] = []
     for year in years:
@@ -131,15 +131,19 @@ def _chart_payload(chart: ChartModel) -> dict[str, Any]:
     """JSON-serializable chart data for client-side SVG rendering."""
     lines_out: list[dict[str, Any]] = []
     for i, line in enumerate(chart.lines):
-        points = [
-            {
-                "t": ts.strftime("%Y-%m-%d"),
-                "y": float(val),
-                "ms": int(ts.timestamp() * 1000),
-            }
-            for ts, val in line.observations
-            if val is not None and not math.isnan(float(val))
-        ]
+        points: list[dict[str, Any]] = []
+        for ts, val, *rest in line.observations:
+            if val is None or math.isnan(float(val)):
+                continue
+            release_id = (rest[0] if rest else "") or ""
+            points.append(
+                {
+                    "t": ts.strftime("%Y-%m-%d"),
+                    "y": float(val),
+                    "ms": int(ts.timestamp() * 1000),
+                    "release_id": str(release_id).strip(),
+                }
+            )
         if not points:
             continue
         lines_out.append(
@@ -158,10 +162,34 @@ def _chart_payload(chart: ChartModel) -> dict[str, Any]:
         "metric_id": chart.metric_id,
         "series_id": chart.series_id,
         "units": chart.units,
+        "source": chart.source,
         "percent": _is_percent_units(chart),
         "frequencies": list(chart.frequencies or []),
         "lines": lines_out,
     }
+
+
+def _primary_release_id(chart: Optional[ChartModel]) -> str:
+    """Release id for the chart's display series' latest observation."""
+    if chart is None:
+        return "—"
+    target = chart.series_id
+    for line in chart.lines or []:
+        if target and line.series_id != target:
+            continue
+        latest = line.latest
+        if latest is None:
+            continue
+        rid = (latest[2] if len(latest) > 2 else "") or ""
+        return rid.strip() or "—"
+    for line in chart.lines or []:
+        latest = line.latest
+        if latest is None:
+            continue
+        rid = (latest[2] if len(latest) > 2 else "") or ""
+        if rid.strip():
+            return rid.strip()
+    return "—"
 
 
 def _legend_block(chart: ChartLike, *, theme: ChartTheme) -> str:
@@ -200,8 +228,12 @@ def _freq_filter_html(frequencies: list[str]) -> str:
             )
         return ""
     opts = ['<option value="">Any frequency</option>']
-    for freq in frequencies:
-        opts.append(f'<option value="{_esc(freq)}">{_esc(freq)}</option>')
+    for i, freq in enumerate(frequencies):
+        # Default to the first concrete frequency (not "Any").
+        selected = " selected" if i == 0 else ""
+        opts.append(
+            f'<option value="{_esc(freq)}"{selected}>{_esc(freq)}</option>'
+        )
     return (
         '<label class="freq-filter-label">Frequency '
         f'<select class="freq-filter">{"".join(opts)}</select></label>'
@@ -333,26 +365,36 @@ def _panel_html(
     for i, chart in enumerate(panel.charts):
         artifact_id = f"chart-{key}-m{i}"
         export_name = _esc(f"{key}-{chart.metric_id or i}-chart.png")
-        label = panel.label if len(panel.charts) == 1 else None
         cards.append(
             _chart_card_html(
                 chart,
                 artifact_id=artifact_id,
                 export_name=export_name,
-                panel_label=label if i == 0 else None,
             )
         )
     remarks = _remarks_html(panel.remarks, observation=panel.observation)
-    multi_label = ""
-    if len(panel.charts) > 1:
-        multi_label = f'<div class="panel-title">{_esc(panel.label)}</div>'
+    inv_bit = ""
+    if panel.investigation_title:
+        inv_bit = (
+            f'<span class="panel-inv">{_esc(panel.investigation_title)}</span>'
+            f'<span class="panel-meta-sep">·</span>'
+        )
+    header = f"""
+      <header class="panel-header">
+        <h2 class="panel-title">{_esc(panel.label)}</h2>
+        <div class="panel-meta">
+          {inv_bit}
+          <span class="panel-qid">Query {panel.query_id}</span>
+        </div>
+      </header>
+    """
     hidden = "" if active else " hidden"
     inv = _esc(panel.investigation_id or "")
     return f"""
     <article class="query-panel{hidden}" id="panel-{_esc(key)}"
              data-query-id="{panel.query_id}" data-panel-key="{_esc(key)}"
              data-inv="{inv}" data-panel>
-      {multi_label}
+      {header}
       {"".join(cards)}
       {remarks}
     </article>
@@ -418,9 +460,30 @@ def _inv_tabs_html(tabs: list[InvestigationTab], *, active_id: str) -> str:
     """
 
 
+def _entity_labels(chart: Optional[ChartModel]) -> list[str]:
+    if chart is None:
+        return []
+    labels: list[str] = []
+    seen: set[str] = set()
+    for line in chart.lines or []:
+        label = (line.entity_label or line.entity_id or "").strip()
+        if not label or label in seen:
+            continue
+        seen.add(label)
+        labels.append(label)
+    return labels
+
+
+def _entities_list_html(labels: Sequence[str]) -> str:
+    if not labels:
+        return "<li>—</li>"
+    return "".join(f"<li>{_esc(label)}</li>" for label in labels)
+
+
 def _details_html(chart: Optional[ChartModel]) -> str:
     if chart is None:
         return "<p class='muted'>No query selected.</p>"
+    entities = _entities_list_html(_entity_labels(chart))
     return f"""
         <div class="detail-row">
           <div class="detail-key">Metric</div>
@@ -439,8 +502,12 @@ def _details_html(chart: Optional[ChartModel]) -> str:
           <div class="detail-val" data-detail="source">{_esc(chart.source)}</div>
         </div>
         <div class="detail-row">
-          <div class="detail-key">Period</div>
-          <div class="detail-val" data-detail="period">{_esc(chart.period_label)}</div>
+          <div class="detail-key">Release</div>
+          <div class="detail-val" data-detail="release">{_esc(_primary_release_id(chart))}</div>
+        </div>
+        <div class="detail-row detail-row-entities">
+          <div class="detail-key">Entities</div>
+          <ul class="detail-entities" data-detail="entities">{entities}</ul>
         </div>
     """
 
@@ -497,6 +564,65 @@ _CHART_JS = r"""
     return best;
   }
 
+  function markSelectedRows(el) {
+    var card = cardOf(el);
+    if (!card) return;
+    var sel = el._selected;
+    card.querySelectorAll(".chart-table tbody tr").forEach(function (tr) {
+      var match = !!sel &&
+        Number(tr.getAttribute("data-ms")) === sel.ms &&
+        tr.getAttribute("data-series-id") === sel.seriesId;
+      tr.classList.toggle("is-selected", match);
+    });
+  }
+
+  function releaseForPoint(line, ms) {
+    if (!line || !line.points) return "—";
+    for (var i = 0; i < line.points.length; i++) {
+      if (line.points[i].ms === ms) {
+        return (line.points[i].release_id || "").trim() || "—";
+      }
+    }
+    return "—";
+  }
+
+  function applyObservationDetails(el, seriesId, ms) {
+    var data = parseChart(el);
+    if (!data) return;
+    var line = null;
+    for (var i = 0; i < (data.lines || []).length; i++) {
+      if (data.lines[i].id === seriesId) {
+        line = data.lines[i];
+        break;
+      }
+    }
+    if (!line) return;
+    if (window.jstPreviewDetails && window.jstPreviewDetails.apply) {
+      window.jstPreviewDetails.apply({
+        metric: data.metric || "",
+        series: seriesId || "—",
+        units: data.units || "—",
+        source: data.source || "—",
+        release: releaseForPoint(line, ms),
+        entity_labels: [line.label || line.entity_id || seriesId]
+      });
+    }
+  }
+
+  function selectObservation(el, seriesId, ms) {
+    if (!el || seriesId == null || ms == null) return;
+    document.querySelectorAll(".chart-plot[data-chart]").forEach(function (other) {
+      if (other !== el) {
+        other._selected = null;
+        markSelectedRows(other);
+      }
+    });
+    el._selected = { seriesId: seriesId, ms: ms };
+    setHover(el, ms, { fromTable: false });
+    markSelectedRows(el);
+    applyObservationDetails(el, seriesId, ms);
+  }
+
   function rebuildTable(el, rows, percent) {
     var card = cardOf(el);
     if (!card) return;
@@ -517,7 +643,13 @@ _CHART_JS = r"""
       tr.addEventListener("mouseleave", function () {
         if (el._hoverFromTable) setHover(el, null, { fromTable: true });
       });
+      tr.addEventListener("click", function () {
+        var ms = Number(tr.getAttribute("data-ms"));
+        var sid = tr.getAttribute("data-series-id") || "";
+        if (!isNaN(ms) && sid) selectObservation(el, sid, ms);
+      });
     });
+    markSelectedRows(el);
   }
 
   function setHover(el, ms, opts) {
@@ -609,6 +741,35 @@ _CHART_JS = r"""
     }
   }
 
+  function pickSeriesAt(el, ms, clientY) {
+    var st = el._chartState;
+    if (!st || ms == null) return null;
+    var hits = [];
+    st.lines.forEach(function (ln) {
+      if (ln.dimmed) return;
+      for (var i = 0; i < ln.points.length; i++) {
+        if (ln.points[i].ms === ms) {
+          hits.push({ id: ln.id, y: ln.points[i].y });
+          break;
+        }
+      }
+    });
+    if (!hits.length) return null;
+    if (hits.length === 1) return hits[0].id;
+    var rect = el.getBoundingClientRect();
+    var localY = ((clientY - rect.top) / Math.max(1, rect.height)) * st.h;
+    var best = hits[0];
+    var bestDist = Math.abs(st.yScale(best.y) - localY);
+    for (var j = 1; j < hits.length; j++) {
+      var d = Math.abs(st.yScale(hits[j].y) - localY);
+      if (d < bestDist) {
+        best = hits[j];
+        bestDist = d;
+      }
+    }
+    return best.id;
+  }
+
   function bindPlotPointer(el) {
     if (el._pointerBound) return;
     el._pointerBound = true;
@@ -624,6 +785,16 @@ _CHART_JS = r"""
     });
     el.addEventListener("mouseleave", function () {
       if (!el._hoverFromTable) setHover(el, null);
+    });
+    el.addEventListener("click", function (ev) {
+      var st = el._chartState;
+      if (!st || !st.msList.length) return;
+      var rect = el.getBoundingClientRect();
+      var localX = ((ev.clientX - rect.left) / Math.max(1, rect.width)) * st.w;
+      var msAt = st.minMs + ((localX - st.pad.l) / Math.max(1, st.iw)) * (st.maxMs - st.minMs);
+      var snap = nearestMs(st.msList, msAt);
+      var sid = pickSeriesAt(el, snap, ev.clientY);
+      if (sid != null && snap != null) selectObservation(el, sid, snap);
     });
   }
 
@@ -822,7 +993,12 @@ _CHART_JS = r"""
 
     rebuildTable(el, tableRows, !!data.percent);
     bindPlotPointer(el);
-    if (el._hoverMs != null) setHover(el, el._hoverMs);
+    if (el._selected) {
+      setHover(el, el._selected.ms);
+      markSelectedRows(el);
+    } else if (el._hoverMs != null) {
+      setHover(el, el._hoverMs);
+    }
 
     var card = cardOf(el);
     if (card) {
@@ -879,6 +1055,7 @@ _CHART_JS = r"""
     drawChart: drawChart,
     setPanelFilter: setPanelFilter,
     setHover: setHover,
+    selectObservation: selectObservation,
     theme: theme
   };
 
@@ -940,7 +1117,8 @@ def render_html(model: PreviewModel) -> str:
             "series": (p.primary_chart.series_id or "—") if p.primary_chart else "—",
             "units": (p.primary_chart.units or "—") if p.primary_chart else "—",
             "source": (p.primary_chart.source if p.primary_chart else "—"),
-            "period": (p.primary_chart.period_label if p.primary_chart else "—"),
+            "release": _primary_release_id(p.primary_chart),
+            "entity_labels": _entity_labels(p.primary_chart),
             "entities": p.entity_count,
             "source_display": (
                 p.primary_chart.source_display if p.primary_chart else "—"
@@ -1064,16 +1242,47 @@ def render_html(model: PreviewModel) -> str:
     .inv-tab-label {{ font-weight: 600; font-size: 13px; }}
     .inv-tab-meta {{ font-size: 11px; opacity: 0.75; }}
     .query-panel {{
-      margin-bottom: 48px;
+      margin: 0 0 40px;
+      padding: 0 0 36px;
+      border-bottom: 1px solid var(--divider);
+    }}
+    .query-panel:last-child {{
+      margin-bottom: 0;
+      padding-bottom: 0;
+      border-bottom: none;
     }}
     .query-panel[hidden],
     .query-tab[hidden] {{
       display: none !important;
     }}
+    .panel-header {{
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin: 0 0 18px;
+      padding: 0 0 14px;
+      border-bottom: 1px solid var(--border);
+    }}
     .panel-title {{
-      font-size: 18px;
+      margin: 0;
+      font-size: 20px;
       font-weight: 600;
-      margin: 0 0 16px;
+      letter-spacing: -0.01em;
+    }}
+    .panel-meta {{
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }}
+    .panel-meta-sep {{
+      opacity: 0.6;
+    }}
+    .panel-qid {{
+      font-variant-numeric: tabular-nums;
     }}
     .chart-card {{
       background: var(--panel);
@@ -1247,11 +1456,15 @@ def render_html(model: PreviewModel) -> str:
       z-index: 1;
     }}
     .chart-table tbody tr {{
-      cursor: default;
+      cursor: pointer;
     }}
     .chart-table tbody tr:hover,
     .chart-table tbody tr.is-hover {{
       background: color-mix(in srgb, var(--accent) 14%, transparent);
+    }}
+    .chart-table tbody tr.is-selected {{
+      background: color-mix(in srgb, var(--accent) 22%, transparent);
+      box-shadow: inset 3px 0 0 var(--accent);
     }}
     .table-swatch {{
       display: inline-block;
@@ -1390,8 +1603,21 @@ def render_html(model: PreviewModel) -> str:
       border-top: 1px solid var(--divider);
       font-size: 13px;
     }}
+    .detail-row-entities {{
+      align-items: flex-start;
+    }}
     .detail-key {{ font-weight: 500; }}
     .detail-val {{ color: var(--muted); text-align: right; }}
+    .detail-entities {{
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      color: var(--muted);
+      text-align: right;
+    }}
+    .detail-entities li + li {{
+      margin-top: 4px;
+    }}
     .query-list {{
       border-top: 1px solid var(--divider);
       padding-top: 18px;
@@ -1502,16 +1728,42 @@ def render_html(model: PreviewModel) -> str:
         }});
       }}
 
+      function escText(s) {{
+        return String(s == null ? "" : s)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      }}
+
+      function applyDetails(info) {{
+        if (!info) return;
+        ["metric", "series", "units", "source", "release"].forEach(function (key) {{
+          var el = document.querySelector('[data-detail="' + key + '"]');
+          if (el) el.textContent = info[key] || "—";
+        }});
+        var list = document.querySelector('[data-detail="entities"]');
+        if (list) {{
+          var labels = info.entity_labels || [];
+          if (!labels.length) {{
+            list.innerHTML = "<li>—</li>";
+          }} else {{
+            list.innerHTML = labels.map(function (label) {{
+              return "<li>" + escText(label) + "</li>";
+            }}).join("");
+          }}
+        }}
+      }}
+
+      window.jstPreviewDetails = {{ apply: applyDetails }};
+
       function setActiveTab(id) {{
         document.querySelectorAll(".query-tab").forEach(function (tab) {{
           tab.classList.toggle("is-active", tab.getAttribute("data-tab") === String(id));
         }});
         var info = details[String(id)];
         if (!info) return;
-        ["metric", "series", "units", "source", "period"].forEach(function (key) {{
-          var el = document.querySelector('[data-detail="' + key + '"]');
-          if (el) el.textContent = info[key];
-        }});
+        applyDetails(info);
         var ent = document.getElementById("meta-entities");
         if (ent) {{
           var n = info.entities || 0;

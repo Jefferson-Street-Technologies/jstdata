@@ -60,6 +60,8 @@ def test_agent_guide_cli():
     assert "--actor-filter agent" in out
     assert "`jst actions query patch`" in out
     assert "`jst actions remark add`" in out
+    assert "--name Agent" in out
+    assert "Name your remarks" in out
     assert "`jst actions workspace add`" in out
     assert "Shift+L" in out
     assert "Host chrome" not in out
