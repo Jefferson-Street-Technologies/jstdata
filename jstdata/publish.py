@@ -100,6 +100,84 @@ def _error_message(response: requests.Response) -> str:
     return f"{response.status_code} {response.reason}"
 
 
+def _post_publication(
+    projected: dict[str, Any],
+    *,
+    api_key: str,
+    site_url: str,
+    publisher_name: Optional[str],
+    notes: list[str],
+) -> dict[str, Any]:
+    site_url = check_site_url(site_url)
+    body: dict[str, Any] = {"investigation": projected}
+    if publisher_name:
+        body["publisherName"] = publisher_name
+    try:
+        response = requests.post(
+            f"{site_url}/api/publications",
+            json=body,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=PUBLISH_TIMEOUT_S,
+        )
+    except requests.RequestException as exc:
+        raise _unreachable(site_url, exc) from exc
+    if response.status_code != 201:
+        raise PublishError(_error_message(response))
+    try:
+        result = response.json()
+        if not isinstance(result.get("url"), str):
+            raise ValueError("no url")
+    except (ValueError, AttributeError) as exc:
+        raise PublishError(
+            f"{site_url} answered, but not with a publication link."
+        ) from exc
+    if notes:
+        result = dict(result)
+        result["notifications"] = notes
+    return result
+
+
+def _patch_publication(
+    projected: dict[str, Any],
+    publication_id: str,
+    *,
+    api_key: str,
+    site_url: str,
+    publisher_name: Optional[str],
+) -> dict[str, Any]:
+    site_url = check_site_url(site_url)
+    body: dict[str, Any] = {"investigation": projected}
+    if publisher_name:
+        body["publisherName"] = publisher_name
+    try:
+        response = requests.patch(
+            f"{site_url}/api/publications/{publication_id}",
+            json=body,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=PUBLISH_TIMEOUT_S,
+        )
+    except requests.RequestException as exc:
+        raise _unreachable(site_url, exc) from exc
+    if response.status_code == 409:
+        raise QueriesChangedError(_error_message(response))
+    if response.status_code == 404:
+        raise PublishError(
+            f"Publication {publication_id!r} wasn't found, or wasn't published "
+            "with your account."
+        )
+    if response.status_code != 200:
+        raise PublishError(_error_message(response))
+    try:
+        result = response.json()
+        if not isinstance(result.get("url"), str):
+            raise ValueError("no url")
+    except (ValueError, AttributeError) as exc:
+        raise PublishError(
+            f"{site_url} answered, but not with a publication link."
+        ) from exc
+    return result
+
+
 def publish_investigation(
     inv: Investigation,
     *,
@@ -138,33 +216,43 @@ def publish_investigation(
             f"{inv.id!r} has no report queries to publish. "
             "Promote one with `jst actions promote` / `--query <id>`."
         )
-    site_url = check_site_url(site_url)
-    body: dict[str, Any] = {"investigation": projected}
-    if publisher_name:
-        body["publisherName"] = publisher_name
+    return _post_publication(
+        projected,
+        api_key=api_key,
+        site_url=site_url,
+        publisher_name=publisher_name,
+        notes=notes,
+    )
+
+
+def publish_project(
+    project_id: str,
+    *,
+    api_key: str,
+    site_url: str = DEFAULT_SITE_URL,
+    publisher_name: Optional[str] = None,
+    notifications: Optional[list[str]] = None,
+    app_dir: Optional[Path] = None,
+) -> dict[str, Any]:
+    """Publish a multi-tab project as a version-2 publication."""
+    from .ops.curation import project_publication_projection
+    from .ops.result import OperationError
+
     try:
-        response = requests.post(
-            f"{site_url}/api/publications",
-            json=body,
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=PUBLISH_TIMEOUT_S,
+        projected, notes = project_publication_projection(
+            project_id, app_dir=app_dir
         )
-    except requests.RequestException as exc:
-        raise _unreachable(site_url, exc) from exc
-    if response.status_code != 201:
-        raise PublishError(_error_message(response))
-    try:
-        result = response.json()
-        if not isinstance(result.get("url"), str):
-            raise ValueError("no url")
-    except (ValueError, AttributeError) as exc:
-        raise PublishError(
-            f"{site_url} answered, but not with a publication link."
-        ) from exc
-    if notes:
-        result = dict(result)
-        result["notifications"] = notes
-    return result
+    except OperationError as exc:
+        raise PublishError(str(exc)) from exc
+    if notifications is not None:
+        notifications.extend(notes)
+    return _post_publication(
+        projected,
+        api_key=api_key,
+        site_url=site_url,
+        publisher_name=publisher_name,
+        notes=notes,
+    )
 
 
 def update_publication(
@@ -188,7 +276,6 @@ def update_publication(
     from .ops.curation import publication_projection
     from .ops.result import OperationError
 
-    site_url = check_site_url(site_url)
     try:
         projected, _notes = publication_projection(
             inv,
@@ -197,36 +284,41 @@ def update_publication(
         )
     except OperationError as exc:
         raise PublishError(str(exc)) from exc
-    body: dict[str, Any] = {"investigation": projected}
-    if publisher_name:
-        body["publisherName"] = publisher_name
+    return _patch_publication(
+        projected,
+        publication_id,
+        api_key=api_key,
+        site_url=site_url,
+        publisher_name=publisher_name,
+    )
+
+
+def update_project_publication(
+    project_id: str,
+    publication_id: str,
+    *,
+    api_key: str,
+    site_url: str = DEFAULT_SITE_URL,
+    publisher_name: Optional[str] = None,
+    app_dir: Optional[Path] = None,
+) -> dict[str, Any]:
+    """Text-only update of a version-2 multi-tab publication."""
+    from .ops.curation import project_publication_projection
+    from .ops.result import OperationError
+
     try:
-        response = requests.patch(
-            f"{site_url}/api/publications/{publication_id}",
-            json=body,
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=PUBLISH_TIMEOUT_S,
+        projected, _notes = project_publication_projection(
+            project_id, app_dir=app_dir
         )
-    except requests.RequestException as exc:
-        raise _unreachable(site_url, exc) from exc
-    if response.status_code == 409:
-        raise QueriesChangedError(_error_message(response))
-    if response.status_code == 404:
-        raise PublishError(
-            f"Publication {publication_id!r} wasn't found, or wasn't published "
-            "with your account."
-        )
-    if response.status_code != 200:
-        raise PublishError(_error_message(response))
-    try:
-        result = response.json()
-        if not isinstance(result.get("url"), str):
-            raise ValueError("no url")
-    except (ValueError, AttributeError) as exc:
-        raise PublishError(
-            f"{site_url} answered, but not with a publication link."
-        ) from exc
-    return result
+    except OperationError as exc:
+        raise PublishError(str(exc)) from exc
+    return _patch_publication(
+        projected,
+        publication_id,
+        api_key=api_key,
+        site_url=site_url,
+        publisher_name=publisher_name,
+    )
 
 
 # --- Which links each local investigation was published to ----------------
@@ -371,6 +463,26 @@ def fetch_publication(origin: str, pub_id: str) -> dict[str, Any]:
     return body
 
 
+def _tab_to_investigation(
+    tab: dict[str, Any],
+    *,
+    inv_id: str,
+) -> Investigation:
+    """Build a local investigation from one published tab."""
+    payload: dict[str, Any] = {
+        "id": inv_id,
+        "title": tab.get("title") or inv_id,
+        "queries": list(tab.get("queries") or []),
+        "actions": [{"id": ROOT_ACTION_ID, "type": "home", "args": {}}],
+    }
+    if tab.get("notes"):
+        payload["notes"] = tab["notes"]
+    if tab.get("annotations"):
+        payload["annotations"] = tab["annotations"]
+    # Empty workspace — clone must not inherit publisher research state.
+    return Investigation.from_dict(payload)
+
+
 def clone_publication(
     ref: str,
     *,
@@ -381,13 +493,107 @@ def clone_publication(
     """Download a publication's definition and save it as a new investigation.
 
     The local copy is independent: editing or running it never touches the
-    publication. If the original id is taken locally, a ``-clone`` suffix is
+    publication. Local investigation slugs are always allocated here (from
+    ``--as`` or the published title) — never reused from the publisher's
+    machine. If the preferred id is taken locally, a ``-clone`` suffix is
     added unless ``new_id`` is given.
+
+    Version-2 (multi-tab) publications become a local project with ordered
+    investigation tabs. Returns the first tab's investigation (active target).
     """
+    from .investigation.project import Project
+    from .investigation.project_store import (
+        allocate_project_id,
+        save_project_investigation,
+        slugify_title,
+    )
+
     origin, pub_id = parse_publication_ref(ref, site_url=site_url)
     data = dict(fetch_publication(origin, pub_id)["investigation"])
-    published_id = data["id"]
+    # Drop any investigation id the publisher once sent — slugs stay local.
+    data.pop("id", None)
 
+    title = data.get("title")
+    preferred = slugify_title(str(title).strip() if title else "") or "cloned"
+
+    # --- version 2: multi-tab project ---------------------------------
+    if data.get("version") == 2:
+        tabs = data.get("investigations")
+        if not isinstance(tabs, list) or not tabs:
+            raise PublishError(
+                "This publication is marked version 2 but has no investigation tabs."
+            )
+        if root is not None:
+            # Flat-root tests only support single-investigation clones.
+            if len(tabs) != 1:
+                raise PublishError(
+                    "Multi-tab publications clone into a project directory; "
+                    "pass no root= override."
+                )
+            if new_id is not None:
+                validate_investigation_id(new_id)
+                if _id_taken(new_id, root):
+                    raise InvestigationError(
+                        f"Investigation {new_id!r} already exists."
+                    )
+                inv_id = new_id
+            else:
+                inv_id = _available_id(preferred, root)
+            inv = _tab_to_investigation(tabs[0], inv_id=inv_id)
+            save_investigation(inv, root=root)
+            return inv
+
+        from .investigation.project_store import project_exists, validate_project_id
+
+        if new_id is not None:
+            validate_project_id(new_id)
+            if project_exists(new_id):
+                raise InvestigationError(f"Project {new_id!r} already exists.")
+            project_id = new_id
+        else:
+            try:
+                validate_investigation_id(preferred)
+            except InvestigationError as exc:
+                raise PublishError(
+                    f"Couldn't derive a local id from the publication title "
+                    f"{title!r}. Choose one with --as, e.g. --as my-copy."
+                ) from exc
+            project_id = allocate_project_id(preferred=preferred)
+
+        built: list[Investigation] = []
+        used: set[str] = set()
+        for tab in tabs:
+            if not isinstance(tab, dict):
+                raise PublishError("Invalid investigation tab in publication.")
+            tab_title = str(tab.get("title") or "investigation").strip()
+            base = slugify_title(tab_title) or "investigation"
+            try:
+                validate_investigation_id(base)
+            except InvestigationError:
+                base = "investigation"
+            candidate = base
+            n = 2
+            while candidate in used:
+                candidate = f"{base}-{n}"
+                n += 1
+            used.add(candidate)
+            built.append(_tab_to_investigation(tab, inv_id=candidate))
+
+        project = Project.new(
+            project_id,
+            title=str(title).strip() if title else project_id,
+            notes=data.get("notes") if isinstance(data.get("notes"), str) else None,
+            investigation_ids=[inv.id for inv in built],
+        )
+        for i, inv in enumerate(built):
+            save_project_investigation(
+                project_id,
+                inv,
+                project=project if i == 0 else None,
+            )
+        return built[0]
+
+    # --- version 1: single investigation ------------------------------
     if new_id is not None:
         validate_investigation_id(new_id)
         if _id_taken(new_id, root):
@@ -395,13 +601,13 @@ def clone_publication(
         data["id"] = new_id
     else:
         try:
-            validate_investigation_id(published_id)
+            validate_investigation_id(preferred)
         except InvestigationError as exc:
             raise PublishError(
-                f"The published id {published_id!r} isn't a valid local id. "
-                "Choose one with --as, e.g. --as my-copy."
+                f"Couldn't derive a local id from the publication title "
+                f"{title!r}. Choose one with --as, e.g. --as my-copy."
             ) from exc
-        data["id"] = _available_id(published_id, root)
+        data["id"] = _available_id(preferred, root)
 
     # Older definitions or hand-built ones may lack the TUI's view tree;
     # an investigation needs at least its root action.
@@ -415,9 +621,6 @@ def clone_publication(
         # Explicit root (tests / legacy callers): flat YAML under that directory.
         save_investigation(inv, root=root)
         return inv
-
-    from .investigation.project import Project
-    from .investigation.project_store import save_project_investigation
 
     project = Project.new(
         inv.id,

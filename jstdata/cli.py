@@ -966,8 +966,10 @@ def publish_cmd(
         QueriesChangedError,
         last_publication,
         publish_investigation,
+        publish_project,
         record_publication,
         update_publication,
+        update_project_publication,
     )
     from .publish_sync import text_of
 
@@ -979,25 +981,17 @@ def publish_cmd(
                 sys.exit(2)
             investigation_id = ctx.investigation
         inv = get_investigation(investigation_id)
-        # Multi-tab remote publish awaits Workstream C — never silently flatten.
         from .investigation.project_store import (
             find_investigation_project,
             load_project,
         )
 
+        multi_tab_project_id: str | None = None
         pid = find_investigation_project(investigation_id)
         if pid is not None:
             project = load_project(pid)
             if len(project.investigations) > 1:
-                click.echo(
-                    "Error: project "
-                    f"{pid!r} has multiple investigation tabs. "
-                    "Remote multi-tab publish awaits Workstream C. "
-                    "Use `jst preview` for a local multi-tab preview, "
-                    "or publish from a single-tab project.",
-                    err=True,
-                )
-                sys.exit(2)
+                multi_tab_project_id = pid
         api_key = client.api_key
     except InvestigationError as e:
         click.echo(f"Error: {e}", err=True)
@@ -1005,6 +999,101 @@ def publish_cmd(
     except ApiKeyNotSetError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(2)
+
+    # Multi-tab: publish the whole project (version-2 wire). Skip the
+    # single-investigation draft/pull loop — tab text is already on disk.
+    if multi_tab_project_id is not None:
+        from .ops.curation import project_publication_projection
+        from .ops.result import OperationError
+
+        try:
+            projected, _notes = project_publication_projection(multi_tab_project_id)
+        except OperationError as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(2)
+        previous = last_publication(multi_tab_project_id)
+        if mode == "update" and previous is None:
+            click.echo(
+                f"Error: project {multi_tab_project_id!r} hasn't been published "
+                "from this computer yet. Publish it first.",
+                err=True,
+            )
+            sys.exit(2)
+        interactive = sys.stdin.isatty() and sys.stdout.isatty()
+        if mode is None:
+            mode = "new"
+            if previous is not None and not yes:
+                click.echo(
+                    f"Project {multi_tab_project_id!r} was published at {previous['url']}"
+                )
+                choice = click.prompt(
+                    "Update that page's text (u), or publish a new link (n)?",
+                    type=click.Choice(["u", "n"]),
+                    default="u",
+                )
+                mode = "update" if choice == "u" else "new"
+        tab_count = len(projected["investigations"])
+        query_count = sum(len(t["queries"]) for t in projected["investigations"])
+        site = _site_url()
+        if mode == "update":
+            assert previous is not None
+            if not yes and not click.confirm(
+                f"Update the text at {previous['url']}?", default=True
+            ):
+                click.echo("Not updated.")
+                return
+            try:
+                result = update_project_publication(
+                    multi_tab_project_id,
+                    previous["id"],
+                    api_key=api_key,
+                    site_url=site,
+                    publisher_name=publisher_name,
+                )
+            except QueriesChangedError as e:
+                click.secho(f"Not updated: {e}", fg="yellow", err=True)
+                if yes or not interactive or not click.confirm(
+                    "Publish a new link instead?", default=True
+                ):
+                    sys.exit(1)
+                mode = "new"
+            except PublishError as e:
+                click.secho(f"Error: {e}", fg="red", err=True)
+                sys.exit(1)
+            else:
+                record_publication(multi_tab_project_id, result)
+                click.secho("Updated.", fg="green")
+                click.echo(result["url"])
+                return
+        click.echo(
+            f"Publishing project {projected['title']!r} ({multi_tab_project_id}) "
+            f"with {tab_count} tabs / {query_count} quer"
+            f"{'y' if query_count == 1 else 'ies'}:"
+        )
+        for tab in projected["investigations"]:
+            click.echo(f"  [{tab['title']}]")
+            for q in tab["queries"]:
+                click.echo(f"    {q['id']}. {q.get('name') or 'Query ' + str(q['id'])}")
+        if not yes and not click.confirm("Publish?", default=True):
+            click.echo("Not published.")
+            return
+        click.echo("Running the queries…")
+        try:
+            result = publish_project(
+                multi_tab_project_id,
+                api_key=api_key,
+                site_url=site,
+                publisher_name=publisher_name,
+            )
+        except PublishError as e:
+            click.secho(f"Error: {e}", fg="red", err=True)
+            sys.exit(1)
+        for note in result.get("notifications") or []:
+            click.secho(note, fg="yellow", err=True)
+        record_publication(multi_tab_project_id, result)
+        click.secho("Published.", fg="green")
+        click.echo(result["url"])
+        return
 
     if not inv.queries:
         click.echo(f"Error: {inv.id!r} has no queries to publish. Add one with `jst query add`.", err=True)
@@ -1146,21 +1235,88 @@ def publish_cmd(
 
 
 @cli.command("clone")
-@click.argument("url")
-@click.option("--as", "new_id", help="Save under this investigation id instead of the published one")
-def clone_cmd(url: str, new_id: str | None) -> None:
-    """Copy a published investigation into your own environment.
+@click.argument("url", required=False, default=None)
+@click.option(
+    "--as",
+    "new_id",
+    help="Save under this project / investigation id instead of the default",
+)
+def clone_cmd(url: str | None, new_id: str | None) -> None:
+    """Clone a published investigation or a local project.
 
-    Saves the published queries and annotations as a new local investigation
-    and makes it active. Your copy is independent of the publication. No API
-    key is needed; running the queries afterwards uses yours.
+    With no argument, opens the same project picker as ``jst ls``, then prompts
+    for a name (default: ``<title> (branched)``) and copies the whole project.
+    Pass a local project id to skip the picker. Pass a publication URL or id to
+    clone from jeffersonst.io.
 
     \b
+    jst clone
+    jst clone my-project
+    jst clone my-project --as my-project-branched
     jst clone https://www.jeffersonst.io/p/AbCdEf1234
     jst clone AbCdEf1234 --as my-copy
     """
-    from .investigation import InvestigationError, set_active
+    from .investigation import (
+        InvestigationError,
+        clone_project,
+        ensure_bootstrap,
+        get_active,
+        load_project,
+        open_investigation,
+        set_active,
+    )
+    from .investigation.project_picker import run_project_picker
+    from .investigation.project_store import project_exists
     from .publish import PublishError, clone_publication
+
+    ensure_bootstrap()
+
+    # Local clone: no arg (picker) or an existing local project id.
+    local_source: str | None = None
+    if url is None:
+        try:
+            active = get_active()
+            active_project = active.project
+        except Exception:
+            active_project = None
+        selected = run_project_picker(active_project=active_project)
+        if selected is None:
+            return
+        local_source = selected
+    else:
+        try:
+            if project_exists(url):
+                local_source = url
+        except InvestigationError:
+            local_source = None
+
+    if local_source is not None:
+        try:
+            source = load_project(local_source)
+        except InvestigationError as e:
+            click.secho(f"Error: {e}", fg="red", err=True)
+            sys.exit(1)
+        default_title = f"{source.title} (branched)"
+        if sys.stdin.isatty():
+            new_title = click.prompt("Name for the clone", default=default_title)
+        else:
+            new_title = default_title
+        try:
+            project = clone_project(
+                local_source, title=new_title, project_id=new_id
+            )
+            open_investigation(project.investigations[0], project_id=project.id)
+        except InvestigationError as e:
+            click.secho(f"Error: {e}", fg="red", err=True)
+            sys.exit(1)
+        click.secho(
+            f"Cloned project {source.title!r} as {project.title!r} ({project.id}).",
+            fg="green",
+        )
+        click.echo(
+            "It's now active. Run `jst` to open it, or `jst ls` to browse projects."
+        )
+        return
 
     try:
         inv = clone_publication(url, site_url=_site_url(), new_id=new_id)
@@ -1169,7 +1325,9 @@ def clone_cmd(url: str, new_id: str | None) -> None:
         sys.exit(1)
     set_active(inv.id)
     click.secho(f"Cloned {inv.title!r} as {inv.id!r}.", fg="green")
-    click.echo(f"It's now active. Run `jst` to open it, or `jst query run 1` to rerun a query.")
+    click.echo(
+        "It's now active. Run `jst` to open it, or `jst query run 1` to rerun a query."
+    )
 
 
 @cli.command("preview")

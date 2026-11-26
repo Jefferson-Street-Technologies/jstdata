@@ -2786,16 +2786,112 @@ class InvestigationHost(App):
         if self._publishing:
             self.notify("Already publishing…")
             return
-        # Multi-tab remote publish awaits Workstream C — never silently flatten.
-        if self.project and len(self.project.investigations) > 1:
+        try:
+            api_key = self.client.api_key
+        except ApiKeyNotSetError:
             self.notify(
-                "This project has multiple investigation tabs. "
-                "Remote multi-tab publish awaits Workstream C. "
-                "Use `jst preview` for a local multi-tab preview, "
-                "or publish a single-tab project for now.",
-                severity="warning",
-                timeout=12,
+                "Publishing needs an API key. Run `jst login` first.",
+                severity="error",
             )
+            return
+        # Multi-tab: publish the whole project (v2 wire). No single-inv draft.
+        if self.project and len(self.project.investigations) > 1:
+            from ..ops.curation import project_publication_projection
+            from ..ops.result import OperationError
+            from ..publish import configured_site_url, last_publication
+
+            try:
+                projected, _notes = project_publication_projection(
+                    self.project.id, app_dir=self.app_dir
+                )
+            except OperationError as exc:
+                self.notify(escape(str(exc)), severity="warning", timeout=12)
+                return
+            previous = last_publication(self.project.id, app_dir=self.app_dir)
+            query_count = sum(
+                len(t["queries"]) for t in projected["investigations"]
+            )
+            self.notify(
+                f"Publishing {len(projected['investigations'])} tabs / "
+                f"{query_count} quer{'y' if query_count == 1 else 'ies'}…",
+                timeout=10,
+            )
+            site_url = configured_site_url(self.client)
+            self._publishing = True
+            self.publish_outcome = None
+            loop = asyncio.get_running_loop()
+            context = contextvars.copy_context()
+            project_id = self.project.id
+            mode = "new"
+            previous_id = previous["id"] if previous is not None else None
+            # Prefer update when a prior link exists; :publish always offers
+            # a fresh link via CLI. TUI keeps the previous link when present.
+            if previous_id is not None:
+                mode = "update"
+
+            def _run() -> None:
+                from ..publish import (
+                    PublishError,
+                    QueriesChangedError,
+                    publish_project,
+                    record_publication,
+                    update_project_publication,
+                )
+
+                url: Optional[str] = None
+                error: Optional[str] = None
+                used_mode = mode
+                try:
+                    if mode == "update" and previous_id is not None:
+                        try:
+                            result = update_project_publication(
+                                project_id,
+                                previous_id,
+                                api_key=api_key,
+                                site_url=site_url,
+                                app_dir=self.app_dir,
+                            )
+                        except QueriesChangedError:
+                            used_mode = "new"
+                            result = publish_project(
+                                project_id,
+                                api_key=api_key,
+                                site_url=site_url,
+                                app_dir=self.app_dir,
+                            )
+                    else:
+                        result = publish_project(
+                            project_id,
+                            api_key=api_key,
+                            site_url=site_url,
+                            app_dir=self.app_dir,
+                        )
+                    url = result["url"]
+                    record_publication(
+                        project_id, result, app_dir=self.app_dir
+                    )
+                except PublishError as exc:
+                    error = str(exc)
+                except Exception as exc:
+                    error = f"Publish failed: {exc}"
+                self.publish_outcome = PublishOutcome(
+                    url, error, used_mode == "update"
+                )
+                if self._quitting or loop is None:
+                    return
+                try:
+                    loop.call_soon_threadsafe(
+                        self._show_publish_outcome, context=context
+                    )
+                except RuntimeError:
+                    pass
+
+            self.publish_thread = threading.Thread(
+                target=_run,
+                name="jst-publish-project",
+                daemon=True,
+            )
+            self.publish_thread.start()
             return
         report_queries = [q for q in inv.queries.values() if q.in_report]
         if not report_queries:
@@ -2803,14 +2899,6 @@ class InvestigationHost(App):
                 "Nothing to publish yet. Save a report query with :query, "
                 "or promote one with `jst actions promote`.",
                 severity="warning",
-            )
-            return
-        try:
-            api_key = self.client.api_key
-        except ApiKeyNotSetError:
-            self.notify(
-                "Publishing needs an API key. Run `jst login` first.",
-                severity="error",
             )
             return
         self._open_publish_draft(api_key)

@@ -838,7 +838,7 @@ def build_project_preview_model(
     )
     subtitle = project.notes
     if not subtitle and len(tabs) > 1:
-        subtitle = "Local multi-tab preview (remote publish awaits Workstream C)"
+        subtitle = "Local multi-tab preview"
     return PreviewModel(
         investigation_id=project.id,
         title=project.title,

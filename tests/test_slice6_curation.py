@@ -16,6 +16,7 @@ from jstdata.ops.curation import (
     copy_across_investigations,
     promote_event,
     promote_query,
+    project_publication_projection,
     publication_projection,
 )
 from jstdata.ops.feedback import (
@@ -87,12 +88,13 @@ def test_publication_projection_includes_workspace_excludes_exploratory(
 
     projected, notes = publication_projection(inv)
     assert notes == []
+    assert "id" not in projected
     assert "workspace" in projected
     assert "gdp" in projected["workspace"]["metric"]
     assert "actions" in projected
     assert len(projected["queries"]) == 1
     assert projected["queries"][0]["id"] == report.id
-    assert projected["queries"][0]["in_report"] is True
+    assert "in_report" not in projected["queries"][0]
 
     stripped, _ = publication_projection(
         inv, include_workspace=False, include_actions=False
@@ -136,6 +138,76 @@ def test_publication_projection_auto_omits_on_size(tmp_path: Path):
     projected, notes = publication_projection(inv, max_bytes=limit)
     assert any("workspace" in n for n in notes)
     assert "workspace" not in projected
+
+
+def test_project_publication_projection_multi_tab(tmp_path: Path):
+    create_project_with_investigation(
+        project_id="ftai",
+        title="FTAI Aviation",
+        investigation_id="fundamentals",
+        app_dir=tmp_path,
+    )
+    add_investigation_to_project(
+        "ftai", investigation_id="peers", title="Peers", app_dir=tmp_path
+    )
+    fund = load_project_investigation("ftai", "fundamentals", app_dir=tmp_path)
+    peers = load_project_investigation("ftai", "peers", app_dir=tmp_path)
+    q1 = add_query(
+        fund,
+        name="GDP",
+        metric=["gdp"],
+        entity=["united-states"],
+        app_dir=tmp_path,
+        persist=False,
+    )
+    q1.in_report = True
+    q1.remarks = []
+    from jstdata.investigation.model import QueryRemark
+
+    q1.remarks = [
+        QueryRemark(name="Agent", text="Soft landing", series=["s1"], from_="2020-01-01")
+    ]
+    persist_investigation(fund, app_dir=tmp_path, project_id="ftai")
+    q2 = add_query(
+        peers,
+        name="Peer GDP",
+        metric=["gdp"],
+        entity=["germany"],
+        app_dir=tmp_path,
+        persist=False,
+    )
+    q2.in_report = True
+    explor = add_query(
+        peers,
+        name="Scratch",
+        metric=["cpi"],
+        entity=["germany"],
+        app_dir=tmp_path,
+        persist=False,
+    )
+    explor.in_report = False
+    persist_investigation(peers, app_dir=tmp_path, project_id="ftai")
+
+    projected, notes = project_publication_projection("ftai", app_dir=tmp_path)
+    assert notes == []
+    assert projected["version"] == 2
+    assert projected["title"] == "FTAI Aviation"
+    assert "id" not in projected
+    assert "workspace" not in projected
+    assert "actions" not in projected
+    assert len(projected["investigations"]) == 2
+    assert projected["investigations"][0]["key"] == "inv-1"
+    assert projected["investigations"][0]["title"] == fund.title
+    assert projected["investigations"][1]["key"] == "inv-2"
+    # Unique query ids across tabs (both local ids were 1).
+    ids = [
+        q["id"]
+        for tab in projected["investigations"]
+        for q in tab["queries"]
+    ]
+    assert ids == [1, 2]
+    assert len(projected["investigations"][1]["queries"]) == 1
+    assert projected["investigations"][0]["queries"][0]["remarks"]
 
 
 def test_promote_query_and_copy_across(tmp_path: Path):

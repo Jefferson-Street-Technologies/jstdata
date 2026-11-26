@@ -311,6 +311,14 @@ def copy_across_investigations(
 _DEFAULT_MAX_PUBLISH_BYTES = 256 * 1024
 
 
+def _definition_bytes(payload: dict[str, Any]) -> int:
+    import json
+
+    return len(
+        json.dumps(payload, default=str, separators=(",", ":")).encode("utf-8")
+    )
+
+
 def publication_projection(
     inv: Investigation,
     *,
@@ -326,14 +334,16 @@ def publication_projection(
 
     Returns ``(payload, notifications)``.
     """
-    import json
-
     data = inv.to_dict()
     queries = []
     for q in sorted(inv.queries.values(), key=lambda x: x.id):
         if q.in_report:
-            queries.append(q.to_dict())
+            qd = q.to_dict()
+            qd.pop("in_report", None)
+            queries.append(qd)
     data["queries"] = queries
+    # Local investigation / project slugs stay on the author's machine.
+    data.pop("id", None)
 
     if not include_workspace:
         data.pop("workspace", None)
@@ -342,26 +352,84 @@ def publication_projection(
 
     notifications: list[str] = []
 
-    def _size(payload: dict[str, Any]) -> int:
-        return len(
-            json.dumps(payload, default=str, separators=(",", ":")).encode(
-                "utf-8"
-            )
-        )
-
-    if _size(data) > max_bytes and "workspace" in data:
+    if _definition_bytes(data) > max_bytes and "workspace" in data:
         data.pop("workspace", None)
         notifications.append(
             "Publication exceeded size limit; omitted workspace automatically."
         )
-    if _size(data) > max_bytes and "actions" in data:
+    if _definition_bytes(data) > max_bytes and "actions" in data:
         data.pop("actions", None)
         notifications.append(
             "Publication exceeded size limit; omitted actions automatically."
         )
-    if _size(data) > max_bytes:
+    if _definition_bytes(data) > max_bytes:
         raise OperationError(
             f"Publication definition exceeds {max_bytes} bytes even after "
             "omitting workspace and actions. Reduce report queries or text."
+        )
+    return data, notifications
+
+
+def project_publication_projection(
+    project_id: str,
+    *,
+    max_bytes: int = _DEFAULT_MAX_PUBLISH_BYTES,
+    app_dir: Optional[Path] = None,
+) -> tuple[dict[str, Any], list[str]]:
+    """Serialize a multi-tab project for version-2 remote publish.
+
+    Mirrors ``build_project_preview_model`` membership: only ``in_report``
+    queries, no workspace / action log / exploratory state. Query ids are
+    remapped to unique integers across the whole publication. Tab ``key``
+    values are publication-scoped (``inv-1``, …), never local filesystem slugs.
+
+    Returns ``(payload, notifications)``.
+    """
+    project = load_project(project_id, app_dir=app_dir)
+    investigations: list[dict[str, Any]] = []
+    next_qid = 1
+    for inv_id in project.investigations:
+        inv = load_project_investigation(project_id, inv_id, app_dir=app_dir)
+        queries: list[dict[str, Any]] = []
+        for q in sorted(inv.queries.values(), key=lambda x: x.id):
+            if not q.in_report:
+                continue
+            qd = q.to_dict()
+            qd["id"] = next_qid
+            next_qid += 1
+            qd.pop("in_report", None)
+            queries.append(qd)
+        if not queries:
+            continue
+        tab: dict[str, Any] = {
+            "key": f"inv-{len(investigations) + 1}",
+            "title": inv.title or inv_id,
+            "queries": queries,
+        }
+        if inv.notes:
+            tab["notes"] = inv.notes
+        if inv.annotations:
+            tab["annotations"] = inv.annotations
+        investigations.append(tab)
+
+    if not investigations:
+        raise OperationError(
+            f"Project {project_id!r} has no report queries to publish. "
+            "Promote one with `jst actions promote` / `--query <id>`."
+        )
+
+    data: dict[str, Any] = {
+        "version": 2,
+        "title": project.title,
+        "investigations": investigations,
+    }
+    if project.notes:
+        data["notes"] = project.notes
+
+    notifications: list[str] = []
+    if _definition_bytes(data) > max_bytes:
+        raise OperationError(
+            f"Publication definition exceeds {max_bytes} bytes. "
+            "Reduce report queries or text."
         )
     return data, notifications

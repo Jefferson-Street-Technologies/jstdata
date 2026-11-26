@@ -657,7 +657,14 @@ class Query:
         )
 
     def sync_legacy_annotation_fields(self) -> None:
-        """Refresh ``annotations`` / ``notes_on`` mirrors from ``remarks``."""
+        """Refresh ``annotations`` / ``notes_on`` mirrors from ``remarks``.
+
+        When ``remarks`` is empty, leave any constructor-assigned legacy
+        fields alone so direct ``Query(annotations=…)`` / ``notes_on=…``
+        assignments still serialize.
+        """
+        if not self.remarks:
+            return
         free = next(
             (r for r in self.remarks if not r.series and not r.from_ and not r.to),
             None,

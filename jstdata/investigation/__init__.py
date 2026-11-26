@@ -46,6 +46,7 @@ from .model import (
 from .project import DEFAULT_INVESTIGATION_ID, Project
 from .project_store import (
     add_investigation_to_project,
+    clone_project,
     create_project_with_investigation,
     duplicate_investigation,
     list_all_investigations,
@@ -91,6 +92,7 @@ __all__ = [
     "add_investigation_to_project",
     "add_query",
     "allocate_investigation_id",
+    "clone_project",
     "create_investigation",
     "create_project_with_investigation",
     "duplicate_investigation",

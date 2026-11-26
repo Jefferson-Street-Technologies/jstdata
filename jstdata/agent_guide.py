@@ -267,9 +267,9 @@ jst preview my-project   # explicit project id
 ```
 
 Includes report queries across investigation tabs, remarks (with citations), and
-investigation chrome. Excludes the action log. Remote multi-tab publish awaits
-Workstream C; `jst publish` on a multi-tab project notifies and refuses to
-silently flatten.
+investigation chrome. Excludes the action log. Remote multi-tab publish uses the
+version-2 nested contract (`jst publish` on a multi-tab project); dogfood with
+`jst preview` first.
 
 ### Prepare a human project
 
@@ -309,7 +309,7 @@ jst preview
 - **Curation:** exploratory by default; `in_report` only after promote. Copy with
   `jst actions copy` (no API re-fetch). Duplicate a tab with `:tab dup`.
 - **Legacy** single-investigation YAML still loads / publishes / clones. Multi-tab
-  remote publish is blocked pending Workstream C; use `jst preview` locally.
+  remote publish emits version-2 nested investigations (no silent flatten).
 - Demo: `jst open plain-bagel` still works as a single-investigation project.
 
 Active resume pointer: `~/.jstdata/.active.yaml` (bare `jst` only).

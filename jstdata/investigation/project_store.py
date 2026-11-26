@@ -452,6 +452,51 @@ def move_investigation(
     return reorder_investigations(project_id, order, app_dir=app_dir)
 
 
+def clone_project(
+    source_project_id: str,
+    *,
+    title: Optional[str] = None,
+    project_id: Optional[str] = None,
+    app_dir: Optional[Path] = None,
+) -> Project:
+    """Deep-copy a local project (all investigation tabs) under a new id.
+
+    Investigation ids are preserved inside the new project directory. The
+    clone is independent: later edits never touch the source project.
+    """
+    source = load_project(source_project_id, app_dir=app_dir)
+    new_title = (title or f"{source.title} (branched)").strip() or source.title
+    if project_id is None:
+        preferred = slugify_title(new_title)
+        project_id = allocate_project_id(preferred=preferred, app_dir=app_dir)
+    else:
+        validate_project_id(project_id)
+        if project_exists(project_id, app_dir=app_dir):
+            raise InvestigationError(f"Project {project_id!r} already exists.")
+
+    clones: list[Investigation] = []
+    for inv_id in source.investigations:
+        inv = load_project_investigation(
+            source_project_id, inv_id, app_dir=app_dir
+        )
+        clones.append(Investigation.from_dict(inv.to_dict()))
+
+    project = Project.new(
+        project_id,
+        title=new_title,
+        notes=source.notes,
+        investigation_ids=[inv.id for inv in clones],
+    )
+    for i, inv in enumerate(clones):
+        save_project_investigation(
+            project_id,
+            inv,
+            app_dir=app_dir,
+            project=project if i == 0 else None,
+        )
+    return load_project(project_id, app_dir=app_dir)
+
+
 def duplicate_investigation(
     project_id: str,
     source_id: str,

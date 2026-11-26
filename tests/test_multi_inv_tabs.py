@@ -9,6 +9,7 @@ import pytest
 from jstdata.investigation import (
     InvestigationError,
     add_investigation_to_project,
+    clone_project,
     create_project_with_investigation,
     duplicate_investigation,
     load_active,
@@ -96,6 +97,112 @@ def test_reorder_and_move_investigation(tmp_path: Path):
 
     with pytest.raises(InvestigationError, match="exactly once"):
         reorder_investigations("ftai", ["a", "b"], app_dir=tmp_path)
+
+
+def test_clone_project_copies_all_tabs_independently(tmp_path: Path):
+    create_project_with_investigation(
+        project_id="ftai",
+        title="FTAI Aviation",
+        notes="source notes",
+        investigation_id="fundamentals",
+        investigation_title="Fundamentals",
+        app_dir=tmp_path,
+    )
+    add_investigation_to_project(
+        "ftai",
+        investigation_id="peers",
+        title="Peers",
+        app_dir=tmp_path,
+    )
+    fund = load_project_investigation(
+        "ftai", "fundamentals", app_dir=tmp_path
+    )
+    fund.workspace.add_metric("gdp")
+    fund.workspace.add_entity("united-states")
+    persist_investigation(fund, app_dir=tmp_path)
+
+    cloned = clone_project(
+        "ftai",
+        title="FTAI Aviation (branched)",
+        project_id="ftai-branched",
+        app_dir=tmp_path,
+    )
+    assert cloned.id == "ftai-branched"
+    assert cloned.title == "FTAI Aviation (branched)"
+    assert cloned.notes == "source notes"
+    assert cloned.investigations == ["fundamentals", "peers"]
+
+    copy_fund = load_project_investigation(
+        "ftai-branched", "fundamentals", app_dir=tmp_path
+    )
+    assert "gdp" in copy_fund.workspace.metric
+    assert copy_fund.title == "Fundamentals"
+
+    # Independence: mutate clone, source stays put.
+    copy_fund.workspace.add_entity("france")
+    persist_investigation(
+        copy_fund, app_dir=tmp_path, project_id="ftai-branched"
+    )
+    source_fund = load_project_investigation(
+        "ftai", "fundamentals", app_dir=tmp_path
+    )
+    assert "france" not in source_fund.workspace.entity
+
+    with pytest.raises(InvestigationError, match="already exists"):
+        clone_project(
+            "ftai", project_id="ftai-branched", app_dir=tmp_path
+        )
+
+
+def test_clone_project_default_title_and_id(tmp_path: Path):
+    create_project_with_investigation(
+        project_id="housing",
+        title="Housing Recovery",
+        app_dir=tmp_path,
+    )
+    cloned = clone_project("housing", app_dir=tmp_path)
+    assert cloned.title == "Housing Recovery (branched)"
+    assert cloned.id.startswith("housing-recovery-branched")
+    assert cloned.investigations == ["main"]
+
+
+def test_cli_clone_local_project(tmp_path: Path, monkeypatch):
+    from click.testing import CliRunner
+
+    from jstdata import cli as cli_module
+    from jstdata.investigation import active
+
+    monkeypatch.setattr("jstdata.client.APP_DIR", tmp_path)
+    monkeypatch.setattr(active, "APP_DIR", tmp_path)
+    create_project_with_investigation(
+        project_id="housing",
+        title="Housing Recovery",
+        investigation_id="main",
+        app_dir=tmp_path,
+    )
+    fund = load_project_investigation("housing", "main", app_dir=tmp_path)
+    fund.workspace.add_metric("gdp")
+    persist_investigation(fund, app_dir=tmp_path)
+
+    runner = CliRunner()
+    # Non-TTY uses the default ``(branched)`` title; --as sets the project id.
+    result = runner.invoke(
+        cli_module.cli,
+        ["clone", "housing", "--as", "housing-branch"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Housing Recovery (branched)" in result.output
+    assert "housing-branch" in result.output
+
+    cloned = load_project("housing-branch", app_dir=tmp_path)
+    assert cloned.title == "Housing Recovery (branched)"
+    copy = load_project_investigation(
+        "housing-branch", "main", app_dir=tmp_path
+    )
+    assert "gdp" in copy.workspace.metric
+    active_ctx = load_active(app_dir=tmp_path)
+    assert active_ctx.project == "housing-branch"
+    assert active_ctx.investigation == "main"
 
 
 def test_duplicate_investigation_copies_workspace(tmp_path: Path):
