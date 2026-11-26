@@ -696,9 +696,39 @@ def test_home_step_registered():
 
     spec = get_action("home")
     assert spec.id == "home"
-    assert spec.name == "Home"
+    assert spec.name == "Overview"
     query = get_action("query")
     assert query.id == "query"
+
+
+def test_auto_query_name_syncs_with_composition():
+    from jstdata.investigation.naming import (
+        composition_subtitle,
+        sync_auto_query_name,
+    )
+
+    labels = {
+        "adv": "Advertising Expense",
+        "e1": "AAON",
+        "e2": "Braemar",
+        "e3": "Intelligent",
+    }
+    stale = "Advertising Expense · 4 entities"
+    assert (
+        sync_auto_query_name(
+            stale, ["adv"], ["e1", "e2", "e3"], labels=labels
+        )
+        == "Advertising Expense · AAON, Braemar, Intelligent"
+    )
+    assert (
+        sync_auto_query_name(
+            "Hotel Ad Spend", ["adv"], ["e1"], labels=labels
+        )
+        == "Hotel Ad Spend"
+    )
+    assert composition_subtitle(["adv"], ["e1", "e2", "e3"]) == (
+        "3 entities · 1 metric"
+    )
 
 
 def test_home_destinations_are_five_in_order():

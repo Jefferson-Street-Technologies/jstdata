@@ -281,7 +281,7 @@ def test_tip_for_follows_screen_destination_and_focus():
         CoachSnapshot(screen="HomeScreen", home_dest="search")
     )
     assert "Chart/Table" in tip_for(CoachSnapshot(screen="QueryScreen"))
-    assert "legend checkboxes" in tip_for(CoachSnapshot(screen="QueryScreen"))
+    assert "Legend chips" in tip_for(CoachSnapshot(screen="QueryScreen"))
     assert '"Esc" to leave the box' in tip_for(
         CoachSnapshot(screen="QueryScreen", focus_in_input=True)
     )

@@ -148,7 +148,7 @@ class BaseScreen(Screen):
             with Horizontal(id="cmd-bar"):
                 yield Label("", id="help-hint", markup=True)
                 yield Label(
-                    "Report issue  !",
+                    "[Report issue]  !",
                     id="bug-report-hint",
                     markup=False,
                 )
@@ -232,7 +232,7 @@ class BaseScreen(Screen):
                 hint.update("Enter save · Esc cancel")
                 footer.add_class("-bug-open")
             else:
-                hint.update("Report issue  !")
+                hint.update("[Report issue]  !")
                 footer.remove_class("-bug-open")
         except Exception:  # noqa: BLE001
             pass
@@ -542,6 +542,28 @@ class BaseScreen(Screen):
         fn = getattr(self.app, "open_query_view", None)
         if callable(fn):
             fn(event.query_id)
+
+    def on_research_sidebar_overview_selected(
+        self, event: ResearchSidebar.OverviewSelected
+    ) -> None:
+        event.stop()
+        self.action_shell_home()
+
+    def on_research_sidebar_query_menu(
+        self, event: ResearchSidebar.QueryMenu
+    ) -> None:
+        event.stop()
+        fn = getattr(self.app, "open_query_context_menu", None)
+        if callable(fn):
+            fn(event.query_id, label=event.label)
+
+    def on_research_sidebar_new_query(
+        self, event: ResearchSidebar.NewQuery
+    ) -> None:
+        event.stop()
+        fn = getattr(self.app, "action_new_draft_query", None)
+        if callable(fn):
+            fn()
 
     def on_research_sidebar_resource_selected(
         self, event: ResearchSidebar.ResourceSelected

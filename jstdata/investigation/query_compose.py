@@ -65,29 +65,28 @@ class QueryComposeHeader(Vertical):
     DEFAULT_CSS = """
     QueryComposeHeader {
         height: auto;
-        max-height: 7;
+        max-height: 8;
         width: 100%;
         background: #0a0a0a;
         padding: 0 0 1 0;
         border-bottom: solid #1f1f1f;
         margin-bottom: 0;
     }
-    /* Query name is the page's largest type (2-row presence + bold). */
     #qc-title-row {
-        height: 2;
-        margin-bottom: 0;
+        height: 1;
+        margin: 1 0 0 0;
         align: left middle;
     }
     #qc-title {
         width: 1fr;
-        height: 2;
+        height: 1;
         color: #fafafa;
         text-style: bold;
         content-align: left middle;
     }
     #qc-badge {
         width: auto;
-        height: 2;
+        height: 1;
         color: #737373;
         content-align: left middle;
         margin-right: 1;
@@ -95,10 +94,10 @@ class QueryComposeHeader(Vertical):
     #qc-badge.-saved {
         color: #86efac;
     }
-    #qc-rename {
-        width: auto;
-        height: 2;
-        content-align: right middle;
+    #qc-subtitle {
+        height: 1;
+        color: #a3a3a3;
+        margin: 0 0 0 0;
     }
     #qc-scope-row {
         height: 1;
@@ -155,18 +154,13 @@ class QueryComposeHeader(Vertical):
         pass
 
     class Rename(Message):
-        pass
+        """Kept for callers; rename lives on the sidebar query ··· menu."""
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="qc-title-row"):
             yield Label("", id="qc-title")
             yield Label("", id="qc-badge")
-            yield ActionButton(
-                "Rename",
-                action_id="rename_query",
-                variant="ghost",
-                id="qc-rename",
-            )
+        yield Label("", id="qc-subtitle")
         with Horizontal(id="qc-scope-row"):
             yield EnumSelect(
                 [None],
@@ -180,7 +174,7 @@ class QueryComposeHeader(Vertical):
                 labels=OBS_LABELS,
                 value="most_recent",
                 id="qc-obs",
-                prefix="Period",
+                prefix="Data range",
             )
         with Horizontal(id="qc-refresh-row"):
             yield Static("", id="qc-refresh", markup=True)
@@ -206,17 +200,29 @@ class QueryComposeHeader(Vertical):
         mode: str = "chart",
         needs_refresh: bool,
         coverage: str = "",
+        subtitle: str = "",
         available_frequencies: Optional[Sequence[Optional[str]]] = None,
     ) -> None:
         from rich.markup import escape
 
-        del mode, entities, metrics, series  # Composition lives in the sidebar.
+        del mode  # View mode is painted by QueryScreen tabs.
+        display_title = (title or "Untitled query").strip()
         self.query_one("#qc-title", Label).update(
-            escape(title or "Untitled query")
+            escape(display_title.upper())
         )
         badge_label = self.query_one("#qc-badge", Label)
         badge_label.update(escape(badge))
         badge_label.set_class(badge.startswith("✓"), "-saved")
+        # Prefer explicit subtitle; else derive from composition chips.
+        if not subtitle:
+            from .naming import composition_subtitle
+
+            subtitle = composition_subtitle(
+                [m for m, _ in metrics],
+                [e for e, _ in entities],
+                [s for s, _ in series],
+            )
+        self.query_one("#qc-subtitle", Label).update(escape(subtitle))
         freq = self.query_one("#qc-freq", EnumSelect)
         if available_frequencies is not None:
             options = list(available_frequencies) or [None]
@@ -255,5 +261,3 @@ class QueryComposeHeader(Vertical):
         event.stop()
         if event.button_id == "refresh":
             self.post_message(self.Refresh())
-        elif event.button_id == "rename_query":
-            self.post_message(self.Rename())

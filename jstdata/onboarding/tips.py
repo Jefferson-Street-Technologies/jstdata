@@ -42,8 +42,8 @@ _HOME = {
 
 _SCREENS = {
     "ResearchRootScreen": (
-        'Click a sidebar query to open it, or press "Q" then a digit to jump. '
-        '"w" jumps workspace resources. "/" searches.'
+        'Overview of this investigation. Click a sidebar query to open it, '
+        'or press "Q" then a digit to jump. "w" jumps workspace. "/" searches.'
     ),
     "MetricScreen": (
         'Tab switches Entities / Definition. "Enter" on an entity opens a draft '
@@ -58,8 +58,8 @@ _SCREENS = {
     ),
     "QueryScreen": (
         'Current query is in the sidebar: "E"/"M"/"S" add; "r" refreshes. '
-        'Chart legend checkboxes show or hide series. Tabs switch Chart/Table '
-        '("c"/"t"). Table Enter opens a release.'
+        'Legend chips show or hide series ("j"/"k", Enter). Tabs switch '
+        'Chart/Table ("c"/"t"). Table Enter opens a release.'
     ),
     "SeriesScreen": (
         '"Enter" or "p" plots this series. "m"/"e" open the parent metric or entity.'

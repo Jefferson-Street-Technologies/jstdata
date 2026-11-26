@@ -35,10 +35,19 @@ class ActionButton(Static, can_focus=True):
         text-style: none;
         /* No border — height-1 borders render as empty grey slabs. */
     }
+    ActionButton.-secondary.-active {
+        color: #0a0a0a;
+        background: #60a5fa;
+        text-style: bold;
+    }
     ActionButton.-ghost {
         color: #86efac;
-        background: transparent;
+        background: #1a1a1a;
         text-style: none;
+    }
+    ActionButton.-ghost:hover {
+        color: #bbf7d0;
+        background: #262626;
     }
     ActionButton.-tab {
         width: auto;

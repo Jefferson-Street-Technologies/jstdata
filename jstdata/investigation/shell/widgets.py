@@ -633,10 +633,50 @@ def _clicked_remove(event: Any) -> bool:
     widget = getattr(event, "widget", None)
     while widget is not None:
         classes = getattr(widget, "classes", None) or ()
-        if "sidebar-remove" in classes:
+        if "sidebar-remove" in classes or "sidebar-query-menu" in classes:
             return True
         widget = getattr(widget, "parent", None)
     return False
+
+
+class _SidebarOverviewRow(Static):
+    """Permanent Overview destination — opens investigation/report home."""
+
+    DEFAULT_CSS = """
+    _SidebarOverviewRow {
+        height: 1;
+        width: 100%;
+        padding: 0 1;
+        color: #d4d4d4;
+        background: #0c0c0c;
+    }
+    _SidebarOverviewRow:hover {
+        background: #1a1a1a;
+        color: #fafafa;
+    }
+    _SidebarOverviewRow.-active {
+        background: #1a3a2a;
+        border-left: solid #4ade80;
+        color: #86efac;
+        text-style: bold;
+    }
+    """
+
+    def __init__(self, *, active: bool = False, id: Optional[str] = None) -> None:
+        super().__init__("  Overview", id=id)
+        self.active = active
+
+    def on_mount(self) -> None:
+        self.set_class(self.active, "-active")
+
+    def set_active(self, active: bool) -> None:
+        self.active = active
+        self.set_class(active, "-active")
+
+    def on_click(self) -> None:
+        sidebar = _sidebar_owner(self)
+        if sidebar is not None:
+            sidebar.post_message(ResearchSidebar.OverviewSelected())
 
 
 class _SidebarQueryRow(Static):
@@ -683,7 +723,7 @@ class _SidebarQueryRow(Static):
                         classes="sidebar-q-title",
                         markup=False,
                     )
-            yield Label("✕", classes="sidebar-remove")
+            yield Label("···", classes="sidebar-query-menu")
 
     def on_mount(self) -> None:
         self.set_class(self.active, "-active")
@@ -711,7 +751,7 @@ class _SidebarQueryRow(Static):
             return
         if _clicked_remove(event):
             event.stop()
-            sidebar.remove_query(self.query_id)
+            sidebar.open_query_menu(self.query_id, self._label)
             return
         sidebar.activate_query(self.query_id)
 
@@ -768,11 +808,7 @@ class _SidebarActiveKindHeader(Static):
         with Horizontal(classes="sqc-kind-row"):
             yield Label(self._title.upper(), classes="sqc-kind-label")
             yield ActionButton(
-                {
-                    "entity": "+ Add entity",
-                    "metric": "+ Add metric",
-                    "series": "+ Add series",
-                }[self.kind],
+                "+ Add",
                 action_id=f"add_{self.kind}",
                 shortcut={"entity": "E", "metric": "M", "series": "S"}[self.kind],
                 variant="ghost",
@@ -975,11 +1011,23 @@ class ResearchSidebar(Static):
             self.query_id = query_id
             super().__init__()
 
+    class OverviewSelected(Message):
+        """User chose the permanent Overview destination."""
+
+    class QueryMenu(Message):
+        def __init__(self, query_id: int, label: str) -> None:
+            self.query_id = query_id
+            self.label = label
+            super().__init__()
+
+    class NewQuery(Message):
+        """User asked to create / focus a draft query."""
+
     sidebar_collapsed: reactive[bool] = reactive(False)
 
     DEFAULT_CSS = """
     ResearchSidebar {
-        width: 32;
+        width: 34;
         height: 100%;
         background: #0c0c0c;
         border-right: solid #222;
@@ -996,31 +1044,67 @@ class ResearchSidebar(Static):
         color: #fbbf24;
         text-style: bold;
     }
-    #sidebar-queries-kicker, #sidebar-ws-kicker {
-        color: #a0a0a0;
+    #sidebar-inv-kicker {
+        color: #52525b;
         text-style: bold;
         height: 1;
         padding: 0 1;
         margin-top: 1;
     }
+    #sidebar-queries-header, #sidebar-ws-header {
+        height: 1;
+        width: 100%;
+        padding: 0 1;
+        margin-top: 1;
+        align: left middle;
+    }
+    #sidebar-queries-kicker, #sidebar-ws-kicker, #sidebar-compose-kicker {
+        color: #a0a0a0;
+        text-style: bold;
+        height: 1;
+        width: 1fr;
+    }
+    #sidebar-compose-kicker {
+        padding: 0 1;
+        margin-top: 1;
+        color: #86efac;
+        border-top: solid #222;
+        padding-top: 1;
+    }
+    #sidebar-new-query, #sidebar-ws-header ActionButton {
+        height: 1;
+    }
     #sidebar-query-list {
-        height: 1fr;
-        max-height: 60%;
+        height: auto;
+        max-height: 40%;
         background: #0c0c0c;
         padding: 0 0 0 0;
+    }
+    #sidebar-compose-list {
+        height: auto;
+        max-height: 35%;
+        background: #080808;
+        border-left: solid #27272a;
+        padding: 0 0 0 0;
+        display: none;
+    }
+    ResearchSidebar.-compose-open #sidebar-compose-list {
+        display: block;
+    }
+    ResearchSidebar.-compose-open #sidebar-compose-kicker {
+        display: block;
+    }
+    #sidebar-compose-kicker {
+        display: none;
     }
     #sidebar-ws-list {
         height: 1fr;
-        max-height: 45%;
+        min-height: 6;
         background: #0c0c0c;
         padding: 0 0 0 0;
     }
-    ResearchSidebar.-ws-empty #sidebar-query-list {
-        max-height: 75%;
-    }
     ResearchSidebar.-ws-empty #sidebar-ws-list {
-        max-height: 6;
-        height: 6;
+        min-height: 3;
     }
     .sidebar-row {
         height: 100%;
@@ -1134,6 +1218,18 @@ class ResearchSidebar(Static):
         background: #2a1212;
         border-left: solid #f87171;
     }
+    .sidebar-query-menu {
+        width: 3;
+        height: 1;
+        color: #737373;
+        text-style: bold;
+        content-align: center middle;
+        dock: right;
+    }
+    .sidebar-query-menu:hover {
+        color: #e5e5e5;
+        background: #262626;
+    }
     """
 
     _ARM_SECONDS = 2.5
@@ -1143,6 +1239,7 @@ class ResearchSidebar(Static):
         self._jump_kind: Optional[JumpKind] = None
         self._jump_targets: list[Any] = []
         self._active_query_id: Optional[int] = None
+        self._overview_active = False
         self._pending_queries: Optional[list[dict[str, Any]]] = None
         self._pending_workspace: Optional[
             tuple[
@@ -1167,9 +1264,21 @@ class ResearchSidebar(Static):
         self._armed_timer: Optional[Timer] = None
 
     def compose(self) -> ComposeResult:
-        yield Label("Queries", id="sidebar-queries-kicker")
+        yield Label("INVESTIGATION", id="sidebar-inv-kicker")
+        yield _SidebarOverviewRow(id="sidebar-overview")
+        with Horizontal(id="sidebar-queries-header"):
+            yield Label("Queries", id="sidebar-queries-kicker")
+            yield ActionButton(
+                "+ New",
+                action_id="new_query",
+                variant="ghost",
+                id="sidebar-new-query",
+            )
         yield VerticalScroll(id="sidebar-query-list")
-        yield Label("Workspace", id="sidebar-ws-kicker")
+        yield Label("CURRENT QUERY", id="sidebar-compose-kicker")
+        yield VerticalScroll(id="sidebar-compose-list")
+        with Horizontal(id="sidebar-ws-header"):
+            yield Label("Workspace", id="sidebar-ws-kicker")
         yield VerticalScroll(id="sidebar-ws-list")
 
     def watch_sidebar_collapsed(self, collapsed: bool) -> None:
@@ -1178,6 +1287,13 @@ class ResearchSidebar(Static):
     def activate_query(self, query_id: int) -> None:
         self.cancel_jump()
         self.clear_armed_remove()
+        self._overview_active = False
+        try:
+            self.query_one("#sidebar-overview", _SidebarOverviewRow).set_active(
+                False
+            )
+        except Exception:  # noqa: BLE001
+            pass
         self.post_message(self.QuerySelected(query_id))
 
     def activate_resource(self, resource_type: str, resource_id: str) -> None:
@@ -1185,11 +1301,22 @@ class ResearchSidebar(Static):
         self.clear_armed_remove()
         self.post_message(self.ResourceSelected(resource_type, resource_id))
 
+    def open_query_menu(self, query_id: int, label: str) -> None:
+        """··· control — contextual rename / delete (Shift+X still deletes)."""
+        self.cancel_jump()
+        self.clear_armed_remove()
+        self.post_message(self.QueryMenu(int(query_id), label or ""))
+
     def remove_query(self, query_id: int) -> None:
-        """Delete immediately — no arm / confirm step."""
+        """Delete immediately — no arm / confirm step (keyboard path)."""
         self.cancel_jump()
         self.clear_armed_remove()
         self.post_message(self.QueryRemoved(int(query_id)))
+
+    def on_action_button_pressed(self, event: ActionButton.Pressed) -> None:
+        if event.button_id == "new_query":
+            event.stop()
+            self.post_message(self.NewQuery())
 
     def remove_resource(self, resource_type: str, resource_id: str) -> None:
         """First ✕ arms the tile; second confirms remove (no modal)."""
@@ -1364,10 +1491,22 @@ class ResearchSidebar(Static):
         queries: list[dict[str, Any]],
         *,
         active_query_id: Optional[int] = None,
+        overview_active: bool = False,
     ) -> None:
         """``queries`` items: ``{id, name, in_report, empty?}``."""
         self._active_query_id = active_query_id
+        self._overview_active = overview_active
         self._pending_queries = list(queries)
+        n = len(queries)
+        try:
+            self.query_one("#sidebar-queries-kicker", Label).update(
+                f"Queries ({n})" if n else "Queries"
+            )
+            self.query_one("#sidebar-overview", _SidebarOverviewRow).set_active(
+                overview_active
+            )
+        except Exception:  # noqa: BLE001
+            pass
         self._queries_token += 1
         # Defer worker start until the app event loop is ready.
         self.call_later(self._launch_refresh_queries)
@@ -1435,6 +1574,12 @@ class ResearchSidebar(Static):
                     )
                 if widgets:
                     await listing.mount(*widgets)
+                # Size query list to contents (leave room for compose + workspace).
+                try:
+                    rows = len(widgets)
+                    listing.styles.height = max(3, min(rows * 3, 18))
+                except Exception:  # noqa: BLE001
+                    pass
                 if self._jump_kind == "queries":
                     self._apply_jump_numbers()
                 if token == self._queries_token:
@@ -1466,15 +1611,13 @@ class ResearchSidebar(Static):
         self._pending_active = (ae, am, a_s, qid) if qid is not None else None
         self._workspace_token += 1
         total = len(entities) + len(metrics) + len(series)
-        active_n = len(ae) + len(am) + len(a_s)
+        self.set_class(qid is not None, "-compose-open")
         if total:
             kicker = f"Workspace ({total})"
-        elif active_n or qid is not None:
-            kicker = "Workspace"
         else:
             kicker = "Workspace"
         self.query_one("#sidebar-ws-kicker", Label).update(kicker)
-        self.set_class(total == 0 and active_n == 0 and qid is None, "-ws-empty")
+        self.set_class(total == 0 and qid is None, "-ws-empty")
         self.call_later(self._launch_refresh_workspace)
 
     def _launch_refresh_workspace(self) -> None:
@@ -1505,26 +1648,32 @@ class ResearchSidebar(Static):
                     self.clear_armed_remove()
                 entities, metrics, series = pending
                 active = getattr(self, "_pending_active", None)
+                compose = self.query_one(
+                    "#sidebar-compose-list", VerticalScroll
+                )
                 listing = self.query_one("#sidebar-ws-list", VerticalScroll)
+                await compose.remove_children()
                 await listing.remove_children()
                 if not self.is_mounted:
                     return
                 if token != self._workspace_token:
                     continue
-                widgets: list[Static] = []
+                compose_widgets: list[Static] = []
+                ws_widgets: list[Static] = []
 
                 def _section(
                     title: str,
                     rows: list[tuple[str, str]],
                     kind: str,
+                    into: list[Static],
                 ) -> None:
                     if not rows:
                         return
-                    widgets.append(
-                        _SidebarSectionHeader(f"{title} ({len(rows)})")
+                    into.append(
+                        _SidebarSectionHeader(f"Collected {title.lower()} ({len(rows)})")
                     )
                     for rid, label in rows:
-                        widgets.append(
+                        into.append(
                             _SidebarResourceRow(
                                 kind,
                                 rid,
@@ -1540,14 +1689,14 @@ class ResearchSidebar(Static):
                     qid: int,
                 ) -> None:
                     count = f"{title} ({len(rows)})" if rows else title
-                    widgets.append(
+                    compose_widgets.append(
                         _SidebarActiveKindHeader(count, kind, query_id=qid)
                     )
                     if not rows:
-                        widgets.append(_SidebarActiveEmpty())
+                        compose_widgets.append(_SidebarActiveEmpty())
                         return
                     for rid, label in rows:
-                        widgets.append(
+                        compose_widgets.append(
                             _SidebarActiveItem(
                                 kind, rid, label or rid, query_id=qid
                             )
@@ -1556,24 +1705,23 @@ class ResearchSidebar(Static):
                 if active is not None:
                     ae, am, a_s, qid = active
                     assert qid is not None
-                    widgets.append(
-                        _SidebarSectionHeader("Current query", emphasis=True)
-                    )
                     _active_kind("Entities", "entity", ae, int(qid))
                     _active_kind("Metrics", "metric", am, int(qid))
                     _active_kind("Series", "series", a_s, int(qid))
-                    if entities or metrics or series:
-                        widgets.append(
-                            _SidebarSectionHeader(
-                                "Collected resources", emphasis=True
-                            )
-                        )
 
-                _section("Entities", entities, "entity")
-                _section("Metrics", metrics, "metric")
-                _section("Series", series, "series")
-                if widgets:
-                    await listing.mount(*widgets)
+                _section("entities", entities, "entity", ws_widgets)
+                _section("metrics", metrics, "metric", ws_widgets)
+                _section("series", series, "series", ws_widgets)
+                if compose_widgets:
+                    await compose.mount(*compose_widgets)
+                    try:
+                        compose.styles.height = max(
+                            4, min(2 + len(compose_widgets), 16)
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                if ws_widgets:
+                    await listing.mount(*ws_widgets)
                 if self._jump_kind == "workspace":
                     self._apply_jump_numbers()
                 if token == self._workspace_token:

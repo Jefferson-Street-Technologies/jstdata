@@ -1313,10 +1313,10 @@ def create_home_screen(client, workspace, **kwargs):
 HOME = register(
     ActionSpec(
         id="home",
-        name="Research",
+        name="Overview",
         description=(
-            "Chart-first research root with sidebar queries/workspace. "
-            "g returns here; / search; n new query."
+            "Investigation / report overview with saved queries, notes, and "
+            "workspace summary. g / Home returns here; / search; n new query."
         ),
         create_screen=create_home_screen,
         arguments=(),
@@ -1325,7 +1325,7 @@ HOME = register(
             ActionBinding("n", "new_query", "New draft query"),
             ActionBinding("H", "history", "Action history"),
             ActionBinding("F", "feedback", "Feedback"),
-            ActionBinding("H", "go_home", "Return to research root"),
+            ActionBinding("H", "go_home", "Return to Overview"),
         ),
         example="jst open",
     )

@@ -50,7 +50,7 @@ class _ReleaseRow(ListItem):
 
 
 class ResearchRootScreen(BaseScreen):
-    """Investigation home: description, notes, opt-in recent releases."""
+    """Overview — report / investigation summary when no query chart is open."""
 
     BINDINGS = [
         Binding("slash", "shell_search", "Search", show=False),
@@ -125,6 +125,12 @@ class ResearchRootScreen(BaseScreen):
     #root-stats {
         color: #888;
         height: 1;
+        margin-bottom: 1;
+    }
+    #root-report {
+        height: auto;
+        max-height: 16;
+        color: #c0c0c0;
         margin-bottom: 1;
     }
     .root-kicker {
@@ -222,13 +228,15 @@ class ResearchRootScreen(BaseScreen):
                     id="root-publish",
                 )
             yield Label("", id="root-stats")
+            yield Label("REPORT", id="root-report-kicker", classes="root-kicker")
+            yield Static("", id="root-report", markup=True)
             yield Label("RESEARCH NOTES", id="root-notes-kicker", classes="root-kicker")
             yield Static("", id="root-notes", markup=True)
             yield ActionButton(
                 "+ Add note",
                 action_id="add_note",
                 shortcut="a",
-                variant="ghost",
+                variant="secondary",
                 id="root-add-note",
             )
             yield Label(
@@ -427,14 +435,52 @@ class ResearchRootScreen(BaseScreen):
             )
         ws = self.workspace
         queries = list(inv.queries.values()) if inv else []
-        saved = sum(1 for q in queries if q.in_report)
+        saved_qs = [q for q in queries if q.in_report]
         drafts = sum(1 for q in queries if not q.in_report)
+        remark_n = sum(len(q.remarks or []) for q in saved_qs)
         self.query_one("#root-stats", Label).update(
-            f"{saved} saved quer{'y' if saved == 1 else 'ies'}     "
+            f"{len(saved_qs)} saved quer{'y' if len(saved_qs) == 1 else 'ies'}     "
             f"{drafts} draft{'s' if drafts != 1 else ''}     "
+            f"{remark_n} remark{'s' if remark_n != 1 else ''}     "
             f"{len(ws.entity)} entities     "
             f"{len(ws.metric)} metrics"
         )
+        report_lines: list[str] = []
+        # Project-level summary when multiple investigation tabs exist.
+        project = getattr(self.app, "project", None)
+        order = list(getattr(project, "investigations", None) or [])
+        titles = getattr(self.app, "_inv_titles", {}) or {}
+        if len(order) > 1:
+            report_lines.append(
+                f"[bold]Project report[/] · {len(order)} investigations"
+            )
+            active_id = getattr(getattr(self.app, "active", None), "investigation", None)
+            for inv_id in order:
+                mark = "▸ " if inv_id == active_id else "  "
+                label = titles.get(inv_id) or inv_id
+                report_lines.append(f"{mark}{escape(str(label))}")
+            report_lines.append("")
+        report_lines.append("[bold]Saved queries[/]")
+        if not saved_qs:
+            report_lines.append("[dim]  None yet — open a draft and plot to save.[/]")
+        else:
+            for q in sorted(saved_qs, key=lambda x: x.id):
+                name = escape(q.name or f"Query {q.id}")
+                n_e = len(q.entity)
+                n_m = len(q.metric)
+                n_r = len(q.remarks or [])
+                meta = f"{n_e} entit{'y' if n_e == 1 else 'ies'} · {n_m} metric{'s' if n_m != 1 else ''}"
+                if n_r:
+                    meta += f" · {n_r} remark{'s' if n_r != 1 else ''}"
+                report_lines.append(f"  [bold]{name}[/]")
+                report_lines.append(f"  [dim]{meta}[/]")
+        collected = len(ws.entity) + len(ws.metric) + len(ws.series)
+        report_lines.append("")
+        report_lines.append(
+            f"[bold]Workspace[/] · {collected} collected resource"
+            f"{'s' if collected != 1 else ''}"
+        )
+        self.query_one("#root-report", Static).update("\n".join(report_lines))
         notes = (inv.annotations if inv else None) or ""
         self.query_one("#root-notes", Static).update(
             escape(notes)
@@ -444,7 +490,7 @@ class ResearchRootScreen(BaseScreen):
         self.refresh_footer()
 
     def shell_breadcrumb(self) -> str:
-        return "Research"
+        return "Overview"
 
     def footer_status(self) -> list[str]:
         return []

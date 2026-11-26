@@ -260,6 +260,89 @@ class QueryRenameModal(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+class QueryContextMenu(ModalScreen[str | None]):
+    """Contextual actions for a sidebar query: rename or delete."""
+
+    DEFAULT_CSS = """
+    QueryContextMenu {
+        align: center middle;
+        background: rgba(0, 0, 0, 0.35);
+    }
+    #qctx-box {
+        width: 42;
+        height: auto;
+        border: tall #525252;
+        background: #111111;
+        padding: 1 2;
+    }
+    #qctx-kicker { color: #a3a3a3; height: 1; margin-bottom: 1; }
+    #qctx-title {
+        color: #fafafa;
+        text-style: bold;
+        height: auto;
+        max-height: 2;
+        margin-bottom: 1;
+    }
+    #qctx-actions { height: 1; }
+    #qctx-hint { color: #666; margin-top: 1; }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=False),
+        Binding("r", "rename", "Rename", show=False),
+        Binding("d", "delete", "Delete", show=False),
+        Binding("x", "delete", "Delete", show=False),
+    ]
+
+    def __init__(self, *, query_id: int, label: str) -> None:
+        super().__init__()
+        self.query_id = query_id
+        self._label = label
+
+    def compose(self) -> ComposeResult:
+        from .ui_primitives import ActionButton
+
+        with Vertical(id="qctx-box"):
+            yield Label(f"Query {self.query_id}", id="qctx-kicker")
+            yield Label(self._label or f"Query {self.query_id}", id="qctx-title")
+            with Horizontal(id="qctx-actions"):
+                yield ActionButton(
+                    "Rename",
+                    action_id="rename",
+                    shortcut="r",
+                    variant="secondary",
+                    id="qctx-rename",
+                )
+                yield ActionButton(
+                    "Delete",
+                    action_id="delete",
+                    shortcut="x",
+                    variant="secondary",
+                    id="qctx-delete",
+                )
+            yield Label(
+                "[bold]esc[/bold] cancel",
+                id="qctx-hint",
+                markup=True,
+            )
+
+    def on_action_button_pressed(self, event) -> None:  # noqa: ANN001
+        event.stop()
+        if event.button_id == "rename":
+            self.action_rename()
+        elif event.button_id == "delete":
+            self.action_delete()
+
+    def action_rename(self) -> None:
+        self.dismiss("rename")
+
+    def action_delete(self) -> None:
+        self.dismiss("delete")
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class AnnotationModal(ModalScreen[str | None]):
     """Edit freeform investigation-level annotations (name + body)."""
 
@@ -1978,7 +2061,14 @@ class InvestigationHost(App):
                     active_qid = action.args.get("query_id")
             except Exception:  # noqa: BLE001
                 active_qid = None
-        sidebar.refresh_queries(queries, active_query_id=active_qid)
+        overview_active = bool(
+            self.active and self.active.action == ROOT_ACTION_ID
+        )
+        sidebar.refresh_queries(
+            queries,
+            active_query_id=active_qid,
+            overview_active=overview_active,
+        )
 
         ws = self.workspace
         labels = self.labels
@@ -3104,6 +3194,42 @@ class InvestigationHost(App):
         begin = getattr(self.screen, "begin_inline_edit", None)
         if callable(begin):
             begin(focus=focus)
+
+    def open_query_context_menu(self, query_id: int, *, label: str = "") -> None:
+        """Sidebar ··· — rename or delete (Shift+X still deletes immediately)."""
+        if not self.investigation:
+            self.notify("No investigation loaded", severity="error")
+            return
+        try:
+            query = self.investigation.get_query(query_id)
+        except InvestigationError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        from .naming import suggest_query_name
+
+        display = (
+            label
+            or query.name
+            or suggest_query_name(
+                query.metric, query.entity, labels=self.labels
+            )
+        )
+        self.push_screen(
+            QueryContextMenu(query_id=int(query_id), label=display),
+            lambda result, qid=int(query_id): self._on_query_context_menu(
+                qid, result
+            ),
+        )
+
+    def _on_query_context_menu(
+        self, query_id: int, result: str | None
+    ) -> None:
+        if result == "rename":
+            self.edit_query_name(query_id)
+        elif result == "delete":
+            delete = getattr(self, "delete_query", None)
+            if callable(delete):
+                delete(query_id, confirmed=True)
 
     def edit_query_name(self, query_id: int) -> None:
         """Open a modal to rename a saved query."""

@@ -23,6 +23,7 @@ from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Checkbox, Input, Label, ListItem, ListView, Static, TextArea
 from textual_plotext import PlotextPlot
@@ -986,7 +987,7 @@ class PlotGroupRow(ListItem):
 
 
 class LegendRow(ListItem):
-    """One series in the interactive legend (checkbox toggles visibility)."""
+    """Legacy list-row legend (table / fallback)."""
 
     def __init__(
         self,
@@ -1013,6 +1014,84 @@ class LegendRow(ListItem):
             )
         else:
             yield Label(f"{check} {name}", classes="series-nav-row")
+
+
+class LegendChip(Static, can_focus=True):
+    """Compact horizontal legend chip — checkmark = visibility, focus = outline."""
+
+    DEFAULT_CSS = """
+    LegendChip {
+        width: auto;
+        height: 1;
+        padding: 0 1;
+        margin-right: 1;
+        color: #d4d4d4;
+        background: #141414;
+        /* No border — Textual height-1 borders eat the content row. */
+    }
+    LegendChip.-hidden {
+        color: #737373;
+    }
+    LegendChip:hover {
+        background: #1f1f28;
+        color: #fafafa;
+    }
+    LegendChip:focus {
+        background: #1a1a22;
+        text-style: bold underline;
+        color: #fafafa;
+    }
+    LegendChip.-hidden:hover,
+    LegendChip.-hidden:focus {
+        color: #a3a3a3;
+    }
+    """
+
+    class Toggled(Message):
+        def __init__(self, series_id: str) -> None:
+            super().__init__()
+            self.series_id = series_id
+
+    def __init__(
+        self,
+        record: dict[str, Any],
+        *,
+        hidden: bool = False,
+        color: Optional[tuple[int, int, int]] = None,
+    ) -> None:
+        super().__init__()
+        self.record = record
+        self.hidden = hidden
+        self.color = color
+        self._paint()
+
+    def _paint(self) -> None:
+        check = "[ ]" if self.hidden else "[✓]"
+        name = series_line_label(self.record)
+        if self.color is not None:
+            r, g, b = self.color
+            swatch = f"[rgb({r},{g},{b})]●[/]"
+            self.update(f"{check} {swatch} {escape(name)}")
+        else:
+            self.update(f"{check} {escape(name)}")
+        self.set_class(self.hidden, "-hidden")
+
+    def set_hidden(self, hidden: bool) -> None:
+        self.hidden = hidden
+        self._paint()
+
+    def on_click(self) -> None:
+        sid = str(self.record.get("id") or "")
+        if sid:
+            self.post_message(self.Toggled(sid))
+
+    def on_key(self, event) -> None:  # noqa: ANN001
+        # Space toggles here; Enter is handled by QueryScreen.action_inspect.
+        if event.key == "space":
+            sid = str(self.record.get("id") or "")
+            if sid:
+                self.post_message(self.Toggled(sid))
+            event.stop()
 
 
 class ObservationDetail(ModalScreen[None]):
@@ -1147,6 +1226,15 @@ class QueryScreen(BaseScreen):
         display: none;
         margin: 0 0 0 0;
     }
+    #query-legend {
+        width: 100%;
+        height: auto;
+        max-height: 3;
+        background: #0a0a0a;
+        display: none;
+        margin: 0 0 0 0;
+        padding: 0 0 0 0;
+    }
     #query-series {
         width: 100%;
         height: auto;
@@ -1155,6 +1243,16 @@ class QueryScreen(BaseScreen):
         display: none;
         border-bottom: solid #1f1f1f;
         margin-bottom: 0;
+    }
+    #strip-dates-label {
+        color: #737373;
+        width: auto;
+        margin-right: 1;
+    }
+    #strip-dates-sep {
+        color: #737373;
+        width: auto;
+        margin: 0 1;
     }
     #query-pane {
         width: 1fr;
@@ -1187,8 +1285,8 @@ class QueryScreen(BaseScreen):
         margin-top: 0;
         display: none;
     }
-    #strip-line1 { color: #e0e0e0; height: 1; }
-    #strip-line2 { color: #d4d4d4; height: 1; }
+    #strip-line1 { color: #fafafa; text-style: bold; height: 1; }
+    #strip-line2 { color: #e5e5e5; height: 1; }
     #strip-line3 { color: #737373; height: 1; }
     #strip-controls {
         height: 1;
@@ -1370,6 +1468,8 @@ class QueryScreen(BaseScreen):
         # Frequency selector options derived from metric variants / series.
         self._freq_options: list[Optional[str]] = [None]
         self._freq_source_key: tuple[str, ...] = ()
+        self._legend_expanded = False
+        self._remarks_collapsed = False
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="query-body"):
@@ -1394,6 +1494,7 @@ class QueryScreen(BaseScreen):
                 with Vertical(id="query-pane"):
                     yield Label("", id="query-chart-title")
                     yield Label("", id="query-series-meta")
+                    yield Horizontal(id="query-legend")
                     yield ListView(id="query-series")
                     yield Label(
                         f"{'Period':<12}{'Value':>16}  {'Release date':<22}",
@@ -1403,37 +1504,45 @@ class QueryScreen(BaseScreen):
                     yield HistoryPlot(id="query-chart")
                     with Vertical(id="query-obs-strip"):
                         with Horizontal(id="strip-controls"):
+                            yield Label("Selected dates", id="strip-dates-label")
                             yield ActionButton(
-                                "Start date",
+                                "—",
                                 action_id="bound_lo",
                                 shortcut="Tab",
-                                variant="tab",
+                                variant="secondary",
                                 id="bound-lo-btn",
                             )
+                            yield Label("—", id="strip-dates-sep")
                             yield ActionButton(
-                                "End date",
+                                "—",
                                 action_id="bound_hi",
                                 shortcut="Tab",
-                                variant="tab",
+                                variant="secondary",
                                 id="bound-hi-btn",
                             )
                             yield ActionButton(
-                                "Reset period",
+                                "Reset",
                                 action_id="reset_bounds",
-                                variant="ghost",
+                                variant="secondary",
                                 id="bound-reset-btn",
                             )
-                        yield Label("", id="strip-line1")
-                        yield Label("", id="strip-line2")
+                        yield Label("", id="strip-line1", markup=True)
+                        yield Label("", id="strip-line2", markup=True)
                         yield Label("", id="strip-line3")
             with Vertical(id="query-notes"):
                 with Horizontal(id="query-notes-header"):
                     yield Label("Research remarks", id="query-notes-kicker")
                     yield ActionButton(
+                        "▾",
+                        action_id="toggle_remarks",
+                        variant="ghost",
+                        id="query-remarks-toggle",
+                    )
+                    yield ActionButton(
                         "+ Add remark",
                         action_id="annotate",
                         shortcut="R",
-                        variant="ghost",
+                        variant="secondary",
                         id="query-annotate",
                     )
                 with VerticalScroll(id="query-remarks-scroll"):
@@ -1561,48 +1670,79 @@ class QueryScreen(BaseScreen):
         self._render_annotations(query)
         self.query_one("#query-obs-strip").display = False
 
-    def _format_remark_citation(self, remark: QueryRemark) -> str:
-        """Human-readable evidence line from structured cite fields."""
+    def _humanize_series_id(self, sid: str) -> str:
+        """Best-effort entity · metric from a series id or obs cache."""
         labels = getattr(self.app, "labels", {}) or {}
-        names: list[str] = []
-        for sid in (remark.series or [])[:3]:
-            rec = self._obs_cache.get(sid)
-            if rec is not None:
-                entity = series_line_label(rec)
-                metric = str(rec.get("label") or "")
-                if " for " in metric:
-                    metric = metric.split(" for ", 1)[0].strip()
-                elif rec.get("metric_id"):
-                    mid = str(rec["metric_id"])
-                    metric = label_for(labels, mid) or mid.replace("-", " ").title()
-                bit = " · ".join(p for p in (entity, metric) if p)
-                names.append(bit or sid)
-                continue
-            # Fall back: last path segments of opaque series ids.
-            parts = [p for p in str(sid).split(":") if p]
-            if len(parts) >= 3:
-                names.append(
-                    label_for(labels, parts[1])
-                    or parts[1].replace("-", " ").title()
-                )
-            else:
-                names.append(label_for(labels, sid) or sid)
+        rec = self._obs_cache.get(sid)
+        if rec is not None:
+            entity = series_line_label(rec)
+            metric = str(rec.get("label") or "")
+            if " for " in metric:
+                metric = metric.split(" for ", 1)[0].strip()
+            elif rec.get("metric_id"):
+                mid = str(rec["metric_id"])
+                metric = label_for(labels, mid) or mid.replace("-", " ").title()
+            return " · ".join(p for p in (entity, metric) if p) or sid
+        parts = [p for p in str(sid).split(":") if p]
+        if len(parts) >= 3:
+            # edgar:CIK:metric-slug:units:freq
+            cik = parts[1]
+            metric_slug = parts[2]
+            entity = (
+                label_for(labels, f"cik:{cik}")
+                or label_for(labels, cik)
+                or ""
+            )
+            # Prefer a cached entity that matches this CIK fragment.
+            if not entity or entity == cik or entity.startswith("000"):
+                for cached in self._obs_cache.values():
+                    if sid.rsplit(":", 2)[0] in str(cached.get("id") or ""):
+                        entity = series_line_label(cached)
+                        break
+                    for ent in cached.get("entities") or []:
+                        eid = str(ent.get("id") or "")
+                        if cik in eid:
+                            entity = str(ent.get("label") or eid)
+                            break
+            metric = label_for(labels, metric_slug) or metric_slug.replace(
+                "-", " "
+            ).title()
+            if entity and not entity.startswith("000"):
+                return f"{entity} · {metric}"
+            return metric
+        return label_for(labels, sid) or sid
+
+    def _format_remark_citation(self, remark: QueryRemark) -> tuple[str, str]:
+        """Return ``(source_line, span_line)`` for display."""
+        names = [
+            self._humanize_series_id(sid) for sid in (remark.series or [])[:3]
+        ]
         extra = "…" if len(remark.series or []) > 3 else ""
         who = ", ".join(names) + extra if names else ""
         span = ""
         if remark.from_ or remark.to:
-            span = f"{remark.from_ or '…'}–{remark.to or '…'}"
-        bits = [b for b in (who, span) if b]
-        if not bits:
-            return ""
-        return "Source: " + " · ".join(bits)
+            def _year(raw: str) -> str:
+                text = (raw or "").strip()
+                return text[:4] if len(text) >= 4 and text[:4].isdigit() else text
+
+            span = f"{_year(remark.from_ or '…')}–{_year(remark.to or '…')}"
+        source = f"Source: {who}" if who else ""
+        return source, span
 
     def _render_annotations(self, query: Query) -> None:
         panel = self.query_one("#query-remarks-list", Static)
+        scroll = self.query_one("#query-remarks-scroll")
         kicker = self.query_one("#query-notes-kicker", Label)
+        toggle = self.query_one("#query-remarks-toggle", ActionButton)
         remarks = list(query.remarks or [])
         n = len(remarks)
         kicker.update(f"Research remarks ({n})" if n else "Research remarks")
+        toggle.set_label("▸" if self._remarks_collapsed else "▾")
+        if self._remarks_collapsed:
+            scroll.display = False
+            panel.update("")
+            return
+        scroll.display = True
         lines: list[str] = []
         picking = self._remark_pick_mode
         selected = self._selected_remark_i
@@ -1623,9 +1763,15 @@ class QueryScreen(BaseScreen):
                     lines.append(f"{num}[#bbf7d0]{body}[/]")
                 else:
                     lines.append(f"{num}{body}")
-            cite = self._format_remark_citation(remark)
-            if cite:
-                lines.append(f"[dim]{escape(cite)}[/]")
+            source, span = self._format_remark_citation(remark)
+            if source:
+                lines.append(f"[dim]{escape(source)}[/]")
+            if span or remark.series:
+                evidence = f"[#86efac]View evidence[/] [dim](Shift+A {i})[/]"
+                if span:
+                    lines.append(f"[dim]{escape(span)}[/]  {evidence}")
+                else:
+                    lines.append(evidence)
             if i < n:
                 lines.append("[dim]────────────────────────────────────────[/]")
         if not lines:
@@ -2169,32 +2315,48 @@ class QueryScreen(BaseScreen):
 
     def _fill_nav(self) -> None:
         nav = self.query_one("#query-series", ListView)
+        legend = self.query_one("#query-legend", Horizontal)
         meta = self.query_one("#query-series-meta", Label)
         nav.clear()
+        # Clear legend chips synchronously via remove_children worker-safe call.
+        for child in list(legend.children):
+            child.remove()
         group = self._selected_group()
         if self._mode == "chart" and group is not None:
             show = len(group.records) > 1
-            nav.display = show
-            meta.display = show
-            if not show:
-                meta.update("")
-                return
+            nav.display = False
             visible_n = sum(
                 1
                 for r in group.records
                 if str(r.get("id") or "") not in self._hidden
             )
             total = len(group.records)
-            meta.update(f"Series visibility: {visible_n} of {total}")
+            collapse = total > 6 and not self._legend_expanded
+            meta.display = show and (collapse or total > 1)
+            if show:
+                meta.update(f"Series: {visible_n} of {total} visible")
+            else:
+                meta.update("")
+            legend.display = show and not collapse
+            if not show:
+                return
+            if collapse:
+                return
+            chips: list[LegendChip] = []
             for i, record in enumerate(group.records):
                 hidden = str(record.get("id") or "") in self._hidden
                 color = CHART_PALETTE[i % len(CHART_PALETTE)]
-                nav.append(LegendRow(record, hidden=hidden, color=color))
-            ids = [str(r.get("id") or "") for r in group.records]
-            current = self._selected_record()
-            cid = str(current.get("id") or "") if current else ""
-            nav.index = ids.index(cid) if cid in ids else 0
+                chips.append(LegendChip(record, hidden=hidden, color=color))
+            if chips:
+                legend.mount(*chips)
+                current = self._selected_record()
+                cid = str(current.get("id") or "") if current else ""
+                for chip in chips:
+                    if str(chip.record.get("id") or "") == cid:
+                        chip.focus()
+                        break
             return
+        legend.display = False
         meta.display = False
         meta.update("")
         show = len(self._records) > 1
@@ -2366,9 +2528,12 @@ class QueryScreen(BaseScreen):
             hi = self.query_one("#bound-hi-btn", ActionButton)
         except Exception:  # noqa: BLE001
             return
-        # Both stay ``-tab`` always; only ``-active`` tracks focus (green).
-        lo.add_class("-tab")
-        hi.add_class("-tab")
+        record = self._selected_record()
+        freq = (record or {}).get("frequency") if record else None
+        lo_day = self._bound_lo_day()
+        hi_day = self._bound_hi_day()
+        lo.set_label(format_period(lo_day, freq) if lo_day else "—")
+        hi.set_label(format_period(hi_day, freq) if hi_day else "—")
         lo.set_class(self._bound_focus == "lo", "-active")
         hi.set_class(self._bound_focus == "hi", "-active")
 
@@ -2381,18 +2546,16 @@ class QueryScreen(BaseScreen):
             strip.display = True
             self._paint_bound_buttons()
             self.query_one("#strip-line1", Label).update(
-                "Selected period — all series hidden"
+                "All series hidden"
             )
             self.query_one("#strip-line2", Label).update(
-                "Enter on a series checkbox to show it again"
+                "Enter on a series chip to show it again"
             )
             self.query_one("#strip-line3", Label).update("")
             return
         strip.display = True
         self._paint_bound_buttons()
         day = self._cursor_day()
-        lo = self._bound_lo_day()
-        hi = self._bound_hi_day()
         record = self._selected_record()
         freq = (record or {}).get("frequency") if record else None
         units = (record or {}).get("units") if record else None
@@ -2401,8 +2564,6 @@ class QueryScreen(BaseScreen):
             self.query_one("#strip-line2", Label).update("")
             self.query_one("#strip-line3", Label).update("")
             return
-        lo_s = format_period(lo, freq) if lo else "—"
-        hi_s = format_period(hi, freq) if hi else "—"
         primary = (
             observation_on_date(record, day) if record is not None else None
         )
@@ -2411,21 +2572,26 @@ class QueryScreen(BaseScreen):
         )
         entity = series_line_label(record) if record else "—"
         period = format_period(day, freq)
+        # Elevated observation inspector: identity on line 1, fact on line 2.
         self.query_one("#strip-line1", Label).update(
-            f"Selected period  {lo_s} — {hi_s}"
+            f"{escape(entity)} · {escape(period)}"
         )
         reported = ""
         if primary:
             reported = format_release(
                 primary.get("release_timestamp"), human=True
             )
-        fact_bits = [entity, period, exact]
         if reported and reported != "—":
-            fact_bits.append(f"Reported {reported}")
-        self.query_one("#strip-line2", Label).update(" · ".join(fact_bits))
+            self.query_one("#strip-line2", Label).update(
+                f"[bold]{escape(exact)}[/]     [dim]Reported {escape(reported)}[/]"
+            )
+        else:
+            self.query_one("#strip-line2", Label).update(
+                f"[bold]{escape(exact)}[/]"
+            )
         focus = "start date" if self._bound_focus == "lo" else "end date"
         self.query_one("#strip-line3", Label).update(
-            f"Tab switches {focus} · ←→ adjust date"
+            f"Tab focuses {focus} · ←→ adjust date"
         )
 
     def _paint_view_tabs(self) -> None:
@@ -2452,10 +2618,12 @@ class QueryScreen(BaseScreen):
         self._paint_chart_title()
         if table:
             self.query_one("#query-obs", ListView).focus()
-        elif chart and self.query_one("#query-series").display:
-            self.query_one("#query-series", ListView).focus()
-        elif len(self._records) > 1:
-            self.query_one("#query-series", ListView).focus()
+        elif chart:
+            chips = self._legend_chips()
+            if chips:
+                chips[min(self._series_i, len(chips) - 1) % len(chips)].focus()
+            elif self.query_one("#query-series").display:
+                self.query_one("#query-series", ListView).focus()
         self._paint_compose()
         try:
             refresh = getattr(self.app, "refresh_shell_chrome", None)
@@ -2542,6 +2710,17 @@ class QueryScreen(BaseScreen):
         # Re-paint so the EnumSelect picks up the new option list.
         self._paint_compose()
 
+    def _sync_query_name(self, query: Query) -> None:
+        """Refresh auto-generated titles so they match live composition."""
+        from ..investigation.naming import sync_auto_query_name
+
+        labels = getattr(self.app, "labels", {}) or {}
+        updated = sync_auto_query_name(
+            query.name, query.metric, query.entity, labels=labels
+        )
+        if updated != (query.name or ""):
+            query.name = updated
+
     def _paint_compose(self, *, coverage: str = "") -> None:
         try:
             query = self._resolve_query()
@@ -2549,6 +2728,8 @@ class QueryScreen(BaseScreen):
             return
         self._sync_frequency_options(query)
         labels = getattr(self.app, "labels", {}) or {}
+        from ..investigation.naming import composition_subtitle
+
         badge = "✓ Saved" if query.in_report else "Draft"
         if self._needs_refresh:
             badge = f"{badge} · pending refresh"
@@ -2569,6 +2750,9 @@ class QueryScreen(BaseScreen):
             mode=self._mode,
             needs_refresh=self._needs_refresh,
             coverage=cov,
+            subtitle=composition_subtitle(
+                query.metric, query.entity, query.series
+            ),
             available_frequencies=self._freq_options,
         )
 
@@ -2576,6 +2760,11 @@ class QueryScreen(BaseScreen):
         """After the first plot, further edits require an explicit refresh."""
         from ..investigation.api import persist_investigation
 
+        try:
+            query = self._resolve_query()
+            self._sync_query_name(query)
+        except Exception:
+            pass
         persist_investigation(
             getattr(self.app, "investigation"),
             app_dir=getattr(self.app, "app_dir", None),
@@ -2629,12 +2818,7 @@ class QueryScreen(BaseScreen):
             remember = getattr(self.app, "remember_label", None)
             if callable(remember):
                 remember(rid, str(result["label"]))
-        if not query.name or not query.in_report:
-            from ..investigation.naming import suggest_query_name
-
-            query.name = suggest_query_name(
-                query.metric, query.entity, labels=labels
-            )
+        self._sync_query_name(query)
         self._mark_composition_changed()
 
     def _remove_query_resource(self, kind: str, resource_id: str) -> None:
@@ -2651,6 +2835,7 @@ class QueryScreen(BaseScreen):
             query.series = [x for x in query.series if x != resource_id]
         else:
             return
+        self._sync_query_name(query)
         self._mark_composition_changed()
 
     def _open_scoped_picker(self, kind: str) -> None:
@@ -2769,6 +2954,8 @@ class QueryScreen(BaseScreen):
             self.action_mode_table()
         elif event.button_id == "annotate":
             self.action_annotate()
+        elif event.button_id == "toggle_remarks":
+            self.action_toggle_remarks()
         elif event.button_id == "save_remark":
             self.action_save_remark()
         elif event.button_id == "cancel_remark":
@@ -2920,8 +3107,14 @@ class QueryScreen(BaseScreen):
         if self._remark_drafting:
             self.action_save_remark()
             return
-        # Chart: Enter toggles the highlighted series line (no entity jump).
+        # Chart: Enter toggles the focused legend chip / selected series.
         if self._mode == "chart":
+            focused = self.focused
+            if isinstance(focused, LegendChip):
+                try:
+                    self._series_i = self._records.index(focused.record)
+                except ValueError:
+                    pass
             self.action_toggle_series()
             return
         child = self.query_one("#query-obs", ListView).highlighted_child
@@ -2971,9 +3164,36 @@ class QueryScreen(BaseScreen):
             )
         self.app.push_screen(SeriesValuesFallback(rows, title=title))
 
+    def _legend_chips(self) -> list[LegendChip]:
+        try:
+            legend = self.query_one("#query-legend", Horizontal)
+        except Exception:  # noqa: BLE001
+            return []
+        return [c for c in legend.children if isinstance(c, LegendChip)]
+
+    def _cycle_legend_focus(self, delta: int) -> bool:
+        chips = self._legend_chips()
+        if not chips:
+            return False
+        focused = self.focused
+        try:
+            idx = next(i for i, c in enumerate(chips) if c is focused)
+        except StopIteration:
+            idx = -1 if delta > 0 else 0
+        nxt = chips[(idx + delta) % len(chips)]
+        nxt.focus()
+        try:
+            self._series_i = self._records.index(nxt.record)
+        except ValueError:
+            pass
+        self._show_selected()
+        return True
+
     def action_cursor_down(self) -> None:
-        # On the chart, j/k always walk the series legend (visibility picker).
+        # On the chart, j/k walk the horizontal legend chips.
         if self._mode == "chart" and not self._remark_drafting:
+            if self._cycle_legend_focus(1):
+                return
             series = self.query_one("#query-series", ListView)
             if series.display:
                 series.focus()
@@ -2987,6 +3207,8 @@ class QueryScreen(BaseScreen):
 
     def action_cursor_up(self) -> None:
         if self._mode == "chart" and not self._remark_drafting:
+            if self._cycle_legend_focus(-1):
+                return
             series = self.query_one("#query-series", ListView)
             if series.display:
                 series.focus()
@@ -2997,6 +3219,18 @@ class QueryScreen(BaseScreen):
             focused.action_cursor_up()
             return
         self.query_one("#query-obs", ListView).action_cursor_up()
+
+    def action_toggle_remarks(self) -> None:
+        self._remarks_collapsed = not self._remarks_collapsed
+        try:
+            query = self._resolve_query()
+        except Exception:
+            return
+        self._render_annotations(query)
+
+    def action_toggle_legend(self) -> None:
+        self._legend_expanded = not self._legend_expanded
+        self._fill_nav()
 
     def action_collect(self) -> None:
         record = self._selected_record()
@@ -3136,6 +3370,27 @@ class QueryScreen(BaseScreen):
             except ValueError:
                 return
             self._show_selected()
+
+    @on(LegendChip.Toggled)
+    def on_legend_chip_toggled(self, event: LegendChip.Toggled) -> None:
+        event.stop()
+        sid = event.series_id
+        for i, rec in enumerate(self._records):
+            if str(rec.get("id") or "") == sid:
+                self._series_i = i
+                break
+        self.action_toggle_series()
+
+    def on_click(self, event) -> None:  # noqa: ANN001
+        # Collapsed legend summary expands the chip row.
+        widget = getattr(event, "widget", None) or getattr(event, "control", None)
+        if getattr(widget, "id", None) == "query-series-meta":
+            group = self._selected_group()
+            if group is not None and len(group.records) > 6:
+                self.action_toggle_legend()
+                event.stop()
+                return
+        # Fall through to BaseScreen / default.
 
     @on(ListView.Selected, "#query-obs")
     def on_obs_selected(self, event: ListView.Selected) -> None:
